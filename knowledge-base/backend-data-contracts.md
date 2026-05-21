@@ -1,0 +1,28 @@
+# Backend Data Contracts
+
+- Backend APIs own business data for the frontend. Angular should not ship local business fixtures.
+- SQL Server is the active persistence mode when `DataAccess:IdentityProvider` is `SqlServer`.
+- Admin Center and Talent Pilot operation endpoints are SQL-backed in SQL mode through Dapper repositories.
+- Keep in-memory repositories only for local fallback/testing when SQL mode is disabled.
+- Authentication:
+  - `GET /api/auth/login-options` returns selectable MVP users for card login.
+  - `POST /api/auth/login` builds the full user profile from `AppUsers`, `Roles`, `RolePermissions`, `Groups`, and tenant policies.
+  - `Auth:AllowDemoCardLogin=true` permits null passwords for card-based MVP testing only.
+- Admin Center endpoints:
+  - `/api/admin/tenant-profile`
+  - `/api/admin/users`
+  - `/api/admin/roles`
+  - `/api/admin/groups`
+  - `/api/admin/access-policies/*`
+  - `/api/admin/notifications/*`
+  - `/api/admin/ai-settings/*`
+  - `/api/admin/audit-logs`
+- Talent Pilot internal operations use `/api/talent-pilot/*`.
+- Candidate Experience backend contracts still need endpoint implementation before candidate pages can show real jobs, applications, interviews, and profile data.
+- Recruiter, interviewer, and hiring-manager command APIs still need endpoint implementation for the full flow.
+- Store all persisted timestamps in UTC. Return ISO UTC values; frontend formats local display.
+- Metric responses should include useful counts/statuses from database queries, not static explanatory labels.
+- Do not put endpoint names, SQL hints, or schema explanations in UI response text. Keep those in API docs and this knowledge base.
+- Notification delivery is backend-owned. Workflow events should create Email and SignalR work; frontend displays notification data returned by API.
+- Invitation resend writes audit history in the SQL admin repository. Add a seeded internal-user invitation event/template before wiring it to `NotificationOutbox`.
+- Role bulk assignment exists as an API contract; keep frontend selection behavior aligned with backend preview/apply payloads.

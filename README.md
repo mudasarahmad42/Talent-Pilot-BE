@@ -1,0 +1,197 @@
+# Talent Pilot Backend
+
+.NET 8 Clean Architecture backend for the Talent Pilot TKXEL AI Unlimited MVP.
+
+The backend owns authentication, authorization context, Admin Center APIs, Talent Pilot operational APIs, SQL persistence, workflow handoffs, notification records, audit, and future AI/background processing.
+
+## Stack
+
+- .NET 8
+- ASP.NET Core Web API
+- Dapper
+- Microsoft.Data.SqlClient
+- SQL Server 2025 Developer / SQLEXPRESS
+- SQL Server `VECTOR(768)`
+- JWT + refresh tokens
+- BCrypt password verification
+- SignalR-ready notification model
+- SQL-backed outbox with local worker
+- xUnit tests
+
+This repository follows the approved Talent Pilot backend/database stack documented in the parent workspace under `TECH STACK DETAILS/backend/README.md` and `TECH STACK DETAILS/database/README.md` when that workspace is available.
+
+## Solution Structure
+
+```text
+src/
+  TalentPilot.Api/             Controllers, middleware, API startup
+  TalentPilot.Application/     Use cases, DTOs, contracts, validation boundaries
+  TalentPilot.Domain/          Domain constants and small policy helpers
+  TalentPilot.Infrastructure/  Dapper repositories, SQL connection factory, auth/token services
+  TalentPilot.Database/        Idempotent SQL script runner
+  TalentPilot.Worker/          BackgroundService worker for SQL outbox processing
+  TalentPilot.Common/          Shared primitives such as time abstractions
+tests/
+  TalentPilot.Tests/
+scripts/
+  schema/
+  seed/
+  stored-procedures/
+  migrations/
+```
+
+## Architecture Rules
+
+- API controllers stay thin.
+- Application layer owns use-case orchestration and DTO contracts.
+- Infrastructure owns SQL, Dapper, token, and runtime integrations.
+- Domain stays small and explicit for MVP.
+- Use Dapper and plain SQL for persistence.
+- Keep SQL tenant-scoped through `TenantId`.
+- Do not put endpoint names or schema explanations in UI responses.
+- Keep roles and groups separate:
+  - roles grant permissions
+  - groups route workflow work
+
+## Local Database
+
+Connection key:
+
+```text
+ConnectionStrings:TalentPilot
+```
+
+Local development target:
+
+```text
+Server=TK-LPT-1286\SQLEXPRESS;Database=TalentPilot;User ID=sa;Password=<local-password>;Encrypt=False;TrustServerCertificate=True;Connection Timeout=15;
+```
+
+Do not commit passwords. Use environment variables or user-secrets.
+
+PowerShell environment variable example:
+
+```powershell
+$env:ConnectionStrings__TalentPilot = "Server=TK-LPT-1286\SQLEXPRESS;Database=TalentPilot;User ID=sa;Password=<local-password>;Encrypt=False;TrustServerCertificate=True;Connection Timeout=15;"
+```
+
+User-secrets example:
+
+```powershell
+dotnet user-secrets set "ConnectionStrings:TalentPilot" "<connection-string>" --project src/TalentPilot.Api
+dotnet user-secrets set "ConnectionStrings:TalentPilot" "<connection-string>" --project src/TalentPilot.Worker
+dotnet user-secrets set "DataAccess:IdentityProvider" "SqlServer" --project src/TalentPilot.Api
+```
+
+## Run Database Scripts
+
+Create the empty `TalentPilot` database first if it does not exist, then run:
+
+```powershell
+dotnet run --project src/TalentPilot.Database -- --connection "<connection-string>"
+```
+
+Execution order:
+
+1. `scripts/schema/*.sql`
+2. `scripts/seed/*.sql`
+3. `scripts/stored-procedures/*.sql`
+
+Scripts are additive and idempotent.
+
+## Run API
+
+```powershell
+dotnet run --project src/TalentPilot.Api
+```
+
+Default local HTTP profile:
+
+```text
+http://localhost:5058
+```
+
+Health endpoint:
+
+```text
+GET /health
+```
+
+## Run Worker
+
+```powershell
+dotnet run --project src/TalentPilot.Worker
+```
+
+The worker processes SQL-backed outbox records locally. Keep this simple for MVP; do not introduce paid queues unless explicitly approved.
+
+## Test
+
+```powershell
+dotnet test
+```
+
+If the API is running and locks build outputs, stop the API before running a full rebuild.
+
+## Current Implemented API Groups
+
+- `api/auth/*`
+- `api/admin/tenant-profile`
+- `api/admin/users`
+- `api/admin/roles`
+- `api/admin/groups`
+- `api/admin/access-policies/*`
+- `api/admin/notifications/*`
+- `api/admin/ai-settings/*`
+- `api/admin/audit-logs`
+- `api/talent-pilot/*`
+
+Detailed endpoint notes are in `knowledge-base/api-surface.md`.
+
+## Current Persistence State
+
+SQL mode is enabled through:
+
+```text
+DataAccess:IdentityProvider=SqlServer
+```
+
+When SQL mode is enabled, the backend uses Dapper repositories for:
+
+- authentication and current user context
+- tenant profile
+- Admin Center users
+- Admin Center roles and access policies
+- groups
+- notifications and notification templates
+- AI runtime/settings
+- audit logs
+- Talent Pilot operations snapshot
+- workflow assignment claim
+- notification read/read-all
+- notification outbox processing
+
+In-memory repositories remain only as local fallback/testing when SQL mode is disabled.
+
+## Knowledge Base
+
+Read these before changing backend behavior:
+
+- `knowledge-base/README.md`
+- `knowledge-base/authentication.md`
+- `knowledge-base/api-surface.md`
+- `knowledge-base/backend-data-contracts.md`
+- `knowledge-base/business-rules.md`
+- `knowledge-base/database-schema.md`
+- `knowledge-base/implemented-vs-planned.md`
+
+## Production Readiness Notes
+
+- Replace the development JWT signing key before any non-local deployment.
+- Keep `Auth:AllowDemoCardLogin=true` only for MVP demo/testing.
+- Store real credentials as BCrypt hashes in `UserCredentials`.
+- Store all persisted timestamps in UTC.
+- Return ISO UTC timestamps to frontend.
+- Let frontend convert to user/tenant local time.
+- Notification delivery is backend-owned: Email and SignalR.
+- AI recommendations remain advisory and auditable.

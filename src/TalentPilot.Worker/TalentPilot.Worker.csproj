@@ -1,0 +1,19 @@
+<Project Sdk="Microsoft.NET.Sdk.Worker">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <LangVersion>12.0</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <UserSecretsId>dotnet-TalentPilot.Worker-cd337df4-1eca-4f8e-9208-0fc8e46284d9</UserSecretsId>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Extensions.Hosting" Version="8.0.1" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\TalentPilot.Application\TalentPilot.Application.csproj" />
+    <ProjectReference Include="..\TalentPilot.Infrastructure\TalentPilot.Infrastructure.csproj" />
+  </ItemGroup>
+</Project>

@@ -1,0 +1,39 @@
+# Build output
+bin/
+obj/
+**/bin/
+**/obj/
+
+# Test output
+TestResults/
+coverage/
+*.trx
+
+# Logs
+*.log
+*.err
+*.out
+
+# IDE/editor
+.vs/
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Local secrets/config
+.env
+.env.*
+!.env.example
+appsettings.Local.json
+appsettings.*.local.json
+
+# Publish/runtime output
+publish/
+artifacts/
