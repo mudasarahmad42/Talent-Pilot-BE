@@ -18,7 +18,21 @@ The backend owns authentication, authorization context, Admin Center APIs, Talen
 - SQL-backed outbox with local worker
 - xUnit tests
 
-This repository follows the approved Talent Pilot backend/database stack documented in the parent workspace under `TECH STACK DETAILS/backend/README.md` and `TECH STACK DETAILS/database/README.md` when that workspace is available.
+## Dependency Policy
+
+- Prefer free, open-source, well-maintained libraries.
+- Do not add paid SaaS services, hosted queues, paid AI APIs, or closed-source packages without team approval.
+- Use Dapper and SQL scripts for persistence.
+- Do not introduce Entity Framework unless the team explicitly changes the persistence strategy.
+- Keep background processing simple through the SQL outbox and local worker for MVP.
+- Keep AI runtime local/free by default: mock/Ollama-compatible runtime, `llama3.1:8b`, and `nomic-embed-text`.
+
+## Prerequisites
+
+- .NET SDK `8.x`
+- SQL Server 2025 Developer or SQLEXPRESS compatible with `VECTOR(768)`
+- PowerShell
+- Optional: Ollama-compatible local AI runtime for future AI worker integration
 
 ## Solution Structure
 
@@ -53,6 +67,18 @@ scripts/
   - roles grant permissions
   - groups route workflow work
 
+## Backend Guardrails
+
+- Keep business behavior auditable.
+- Store all persisted timestamps as UTC `DATETIME2(3)` values.
+- Return ISO UTC timestamps to the frontend.
+- Keep tenant-scoped tables keyed by `TenantId`.
+- Keep auth/session endpoints separate from Admin Center user/role/group management.
+- Notifications are backend-owned. Email and SignalR are triggered by backend code, not user-configured per workflow row.
+- AI recommendations are advisory only; humans make final PMO, recruiter, interviewer, and hiring-manager decisions.
+- Keep workflow handoffs separate from candidate interview pipeline stages.
+- Do not expose schema notes, endpoint names, or internal technical labels in product UI responses.
+
 ## Local Database
 
 Connection key:
@@ -68,6 +94,14 @@ Server=TK-LPT-1286\SQLEXPRESS;Database=TalentPilot;User ID=sa;Password=<local-pa
 ```
 
 Do not commit passwords. Use environment variables or user-secrets.
+
+## Setup From A Fresh Clone
+
+```powershell
+git clone https://github.com/mudasarahmad42/Talent-Pilot-BE.git
+cd Talent-Pilot-BE
+dotnet restore
+```
 
 PowerShell environment variable example:
 
@@ -98,6 +132,13 @@ Execution order:
 3. `scripts/stored-procedures/*.sql`
 
 Scripts are additive and idempotent.
+
+Schema, seed, and stored procedure intent is documented in:
+
+```text
+knowledge-base/database-schema.md
+scripts/README.md
+```
 
 ## Run API
 
@@ -195,3 +236,10 @@ Read these before changing backend behavior:
 - Let frontend convert to user/tenant local time.
 - Notification delivery is backend-owned: Email and SignalR.
 - AI recommendations remain advisory and auditable.
+
+## Before Opening A PR
+
+- Run `dotnet test`.
+- Run the database script runner if schema, seed, or stored procedure files changed.
+- Update `knowledge-base/` when changing endpoints, schema, workflow behavior, auth, permissions, notifications, or persistence.
+- Do not commit `bin`, `obj`, `TestResults`, logs, local secrets, local appsettings files, or real connection strings.
