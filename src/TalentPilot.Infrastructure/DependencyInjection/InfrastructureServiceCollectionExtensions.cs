@@ -74,7 +74,7 @@ public static class InfrastructureServiceCollectionExtensions
         else
         {
             services.AddSingleton<IAdminTenantProfileRepository>(provider => provider.GetRequiredService<InMemoryTalentPilotRepository>());
-            services.AddSingleton<IOperationsRepository, DapperOperationsRepository>();
+            services.AddSingleton<IOperationsRepository>(provider => provider.GetRequiredService<InMemoryTalentPilotRepository>());
             services.AddSingleton<IAdminUsersRepository>(provider => provider.GetRequiredService<InMemoryTalentPilotRepository>());
             services.AddSingleton<IAdminAccessPoliciesRepository>(provider => provider.GetRequiredService<InMemoryTalentPilotRepository>());
             services.AddSingleton<IAdminGroupsRepository>(provider => provider.GetRequiredService<InMemoryTalentPilotRepository>());

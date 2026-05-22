@@ -20,6 +20,8 @@
 - SQL-backed Talent Pilot operations snapshot.
 - Job Request creation endpoint.
 - Workflow assignment claim endpoint.
+- PMO forward-to-recruiter endpoint.
+- Recruitment queue endpoint.
 - Notification read/read-all endpoints.
 - Notification outbox processor abstraction and Dapper-backed processor.
 - Tests for the current auth/permission and setup-sensitive logic.

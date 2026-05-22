@@ -15,6 +15,30 @@ public sealed record OperationsSnapshot(
     IReadOnlyList<OperationsWorkflowAssignment> Assignments,
     IReadOnlyList<OperationsNotification> Notifications);
 
+public sealed record OperationsPmoQueueItem(
+    OperationsWorkflowAssignment Assignment,
+    OperationsJobRequest JobRequest);
+
+public sealed record OperationsRecruitmentQueueItem(
+    OperationsWorkflowAssignment Assignment,
+    OperationsJobRequest JobRequest,
+    int CandidateCount);
+
+public sealed record OperationsBenchMatch(
+    Guid EmployeeId,
+    string EmployeeCode,
+    string DisplayName,
+    string Email,
+    string? Designation,
+    string Department,
+    string Location,
+    IReadOnlyList<string> Skills,
+    string AvailabilityStatus,
+    string BenchStatus,
+    int CurrentAllocationPercent,
+    int MatchScore,
+    string MatchExplanation);
+
 public sealed record OperationsJobRequest(
     Guid Id,
     string Code,
@@ -41,7 +65,8 @@ public sealed record OperationsWorkflowAssignment(
     string EntityType,
     Guid EntityId,
     string Stage,
-    string? AssignedToGroupId,
+    Guid? AssignedToGroupId,
+    string? AssignedToGroupName,
     Guid? AssignedToUserId,
     Guid? ClaimedByUserId,
     string Status,
@@ -80,3 +105,29 @@ public sealed record CreateOperationsJobRequestInput(
 public sealed record CreateOperationsJobRequestResult(
     OperationsJobRequest JobRequest,
     OperationsWorkflowAssignment Assignment);
+
+public sealed record ForwardToRecruiterResult(
+    OperationsJobRequest JobRequest,
+    OperationsWorkflowAssignment Assignment,
+    int CandidateCount);
+
+public sealed record CreateInternalResourceReferralInput(
+    IReadOnlyList<Guid> EmployeeIds,
+    string? Note);
+
+public sealed record InternalEmployeeReferral(
+    Guid Id,
+    Guid JobRequestId,
+    Guid EmployeeId,
+    string EmployeeName,
+    string EmployeeEmail,
+    string Status,
+    int FitScore,
+    string RecommendationSummary,
+    Guid ReferredByUserId,
+    Guid? PresalesUserId,
+    DateTimeOffset CreatedAt);
+
+public sealed record CreateInternalResourceReferralResult(
+    OperationsJobRequest JobRequest,
+    IReadOnlyList<InternalEmployeeReferral> Referrals);

@@ -6,6 +6,7 @@ using TalentPilot.Application.Admin.Notifications;
 using TalentPilot.Application.Admin.Roles;
 using TalentPilot.Application.Admin.Users;
 using TalentPilot.Domain.Access;
+using TalentPilot.Domain.Notifications;
 
 namespace TalentPilot.Infrastructure.Persistence.Repositories;
 
@@ -18,6 +19,9 @@ public sealed class DapperAdminCenterRepository :
     IAdminAuditLogRepository,
     INotificationOutboxProcessor
 {
+    private static readonly JsonSerializerOptions NotificationPayloadJsonOptions = new(JsonSerializerDefaults.Web);
+    private const string AdminTestNotificationEventCode = "ADMIN_TEST_NOTIFICATION";
+
     private readonly ISqlConnectionFactory _connectionFactory;
 
     public DapperAdminCenterRepository(ISqlConnectionFactory connectionFactory)
@@ -1162,6 +1166,225 @@ public sealed class DapperAdminCenterRepository :
         await transaction.CommitAsync(cancellationToken);
     }
 
+    public async Task<QueuedAdminTestNotification> QueueTestNotificationAsync(
+        Guid tenantId,
+        Guid actorUserId,
+        string actorEmail,
+        string title,
+        string message,
+        CancellationToken cancellationToken)
+    {
+        await using var connection = _connectionFactory.CreateConnection();
+        await connection.OpenAsync(cancellationToken);
+        await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
+
+        const string upsertSql = """
+            DECLARE @Now DATETIME2(3) = SYSUTCDATETIME();
+            DECLARE @NotificationEventId UNIQUEIDENTIFIER;
+            DECLARE @NotificationRecipientId UNIQUEIDENTIFIER;
+            DECLARE @RecipientEmail NVARCHAR(320);
+
+            SELECT @NotificationEventId = NotificationEventId
+            FROM dbo.NotificationEvents WITH (UPDLOCK, HOLDLOCK)
+            WHERE TenantId = @TenantId
+              AND EventCode = @EventCode;
+
+            IF @NotificationEventId IS NULL
+            BEGIN
+                SET @NotificationEventId = NEWID();
+
+                INSERT INTO dbo.NotificationEvents
+                (
+                    NotificationEventId,
+                    TenantId,
+                    EventCode,
+                    Name,
+                    DefaultRecipientType,
+                    Status,
+                    CreatedAtUtc,
+                    UpdatedAtUtc
+                )
+                VALUES
+                (
+                    @NotificationEventId,
+                    @TenantId,
+                    @EventCode,
+                    N'Admin test notification',
+                    N'User:CurrentAdmin',
+                    N'Active',
+                    @Now,
+                    @Now
+                );
+            END;
+
+            SELECT @RecipientEmail = Email
+            FROM dbo.AppUsers
+            WHERE TenantId = @TenantId
+              AND UserId = @ActorUserId
+              AND DeletedAtUtc IS NULL;
+
+            SELECT @NotificationRecipientId = NotificationRecipientId
+            FROM dbo.NotificationRecipients WITH (UPDLOCK, HOLDLOCK)
+            WHERE TenantId = @TenantId
+              AND NotificationEventId = @NotificationEventId
+              AND RecipientUserId = @ActorUserId;
+
+            IF @NotificationRecipientId IS NULL
+            BEGIN
+                SET @NotificationRecipientId = NEWID();
+
+                INSERT INTO dbo.NotificationRecipients
+                (
+                    NotificationRecipientId,
+                    TenantId,
+                    NotificationEventId,
+                    RecipientUserId,
+                    ReadAtUtc,
+                    CreatedAtUtc
+                )
+                VALUES
+                (
+                    @NotificationRecipientId,
+                    @TenantId,
+                    @NotificationEventId,
+                    @ActorUserId,
+                    NULL,
+                    @Now
+                );
+            END
+            ELSE
+            BEGIN
+                UPDATE dbo.NotificationRecipients
+                SET ReadAtUtc = NULL,
+                    CreatedAtUtc = @Now
+                WHERE NotificationRecipientId = @NotificationRecipientId;
+            END;
+
+            SELECT
+                @NotificationEventId AS EventId,
+                @NotificationRecipientId AS NotificationId,
+                COALESCE(@RecipientEmail, @ActorEmail) AS RecipientEmail,
+                @Now AS CreatedAtUtc;
+            """;
+
+        var target = await connection.QuerySingleAsync<AdminTestNotificationTargetRow>(
+            new CommandDefinition(
+                upsertSql,
+                new
+                {
+                    TenantId = tenantId,
+                    ActorUserId = actorUserId,
+                    ActorEmail = string.IsNullOrWhiteSpace(actorEmail) ? null : actorEmail.Trim(),
+                    EventCode = AdminTestNotificationEventCode
+                },
+                transaction,
+                cancellationToken: cancellationToken));
+
+        var notification = new RealtimeNotificationPayload(
+            target.NotificationId,
+            tenantId,
+            actorUserId,
+            title,
+            message,
+            "AdminNotificationTest",
+            target.NotificationId,
+            null,
+            Utc(target.CreatedAtUtc),
+            AdminTestNotificationEventCode);
+
+        var outboxId = Guid.NewGuid();
+        const string insertOutboxSql = """
+            INSERT INTO dbo.NotificationOutbox
+            (
+                NotificationOutboxId,
+                TenantId,
+                NotificationEventId,
+                NotificationTemplateId,
+                RecipientUserId,
+                RecipientEmail,
+                Channel,
+                PayloadJson,
+                Status,
+                AvailableAtUtc,
+                CreatedAtUtc,
+                UpdatedAtUtc
+            )
+            VALUES
+            (
+                @OutboxId,
+                @TenantId,
+                @EventId,
+                NULL,
+                @ActorUserId,
+                @RecipientEmail,
+                @Channel,
+                @PayloadJson,
+                N'Pending',
+                SYSUTCDATETIME(),
+                SYSUTCDATETIME(),
+                SYSUTCDATETIME()
+            );
+            """;
+
+        await connection.ExecuteAsync(new CommandDefinition(
+            insertOutboxSql,
+            new
+            {
+                OutboxId = outboxId,
+                TenantId = tenantId,
+                target.EventId,
+                ActorUserId = actorUserId,
+                target.RecipientEmail,
+                Channel = NotificationChannels.SignalR,
+                PayloadJson = JsonSerializer.Serialize(notification, NotificationPayloadJsonOptions)
+            },
+            transaction,
+            cancellationToken: cancellationToken));
+
+        var metadataJson = JsonSerializer.Serialize(new { action = "test_notification", outboxId, channel = NotificationChannels.SignalR });
+        await InsertAuditAsync(
+            connection,
+            transaction,
+            tenantId,
+            actorUserId,
+            "AdminTestNotificationQueued",
+            "NotificationRecipient",
+            target.NotificationId,
+            "Realtime notification test",
+            "Queued realtime notification test.",
+            "Admin Center",
+            metadataJson,
+            cancellationToken);
+
+        await transaction.CommitAsync(cancellationToken);
+        return new QueuedAdminTestNotification(outboxId, notification);
+    }
+
+    public async Task UpdateOutboxStatusAsync(
+        Guid tenantId,
+        Guid outboxId,
+        string status,
+        string? lastError,
+        CancellationToken cancellationToken)
+    {
+        const string sql = """
+            UPDATE dbo.NotificationOutbox
+            SET Status = @Status,
+                AttemptCount = CASE WHEN @Status = N'Failed' THEN AttemptCount + 1 ELSE AttemptCount END,
+                ProcessedAtUtc = CASE WHEN @Status = N'Sent' THEN SYSUTCDATETIME() ELSE ProcessedAtUtc END,
+                LastError = CASE WHEN @LastError IS NULL THEN NULL ELSE LEFT(@LastError, 1000) END,
+                UpdatedAtUtc = SYSUTCDATETIME()
+            WHERE TenantId = @TenantId
+              AND NotificationOutboxId = @OutboxId;
+            """;
+
+        await using var connection = _connectionFactory.CreateConnection();
+        await connection.ExecuteAsync(new CommandDefinition(
+            sql,
+            new { TenantId = tenantId, OutboxId = outboxId, Status = status, LastError = lastError },
+            cancellationToken: cancellationToken));
+    }
+
     public async Task<int> ProcessPendingAsync(int batchSize, CancellationToken cancellationToken)
     {
         const string sql = """
@@ -1900,6 +2123,7 @@ public sealed class DapperAdminCenterRepository :
     private sealed record NotificationEventRow(Guid EventId, string EventCode, string Name, string Recipient, string TemplateName, string LifecycleStatus, DateTime UpdatedAtUtc);
     private sealed record NotificationEventDetailsRow(Guid EventId, string EventCode, string Name, string Recipient, string LifecycleStatus);
     private sealed record NotificationTemplateRow(Guid TemplateId, string EventCode, string Name, string Recipient, string Subject, string Body, string AllowedVariablesJson, string LifecycleStatus, DateTime UpdatedAtUtc, Guid? UpdatedByUserId);
+    private sealed record AdminTestNotificationTargetRow(Guid EventId, Guid NotificationId, string? RecipientEmail, DateTime CreatedAtUtc);
     private sealed record AuditLogListRow(Guid Id, DateTime OccurredAtUtc, string ActorDisplayName, string EventSummary, string RecordLabel, string Area);
     private sealed record AuditLogDetailsRow(Guid Id, DateTime OccurredAtUtc, Guid? ActorUserId, string ActorDisplayName, string EventType, string EntityType, Guid? EntityId, string RecordLabel, string EventSummary, string Area, string MetadataJson);
 }

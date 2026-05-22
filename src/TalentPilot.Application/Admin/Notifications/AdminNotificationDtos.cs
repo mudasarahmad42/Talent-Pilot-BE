@@ -47,3 +47,27 @@ public sealed record NotificationTemplateSummary(
 public sealed record UpdateNotificationTemplateInput(string Subject, string Body);
 
 public sealed record UpdateNotificationEventStatusInput(string Status);
+
+public sealed record RealtimeNotificationPayload(
+    Guid Id,
+    Guid TenantId,
+    Guid RecipientUserId,
+    string Title,
+    string Message,
+    string EntityType,
+    Guid EntityId,
+    DateTimeOffset? ReadAt,
+    DateTimeOffset CreatedAt,
+    string EventCode);
+
+public sealed record AdminTestNotificationResponse(
+    string HubPath,
+    string ClientMethod,
+    string Channel,
+    string DeliveryStatus,
+    Guid OutboxId,
+    RealtimeNotificationPayload Notification);
+
+public sealed record QueuedAdminTestNotification(
+    Guid OutboxId,
+    RealtimeNotificationPayload Notification);

@@ -48,11 +48,35 @@ Keep this file aligned when controllers or frontend contracts change.
 - `GET /api/admin/ai-settings/runtime`
 - `GET /api/admin/ai-settings/agents`
 - `GET /api/admin/ai-settings/guardrails`
+- `GET /api/admin/integrations/status`
+  - Read-only MVP integration status for backend-owned Email outbox, SignalR/in-app notifications, Candidate Portal, LinkedIn mock publishing, DOCX resume parsing, and Ollama/Mock AI runtime.
+  - Does not expose paid provider setup, external credentials, or job board automation controls.
 - `GET /api/admin/audit-logs`
 - `GET /api/admin/audit-logs/{auditLogId}`
 
 ## Talent Pilot Internal Operations
 
+- `GET /api/job-requests`
+  - Lists job requests visible to the current internal user.
+- `POST /api/job-requests`
+  - Creates a Job Request, creates a PMO workflow assignment, and queues PMO notifications/outbox rows.
+- `GET /api/job-requests/{id}`
+- `GET /api/job-requests/{jobRequestId}/bench-matches`
+  - Returns primary available/benched internal employee matches with skills, availability/bench status, current allocation, and heuristic match score/explanation.
+- `GET /api/pmo/queue`
+  - Returns queue items with `assignment.assignedToGroupId` as a stable GUID and `assignment.assignedToGroupName` as display text. Frontend should not route by group display labels.
+- `POST /api/workflow-assignments/{assignmentId}/claim`
+- `POST /api/job-requests/{jobRequestId}/employee-referrals`
+  - PMO handoff to Presales/request owner for selected internal employees. Body: `{ "employeeIds": ["..."], "note": "optional" }`.
+  - Requires PMO workflow authorization plus bench-match visibility. Creates `JobRequestEmployeeReferrals`, audit activity, and notification outbox rows without creating candidate applications.
+- `GET /api/recruitment/queue`
+  - Returns Job Requests assigned to the Recruitment Team after PMO forwards them for sourcing.
+- `POST /api/job-requests/{jobRequestId}/forward-to-recruiter`
+  - Completes the current PMO assignment, moves the request to Recruiter Sourcing, creates the recruitment assignment, and queues Email/SignalR notifications for the recruitment group.
+- `GET /api/notifications`
+- `POST /api/notifications/{notificationId}/read`
+
+Legacy/internal aggregate routes:
 - `GET /api/talent-pilot/snapshot`
   - Dashboard, work lists, job request list, PMO queue, and notifications snapshot.
 - `GET /api/talent-pilot/job-requests/{entityId}/activity`

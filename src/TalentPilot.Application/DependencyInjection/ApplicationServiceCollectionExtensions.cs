@@ -1,7 +1,9 @@
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using TalentPilot.Application.Admin.AiSettings;
 using TalentPilot.Application.Admin.AuditLogs;
 using TalentPilot.Application.Admin.Groups;
+using TalentPilot.Application.Admin.Integrations;
 using TalentPilot.Application.Admin.Notifications;
 using TalentPilot.Application.Admin.Roles;
 using TalentPilot.Application.Admin.TenantProfiles;
@@ -22,8 +24,10 @@ public static class ApplicationServiceCollectionExtensions
         services.AddScoped<IAdminGroupsService, AdminGroupsService>();
         services.AddScoped<IAdminRolesService, AdminRolesService>();
         services.AddScoped<IAdminNotificationsService, AdminNotificationsService>();
+        services.TryAddScoped<INotificationRealtimePublisher, NoOpNotificationRealtimePublisher>();
         services.AddScoped<IAdminAuditLogService, AdminAuditLogService>();
         services.AddScoped<IAdminAiSettingsService, AdminAiSettingsService>();
+        services.AddScoped<IAdminIntegrationsService, AdminIntegrationsService>();
         services.AddScoped<IOperationsService, OperationsService>();
 
         return services;

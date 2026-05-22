@@ -2,6 +2,18 @@
 
 ## 2026-05-22 - Branch: contributor-guardrails-docs
 
+- Commit summary: pending commit for PMO bench matching and internal employee referral API slice.
+- Purpose: support PMO selecting available bench employees and handing referrals back to Presales/request owner.
+- Files touched: operations controller, operations DTOs/interfaces/service/scoring helper, Dapper and in-memory operations repositories, operations service tests, API surface docs.
+- Endpoints changed: added `GET /api/job-requests/{jobRequestId}/bench-matches` and `POST /api/job-requests/{jobRequestId}/employee-referrals`.
+- Schema changed: no new schema changes; existing employee, bench availability, referral, audit, notification recipient, and outbox tables are reused.
+- Seed/stored procedures changed: no.
+- Tests run: `dotnet test` passed with 17 tests.
+- Known risks: database runner was not executed because this slice did not add or change SQL scripts.
+- AI assistance: Codex implemented and reviewed the changes.
+
+## 2026-05-22 - Branch: contributor-guardrails-docs
+
 - Commit summary: pending commit for PMO-to-recruitment operations API slice.
 - Purpose: support the internal workflow handoff from PMO to the Recruitment Team.
 - Files touched: operations controller, operations DTOs/interfaces/service, Dapper and in-memory operations repositories, operations service tests, knowledge-base docs.

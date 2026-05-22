@@ -6,6 +6,7 @@ namespace TalentPilot.Api.Auth;
 public sealed class CurrentUserAccessor : ICurrentUserAccessor
 {
     private readonly IHttpContextAccessor _httpContextAccessor;
+    private static readonly StringComparer ClaimComparer = StringComparer.OrdinalIgnoreCase;
 
     public CurrentUserAccessor(IHttpContextAccessor httpContextAccessor)
     {
@@ -17,6 +18,10 @@ public sealed class CurrentUserAccessor : ICurrentUserAccessor
     public Guid TenantId => ReadGuidClaim("tenant_id");
 
     public string Email => _httpContextAccessor.HttpContext?.User.FindFirstValue(ClaimTypes.Email) ?? string.Empty;
+
+    public IReadOnlySet<string> RoleCodes => ReadClaimSet(ClaimTypes.Role);
+
+    public IReadOnlySet<string> Permissions => ReadClaimSet("permission");
 
     private Guid ReadGuidClaim(params string[] claimTypes)
     {
@@ -36,5 +41,19 @@ public sealed class CurrentUserAccessor : ICurrentUserAccessor
         }
 
         return Guid.Empty;
+    }
+
+    private IReadOnlySet<string> ReadClaimSet(string claimType)
+    {
+        var user = _httpContextAccessor.HttpContext?.User;
+        if (user is null)
+        {
+            return new HashSet<string>(ClaimComparer);
+        }
+
+        return user.FindAll(claimType)
+            .Select(claim => claim.Value)
+            .Where(value => !string.IsNullOrWhiteSpace(value))
+            .ToHashSet(ClaimComparer);
     }
 }

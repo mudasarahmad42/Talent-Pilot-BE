@@ -53,6 +53,7 @@ BEGIN
     SET
         AssignmentStatus = N'Claimed',
         ClaimedByUserId = @CurrentUserId,
+        AssignedToUserId = @CurrentUserId,
         ClaimedAtUtc = SYSUTCDATETIME()
     WHERE
         TenantId = @TenantId
@@ -70,6 +71,203 @@ BEGIN
     COMMIT TRANSACTION;
 
     SELECT CAST(1 AS BIT) AS Claimed, N'Assignment claimed.' AS Message;
+END;
+GO
+
+CREATE OR ALTER TRIGGER dbo.trg_WorkflowAssignments_NotifyPendingJobRequest
+ON dbo.WorkflowAssignments
+AFTER INSERT
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    ;WITH PendingJobRequestAssignments AS
+    (
+        SELECT
+            i.TenantId,
+            i.WorkflowAssignmentId,
+            i.EntityId AS JobRequestId,
+            i.AssignedToGroupId,
+            jr.Title,
+            creator.DisplayName AS RequesterName
+        FROM inserted AS i
+        INNER JOIN dbo.WorkflowTransitions AS wt
+            ON wt.WorkflowTransitionId = i.WorkflowTransitionId
+            AND wt.ActionKey = N'CREATE_BY_PRESALES'
+        INNER JOIN dbo.JobRequests AS jr
+            ON jr.TenantId = i.TenantId
+            AND jr.JobRequestId = i.EntityId
+        INNER JOIN dbo.AppUsers AS creator
+            ON creator.UserId = jr.CreatedByUserId
+        WHERE i.EntityType = N'JobRequest'
+          AND i.AssignmentStatus = N'Pending'
+          AND i.AssignedToGroupId IS NOT NULL
+    ),
+    Recipients AS
+    (
+        SELECT
+            pending.TenantId,
+            pending.WorkflowAssignmentId,
+            pending.JobRequestId,
+            pending.Title,
+            pending.RequesterName,
+            gm.UserId AS RecipientUserId,
+            recipient.Email AS RecipientEmail,
+            ne.NotificationEventId,
+            nt.NotificationTemplateId
+        FROM PendingJobRequestAssignments AS pending
+        INNER JOIN dbo.GroupMembers AS gm
+            ON gm.TenantId = pending.TenantId
+            AND gm.GroupId = pending.AssignedToGroupId
+        INNER JOIN dbo.AppUsers AS recipient
+            ON recipient.TenantId = gm.TenantId
+            AND recipient.UserId = gm.UserId
+            AND recipient.AccountStatus = N'Active'
+            AND recipient.DeletedAtUtc IS NULL
+        INNER JOIN dbo.NotificationEvents AS ne
+            ON ne.TenantId = pending.TenantId
+            AND ne.EventCode = N'PRESALES_REQUEST_SUBMITTED'
+            AND ne.Status = N'Active'
+        OUTER APPLY
+        (
+            SELECT TOP (1) activeTemplate.NotificationTemplateId
+            FROM dbo.NotificationTemplates AS activeTemplate
+            WHERE activeTemplate.TenantId = pending.TenantId
+              AND activeTemplate.NotificationEventId = ne.NotificationEventId
+              AND activeTemplate.Status = N'Active'
+            ORDER BY activeTemplate.Name
+        ) AS nt
+    )
+    INSERT INTO dbo.NotificationRecipients
+    (
+        NotificationRecipientId,
+        TenantId,
+        NotificationEventId,
+        RecipientUserId,
+        CreatedAtUtc
+    )
+    SELECT
+        NEWID(),
+        r.TenantId,
+        r.NotificationEventId,
+        r.RecipientUserId,
+        SYSUTCDATETIME()
+    FROM Recipients AS r
+    WHERE NOT EXISTS
+    (
+        SELECT 1
+        FROM dbo.NotificationRecipients AS existing
+        WHERE existing.NotificationEventId = r.NotificationEventId
+          AND existing.RecipientUserId = r.RecipientUserId
+    );
+
+    ;WITH PendingJobRequestAssignments AS
+    (
+        SELECT
+            i.TenantId,
+            i.WorkflowAssignmentId,
+            i.EntityId AS JobRequestId,
+            i.AssignedToGroupId,
+            jr.Title,
+            creator.DisplayName AS RequesterName
+        FROM inserted AS i
+        INNER JOIN dbo.WorkflowTransitions AS wt
+            ON wt.WorkflowTransitionId = i.WorkflowTransitionId
+            AND wt.ActionKey = N'CREATE_BY_PRESALES'
+        INNER JOIN dbo.JobRequests AS jr
+            ON jr.TenantId = i.TenantId
+            AND jr.JobRequestId = i.EntityId
+        INNER JOIN dbo.AppUsers AS creator
+            ON creator.UserId = jr.CreatedByUserId
+        WHERE i.EntityType = N'JobRequest'
+          AND i.AssignmentStatus = N'Pending'
+          AND i.AssignedToGroupId IS NOT NULL
+    ),
+    Recipients AS
+    (
+        SELECT
+            pending.TenantId,
+            pending.WorkflowAssignmentId,
+            pending.JobRequestId,
+            pending.Title,
+            pending.RequesterName,
+            gm.UserId AS RecipientUserId,
+            recipient.Email AS RecipientEmail,
+            ne.NotificationEventId,
+            nt.NotificationTemplateId
+        FROM PendingJobRequestAssignments AS pending
+        INNER JOIN dbo.GroupMembers AS gm
+            ON gm.TenantId = pending.TenantId
+            AND gm.GroupId = pending.AssignedToGroupId
+        INNER JOIN dbo.AppUsers AS recipient
+            ON recipient.TenantId = gm.TenantId
+            AND recipient.UserId = gm.UserId
+            AND recipient.AccountStatus = N'Active'
+            AND recipient.DeletedAtUtc IS NULL
+        INNER JOIN dbo.NotificationEvents AS ne
+            ON ne.TenantId = pending.TenantId
+            AND ne.EventCode = N'PRESALES_REQUEST_SUBMITTED'
+            AND ne.Status = N'Active'
+        OUTER APPLY
+        (
+            SELECT TOP (1) activeTemplate.NotificationTemplateId
+            FROM dbo.NotificationTemplates AS activeTemplate
+            WHERE activeTemplate.TenantId = pending.TenantId
+              AND activeTemplate.NotificationEventId = ne.NotificationEventId
+              AND activeTemplate.Status = N'Active'
+            ORDER BY activeTemplate.Name
+        ) AS nt
+    )
+    INSERT INTO dbo.NotificationOutbox
+    (
+        NotificationOutboxId,
+        TenantId,
+        NotificationEventId,
+        NotificationTemplateId,
+        RecipientUserId,
+        RecipientEmail,
+        Channel,
+        PayloadJson,
+        Status,
+        AttemptCount,
+        AvailableAtUtc,
+        CreatedAtUtc,
+        UpdatedAtUtc
+    )
+    SELECT
+        NEWID(),
+        r.TenantId,
+        r.NotificationEventId,
+        r.NotificationTemplateId,
+        r.RecipientUserId,
+        r.RecipientEmail,
+        N'SignalR',
+        CONCAT(
+            N'{"entityType":"JobRequest","entityId":"',
+            CONVERT(NVARCHAR(36), r.JobRequestId),
+            N'","assignmentId":"',
+            CONVERT(NVARCHAR(36), r.WorkflowAssignmentId),
+            N'","jobTitle":"',
+            STRING_ESCAPE(r.Title, 'json'),
+            N'","requesterName":"',
+            STRING_ESCAPE(r.RequesterName, 'json'),
+            N'"}'
+        ),
+        N'Pending',
+        0,
+        SYSUTCDATETIME(),
+        SYSUTCDATETIME(),
+        SYSUTCDATETIME()
+    FROM Recipients AS r
+    WHERE NOT EXISTS
+    (
+        SELECT 1
+        FROM dbo.NotificationOutbox AS existing
+        WHERE existing.TenantId = r.TenantId
+          AND JSON_VALUE(existing.PayloadJson, '$.assignmentId') = CONVERT(NVARCHAR(36), r.WorkflowAssignmentId)
+          AND existing.RecipientUserId = r.RecipientUserId
+          AND existing.NotificationEventId = r.NotificationEventId
+    );
 END;
 GO
 

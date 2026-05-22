@@ -239,9 +239,9 @@ USING (VALUES
 ON target.JobRequestId = source.JobRequestId
 WHEN MATCHED THEN UPDATE SET Title = source.Title, Description = source.Description, ClientName = source.ClientName, DepartmentId = source.DepartmentId, LocationId = source.LocationId,
     EmploymentType = source.EmploymentType, ExperienceMinYears = source.ExperienceMinYears, ExperienceMaxYears = source.ExperienceMaxYears, Priority = source.Priority,
-    RequiredPositions = source.RequiredPositions, FulfilledPositions = source.FulfilledPositions, Status = source.Status, PublishStatus = source.PublishStatus,
+    RequiredPositions = source.RequiredPositions, PublishStatus = source.PublishStatus,
     HiringManagerUserId = source.HiringManagerUserId, HiringManagerGroupId = source.HiringManagerGroupId, CreatedByUserId = source.CreatedByUserId,
-    CurrentStageKey = source.CurrentStageKey, PublishedAtUtc = source.PublishedAtUtc, UpdatedAtUtc = @Now
+    PublishedAtUtc = COALESCE(target.PublishedAtUtc, source.PublishedAtUtc), UpdatedAtUtc = @Now
 WHEN NOT MATCHED THEN INSERT (JobRequestId, TenantId, RequestCode, Title, Description, ClientName, DepartmentId, LocationId, EmploymentType, ExperienceMinYears, ExperienceMaxYears, Priority, RequiredPositions, FulfilledPositions, Status, PublishStatus, HiringManagerUserId, HiringManagerGroupId, CreatedByUserId, CurrentStageKey, PublishedAtUtc, CreatedAtUtc, UpdatedAtUtc)
 VALUES (source.JobRequestId, source.TenantId, source.RequestCode, source.Title, source.Description, source.ClientName, source.DepartmentId, source.LocationId, source.EmploymentType, source.ExperienceMinYears, source.ExperienceMaxYears, source.Priority, source.RequiredPositions, source.FulfilledPositions, source.Status, source.PublishStatus, source.HiringManagerUserId, source.HiringManagerGroupId, source.CreatedByUserId, source.CurrentStageKey, source.PublishedAtUtc, @Now, @Now);
 
@@ -359,13 +359,56 @@ USING (VALUES
     (@InitialAssignmentId, @TenantId, @WorkflowDefinitionId, @StagePmoReviewId, @TransitionCreateByPresalesId, N'JobRequest', @JobRequestId, NULL, @PmoGroupId, NULL, N'Pending', NULL, DATEADD(HOUR, -5, @Now), CAST(NULL AS DATETIME2(3)), CAST(NULL AS DATETIME2(3)))
 ) AS source (WorkflowAssignmentId, TenantId, WorkflowDefinitionId, WorkflowStageId, WorkflowTransitionId, EntityType, EntityId, AssignedToUserId, AssignedToGroupId, AssignedToRoleId, AssignmentStatus, ClaimedByUserId, AssignedAtUtc, ClaimedAtUtc, CompletedAtUtc)
 ON target.WorkflowAssignmentId = source.WorkflowAssignmentId
-WHEN MATCHED THEN UPDATE SET WorkflowStageId = source.WorkflowStageId, AssignmentStatus = source.AssignmentStatus
+WHEN MATCHED THEN UPDATE SET
+    WorkflowDefinitionId = source.WorkflowDefinitionId,
+    WorkflowStageId = source.WorkflowStageId,
+    WorkflowTransitionId = source.WorkflowTransitionId,
+    AssignedToGroupId = source.AssignedToGroupId
 WHEN NOT MATCHED THEN INSERT (WorkflowAssignmentId, TenantId, WorkflowDefinitionId, WorkflowStageId, WorkflowTransitionId, EntityType, EntityId, AssignedToUserId, AssignedToGroupId, AssignedToRoleId, AssignmentStatus, ClaimedByUserId, AssignedAtUtc, ClaimedAtUtc, CompletedAtUtc)
 VALUES (source.WorkflowAssignmentId, source.TenantId, source.WorkflowDefinitionId, source.WorkflowStageId, source.WorkflowTransitionId, source.EntityType, source.EntityId, source.AssignedToUserId, source.AssignedToGroupId, source.AssignedToRoleId, source.AssignmentStatus, source.ClaimedByUserId, source.AssignedAtUtc, source.ClaimedAtUtc, source.CompletedAtUtc);
 
 UPDATE dbo.JobRequests
 SET CurrentAssignmentId = @InitialAssignmentId
 WHERE TenantId = @TenantId AND JobRequestId = @JobRequestId;
+
+MERGE dbo.NotificationRecipients AS target
+USING (VALUES
+    ('11111111-aaaa-bbbb-cccc-000000000501', @TenantId, '55555555-5555-5555-5555-555555555501', @PmoUserId, CAST(NULL AS DATETIME2(3)))
+) AS source (NotificationRecipientId, TenantId, NotificationEventId, RecipientUserId, ReadAtUtc)
+ON target.TenantId = source.TenantId
+   AND target.NotificationEventId = source.NotificationEventId
+   AND target.RecipientUserId = source.RecipientUserId
+WHEN MATCHED THEN UPDATE SET ReadAtUtc = COALESCE(target.ReadAtUtc, source.ReadAtUtc)
+WHEN NOT MATCHED THEN INSERT (NotificationRecipientId, TenantId, NotificationEventId, RecipientUserId, ReadAtUtc, CreatedAtUtc)
+VALUES (source.NotificationRecipientId, source.TenantId, source.NotificationEventId, source.RecipientUserId, source.ReadAtUtc, @Now);
+
+MERGE dbo.NotificationOutbox AS target
+USING (VALUES
+    (
+        '11111111-aaaa-bbbb-cccc-000000000601',
+        @TenantId,
+        '55555555-5555-5555-5555-555555555501',
+        '66666666-6666-6666-6666-666666666601',
+        @PmoUserId,
+        N'pmo@tkxel.com',
+        N'SignalR',
+        CONCAT(N'{"entityType":"JobRequest","entityId":"', CONVERT(NVARCHAR(36), @JobRequestId), N'","assignmentId":"', CONVERT(NVARCHAR(36), @InitialAssignmentId), N'","jobTitle":"Senior .NET Engineer","requesterName":"Ahmed Raza"}'),
+        N'Pending',
+        0,
+        @Now
+    )
+) AS source (NotificationOutboxId, TenantId, NotificationEventId, NotificationTemplateId, RecipientUserId, RecipientEmail, Channel, PayloadJson, Status, AttemptCount, AvailableAtUtc)
+ON target.NotificationOutboxId = source.NotificationOutboxId
+WHEN MATCHED THEN UPDATE SET
+    NotificationEventId = source.NotificationEventId,
+    NotificationTemplateId = source.NotificationTemplateId,
+    RecipientUserId = source.RecipientUserId,
+    RecipientEmail = source.RecipientEmail,
+    Channel = source.Channel,
+    PayloadJson = source.PayloadJson,
+    UpdatedAtUtc = @Now
+WHEN NOT MATCHED THEN INSERT (NotificationOutboxId, TenantId, NotificationEventId, NotificationTemplateId, RecipientUserId, RecipientEmail, Channel, PayloadJson, Status, AttemptCount, AvailableAtUtc, CreatedAtUtc, UpdatedAtUtc)
+VALUES (source.NotificationOutboxId, source.TenantId, source.NotificationEventId, source.NotificationTemplateId, source.RecipientUserId, source.RecipientEmail, source.Channel, source.PayloadJson, source.Status, source.AttemptCount, source.AvailableAtUtc, @Now, @Now);
 
 MERGE dbo.InterviewTemplates AS target
 USING (VALUES (@InterviewTemplateId, @TenantId, @EngineeringDepartmentId, N'Senior Software Engineer Interview', N'Fixed MVP template used by recruiter when creating a job post.', N'Active'))

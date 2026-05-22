@@ -5,6 +5,7 @@ using TalentPilot.Application.Admin.Roles;
 using TalentPilot.Application.Admin.TenantProfiles;
 using TalentPilot.Application.Admin.Users;
 using TalentPilot.Application.Auth;
+using TalentPilot.Application.Operations;
 using TalentPilot.Common.Time;
 using TalentPilot.Domain.Access;
 using TalentPilot.Domain.Tenancy;
@@ -20,10 +21,12 @@ public sealed class InMemoryTalentPilotRepository :
     IAdminRolesRepository,
     IAdminNotificationsRepository,
     IAdminAuditLogRepository,
+    IOperationsRepository,
     INotificationOutboxProcessor
 {
     private static readonly Guid TenantId = Guid.Parse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa");
     private static readonly Guid SystemActorId = Guid.Parse("00000000-0000-0000-0000-000000000001");
+    private const string AdminTestNotificationEventCode = "ADMIN_TEST_NOTIFICATION";
 
     private readonly object _gate = new();
     private readonly IClock _clock;
@@ -37,6 +40,11 @@ public sealed class InMemoryTalentPilotRepository :
     private readonly List<NotificationTemplateState> _notificationTemplates = [];
     private readonly List<OutboxState> _outbox = [];
     private readonly List<AuditLogState> _auditLogs = [];
+    private readonly List<OperationsJobRequest> _jobRequests = [];
+    private readonly List<OperationsWorkflowAssignment> _workflowAssignments = [];
+    private readonly List<OperationsNotification> _operationNotifications = [];
+    private readonly List<EmployeeState> _employees = [];
+    private readonly List<EmployeeReferralState> _employeeReferrals = [];
 
     private PermissionResolutionMode _permissionResolutionMode = PermissionResolutionMode.MergeAllAssignedRoles;
     private Guid _benchVisibilityRoleId;
@@ -69,6 +77,7 @@ public sealed class InMemoryTalentPilotRepository :
         SeedRoles();
         SeedGroups();
         SeedUsers();
+        SeedEmployees();
         SeedNotifications();
         SeedAuditLogs();
     }
@@ -217,6 +226,483 @@ public sealed class InMemoryTalentPilotRepository :
                     ExpiresAtUtc = token.ExpiresAtUtc,
                     RevokedAtUtc = revokedAtUtc
                 });
+            }
+        }
+
+        return Task.CompletedTask;
+    }
+
+    public Task<OperationsSnapshot> GetSnapshotAsync(Guid tenantId, Guid userId, CancellationToken cancellationToken)
+    {
+        lock (_gate)
+        {
+            return Task.FromResult(new OperationsSnapshot(
+                _users.Where(user => user.TenantId == tenantId && user.AccountStatus == "Active").Select(ToOperationsPerson).ToArray(),
+                _jobRequests.ToArray(),
+                _workflowAssignments.ToArray(),
+                _operationNotifications.Where(notification => notification.RecipientUserId == userId).ToArray()));
+        }
+    }
+
+    public Task<IReadOnlyList<OperationsActivityEvent>> GetActivityAsync(
+        Guid tenantId,
+        Guid entityId,
+        CancellationToken cancellationToken)
+    {
+        lock (_gate)
+        {
+            var events = _auditLogs
+                .Where(log => log.TenantId == tenantId && log.EntityId == entityId)
+                .OrderByDescending(log => log.OccurredAtUtc)
+                .Select(log => new OperationsActivityEvent(
+                    log.AuditLogId,
+                    entityId,
+                    log.ActorDisplayName,
+                    log.EventType,
+                    log.EventSummary,
+                    log.OccurredAtUtc))
+                .ToArray();
+
+            return Task.FromResult<IReadOnlyList<OperationsActivityEvent>>(events);
+        }
+    }
+
+    public Task<OperationsJobRequest?> GetJobRequestAsync(
+        Guid tenantId,
+        Guid userId,
+        Guid jobRequestId,
+        bool canViewAll,
+        CancellationToken cancellationToken)
+    {
+        lock (_gate)
+        {
+            return Task.FromResult(_jobRequests.FirstOrDefault(request => request.Id == jobRequestId));
+        }
+    }
+
+    public Task<IReadOnlyList<OperationsPmoQueueItem>> GetPmoQueueAsync(
+        Guid tenantId,
+        Guid userId,
+        bool includeTenantAdminFallback,
+        CancellationToken cancellationToken)
+    {
+        lock (_gate)
+        {
+            var userGroupIds = _users.FirstOrDefault(user => user.TenantId == tenantId && user.UserId == userId)?.GroupIds ?? [];
+            var items = _workflowAssignments
+                .Where(assignment =>
+                    (assignment.Status == "Pending" || assignment.Status == "Claimed") &&
+                    assignment.Stage == "PMO Review" &&
+                    (includeTenantAdminFallback ||
+                     assignment.AssignedToUserId == userId ||
+                     assignment.ClaimedByUserId == userId ||
+                     (assignment.AssignedToGroupId.HasValue && userGroupIds.Contains(assignment.AssignedToGroupId.Value))))
+                .Join(
+                    _jobRequests,
+                    assignment => assignment.EntityId,
+                    request => request.Id,
+                    (assignment, request) => new OperationsPmoQueueItem(assignment, request))
+                .ToArray();
+
+            return Task.FromResult<IReadOnlyList<OperationsPmoQueueItem>>(items);
+        }
+    }
+
+    public Task<IReadOnlyList<OperationsRecruitmentQueueItem>> GetRecruitmentQueueAsync(
+        Guid tenantId,
+        Guid userId,
+        bool includeTenantAdminFallback,
+        CancellationToken cancellationToken)
+    {
+        lock (_gate)
+        {
+            var userGroupIds = _users.FirstOrDefault(user => user.TenantId == tenantId && user.UserId == userId)?.GroupIds ?? [];
+            var items = _workflowAssignments
+                .Where(assignment =>
+                    (assignment.Status == "Pending" || assignment.Status == "Claimed") &&
+                    assignment.Stage == "Recruiter Sourcing" &&
+                    (includeTenantAdminFallback ||
+                     assignment.AssignedToUserId == userId ||
+                     assignment.ClaimedByUserId == userId ||
+                     (assignment.AssignedToGroupId.HasValue && userGroupIds.Contains(assignment.AssignedToGroupId.Value))))
+                .Join(
+                    _jobRequests,
+                    assignment => assignment.EntityId,
+                    request => request.Id,
+                    (assignment, request) => new OperationsRecruitmentQueueItem(assignment, request, CandidateCount: 0))
+                .ToArray();
+
+            return Task.FromResult<IReadOnlyList<OperationsRecruitmentQueueItem>>(items);
+        }
+    }
+
+    public Task<IReadOnlyList<OperationsBenchMatch>> GetBenchMatchesAsync(
+        Guid tenantId,
+        Guid userId,
+        Guid jobRequestId,
+        bool canViewAll,
+        CancellationToken cancellationToken)
+    {
+        lock (_gate)
+        {
+            var jobRequest = _jobRequests.FirstOrDefault(request => request.Id == jobRequestId && request.Stage != "Closed");
+            if (jobRequest is null)
+            {
+                return Task.FromResult<IReadOnlyList<OperationsBenchMatch>>([]);
+            }
+
+            var matches = _employees
+                .Where(employee =>
+                    employee.TenantId == tenantId &&
+                    employee.Status == "Active" &&
+                    employee.AvailabilityStatus == "Available" &&
+                    employee.BenchStatus == "Benched" &&
+                    employee.CurrentAllocationPercent == 0)
+                .Select(employee => ToBenchMatch(employee, jobRequest.Skills))
+                .OrderByDescending(match => match.MatchScore)
+                .ThenBy(match => match.DisplayName, StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+
+            return Task.FromResult<IReadOnlyList<OperationsBenchMatch>>(matches);
+        }
+    }
+
+    public Task<IReadOnlyList<OperationsNotification>> ListNotificationsAsync(
+        Guid tenantId,
+        Guid userId,
+        CancellationToken cancellationToken)
+    {
+        lock (_gate)
+        {
+            return Task.FromResult<IReadOnlyList<OperationsNotification>>(
+                _operationNotifications
+                    .Where(notification => notification.RecipientUserId == userId)
+                    .OrderByDescending(notification => notification.CreatedAt)
+                    .ToArray());
+        }
+    }
+
+    public Task<CreateOperationsJobRequestResult> CreateJobRequestAsync(
+        Guid tenantId,
+        Guid actorUserId,
+        CreateOperationsJobRequestInput input,
+        CancellationToken cancellationToken)
+    {
+        lock (_gate)
+        {
+            var now = _clock.UtcNow;
+            var requestId = Guid.NewGuid();
+            var assignmentId = Guid.NewGuid();
+            var pmoGroup = _groups.First(group => group.TenantId == tenantId && group.Name.Contains("PMO", StringComparison.OrdinalIgnoreCase));
+            var requestCode = $"TP-REQ-{_jobRequests.Count + 1:000}";
+
+            var request = new OperationsJobRequest(
+                requestId,
+                requestCode,
+                input.Title.Trim(),
+                input.Client.Trim(),
+                input.Description.Trim(),
+                input.Department.Trim(),
+                input.Skills.Select(skill => skill.Trim()).Where(skill => skill.Length > 0).Distinct(StringComparer.OrdinalIgnoreCase).ToArray(),
+                input.Experience.Trim(),
+                input.Location.Trim(),
+                input.RequiredPositions,
+                0,
+                string.IsNullOrWhiteSpace(input.Priority) ? "Medium" : input.Priority.Trim(),
+                input.HiringManagerId,
+                actorUserId,
+                "PMO Review",
+                null,
+                pmoGroup.Name,
+                "NotPublished",
+                now);
+
+            var assignment = new OperationsWorkflowAssignment(
+                assignmentId,
+                "JobRequest",
+                requestId,
+                "PMO Review",
+                pmoGroup.GroupId,
+                pmoGroup.Name,
+                null,
+                null,
+                "Pending",
+                now);
+
+            _jobRequests.Add(request);
+            _workflowAssignments.Add(assignment);
+
+            var pmoUsers = _users.Where(user => user.TenantId == tenantId && user.GroupIds.Contains(pmoGroup.GroupId) && user.AccountStatus == "Active").ToArray();
+            foreach (var pmoUser in pmoUsers)
+            {
+                _operationNotifications.Add(new OperationsNotification(
+                    Guid.NewGuid(),
+                    pmoUser.UserId,
+                    "Presales request submitted",
+                    $"{requestCode} is ready for PMO review.",
+                    "WorkflowAssignment",
+                    assignmentId,
+                    null,
+                    now));
+
+                _outbox.Add(new OutboxState(Guid.NewGuid(), tenantId, "PRESALES_REQUEST_SUBMITTED", "Pending", now, null));
+            }
+
+            AddAudit(actorUserId, "job_request.created", "JobRequest", requestId, requestCode, $"{requestCode} was created and routed to PMO review.", "Talent Pilot App", "{}");
+            return Task.FromResult(new CreateOperationsJobRequestResult(request, assignment));
+        }
+    }
+
+    public Task<ForwardToRecruiterResult?> ForwardToRecruiterAsync(
+        Guid tenantId,
+        Guid actorUserId,
+        Guid jobRequestId,
+        bool includeTenantAdminFallback,
+        CancellationToken cancellationToken)
+    {
+        lock (_gate)
+        {
+            var request = _jobRequests.FirstOrDefault(item =>
+                item.Id == jobRequestId &&
+                item.Stage is "PMO Review" or "Bench Matching");
+            if (request is null)
+            {
+                return Task.FromResult<ForwardToRecruiterResult?>(null);
+            }
+
+            var currentAssignment = _workflowAssignments.FirstOrDefault(item =>
+                item.EntityType == "JobRequest" &&
+                item.EntityId == jobRequestId &&
+                item.Status != "Completed");
+
+            var actor = _users.FirstOrDefault(user => user.TenantId == tenantId && user.UserId == actorUserId);
+            var isGroupMember = actor is not null &&
+                currentAssignment?.AssignedToGroupId is Guid groupId &&
+                actor.GroupIds.Contains(groupId);
+            var isOwner = currentAssignment?.AssignedToUserId == actorUserId ||
+                currentAssignment?.ClaimedByUserId == actorUserId;
+
+            if (!includeTenantAdminFallback && !isOwner && !isGroupMember)
+            {
+                return Task.FromResult<ForwardToRecruiterResult?>(null);
+            }
+
+            var now = _clock.UtcNow;
+            var recruitmentGroup = _groups.First(group =>
+                group.TenantId == tenantId &&
+                group.Name.Contains("Recruit", StringComparison.OrdinalIgnoreCase));
+            var assignment = new OperationsWorkflowAssignment(
+                Guid.NewGuid(),
+                "JobRequest",
+                request.Id,
+                "Recruiter Sourcing",
+                recruitmentGroup.GroupId,
+                recruitmentGroup.Name,
+                null,
+                null,
+                "Pending",
+                now);
+
+            if (currentAssignment is not null)
+            {
+                _workflowAssignments.Remove(currentAssignment);
+                _workflowAssignments.Add(currentAssignment with { Status = "Completed" });
+            }
+
+            _workflowAssignments.Add(assignment);
+            _jobRequests.Remove(request);
+            var updatedRequest = request with
+            {
+                Stage = "Recruiter Sourcing",
+                OwnerId = null,
+                OwnerGroupId = recruitmentGroup.Name
+            };
+            _jobRequests.Add(updatedRequest);
+
+            foreach (var recruiter in _users.Where(user => user.TenantId == tenantId && user.GroupIds.Contains(recruitmentGroup.GroupId) && user.AccountStatus == "Active"))
+            {
+                _operationNotifications.Add(new OperationsNotification(
+                    Guid.NewGuid(),
+                    recruiter.UserId,
+                    "PMO forwarded to recruiting",
+                    $"{request.Code} is ready for recruiter sourcing.",
+                    "WorkflowAssignment",
+                    assignment.Id,
+                    null,
+                    now));
+            }
+
+            _outbox.Add(new OutboxState(Guid.NewGuid(), tenantId, "PMO_FORWARDED_TO_RECRUITING", "Pending", now, null));
+            AddAudit(actorUserId, "job_request.forwarded_to_recruiter", "JobRequest", request.Id, request.Code, $"{request.Code} was forwarded to the recruitment queue.", "Talent Pilot App", "{}");
+
+            return Task.FromResult<ForwardToRecruiterResult?>(new ForwardToRecruiterResult(updatedRequest, assignment, CandidateCount: 0));
+        }
+    }
+
+    public Task<CreateInternalResourceReferralResult?> CreateInternalResourceReferralAsync(
+        Guid tenantId,
+        Guid actorUserId,
+        Guid jobRequestId,
+        CreateInternalResourceReferralInput input,
+        bool includeTenantAdminFallback,
+        CancellationToken cancellationToken)
+    {
+        lock (_gate)
+        {
+            var request = _jobRequests.FirstOrDefault(item => item.Id == jobRequestId && item.Stage != "Closed");
+            if (request is null)
+            {
+                return Task.FromResult<CreateInternalResourceReferralResult?>(null);
+            }
+
+            var currentAssignment = _workflowAssignments.FirstOrDefault(item =>
+                item.EntityType == "JobRequest" &&
+                item.EntityId == jobRequestId &&
+                item.Status != "Completed");
+
+            var actor = _users.FirstOrDefault(user => user.TenantId == tenantId && user.UserId == actorUserId);
+            var isGroupMember = actor is not null &&
+                currentAssignment?.AssignedToGroupId is Guid groupId &&
+                actor.GroupIds.Contains(groupId);
+            var isOwner = currentAssignment?.AssignedToUserId == actorUserId ||
+                currentAssignment?.ClaimedByUserId == actorUserId;
+
+            if (!includeTenantAdminFallback && !isOwner && !isGroupMember)
+            {
+                return Task.FromResult<CreateInternalResourceReferralResult?>(null);
+            }
+
+            var selectedEmployeeIds = input.EmployeeIds.Distinct().ToArray();
+            var matches = GetBenchMatchesForJob(tenantId, request)
+                .Where(match => selectedEmployeeIds.Contains(match.EmployeeId))
+                .OrderByDescending(match => match.MatchScore)
+                .ThenBy(match => match.DisplayName, StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+
+            if (matches.Length != selectedEmployeeIds.Length)
+            {
+                return Task.FromResult<CreateInternalResourceReferralResult?>(null);
+            }
+
+            var now = _clock.UtcNow;
+            var referrals = new List<InternalEmployeeReferral>(matches.Length);
+
+            foreach (var match in matches)
+            {
+                var existing = _employeeReferrals.FirstOrDefault(referral =>
+                    referral.TenantId == tenantId &&
+                    referral.JobRequestId == request.Id &&
+                    referral.EmployeeId == match.EmployeeId &&
+                    referral.Status == "Referred");
+
+                if (existing is null)
+                {
+                    existing = new EmployeeReferralState
+                    {
+                        ReferralId = Guid.NewGuid(),
+                        TenantId = tenantId,
+                        JobRequestId = request.Id,
+                        EmployeeId = match.EmployeeId,
+                        EmployeeName = match.DisplayName,
+                        EmployeeEmail = match.Email,
+                        Status = "Referred",
+                        FitScore = match.MatchScore,
+                        RecommendationSummary = BuildReferralSummary(match, input.Note),
+                        ReferredByUserId = actorUserId,
+                        PresalesUserId = request.CreatedById,
+                        CreatedAtUtc = now
+                    };
+                    _employeeReferrals.Add(existing);
+                }
+
+                referrals.Add(ToInternalEmployeeReferral(existing));
+            }
+
+            _operationNotifications.Add(new OperationsNotification(
+                Guid.NewGuid(),
+                request.CreatedById,
+                "Internal resource referred",
+                $"{string.Join(", ", referrals.Select(referral => referral.EmployeeName))} referred for {request.Code}.",
+                "JobRequest",
+                request.Id,
+                null,
+                now));
+
+            _outbox.Add(new OutboxState(Guid.NewGuid(), tenantId, "PMO_EMPLOYEE_REFERRED", "Pending", now, null));
+            AddAudit(actorUserId, "job_request.employee_referred", "JobRequest", request.Id, request.Code, $"{request.Code} referred {referrals.Count} internal employee(s) to Presales.", "Workflow", "{}");
+
+            return Task.FromResult<CreateInternalResourceReferralResult?>(new CreateInternalResourceReferralResult(request, referrals));
+        }
+    }
+
+    public Task<bool> ClaimAssignmentAsync(Guid tenantId, Guid actorUserId, Guid assignmentId, CancellationToken cancellationToken)
+    {
+        lock (_gate)
+        {
+            var assignment = _workflowAssignments.FirstOrDefault(item => item.Id == assignmentId && item.Status == "Pending");
+            if (assignment is null)
+            {
+                return Task.FromResult(false);
+            }
+
+            var actor = _users.FirstOrDefault(user => user.TenantId == tenantId && user.UserId == actorUserId);
+            var isTenantAdmin = actor is not null && _roles.Any(role =>
+                actor.RoleIds.Contains(role.RoleId) &&
+                string.Equals(role.Code, AccessConstants.TenantAdminRoleCode, StringComparison.OrdinalIgnoreCase));
+            var isGroupMember = actor is not null &&
+                assignment.AssignedToGroupId.HasValue &&
+                actor.GroupIds.Contains(assignment.AssignedToGroupId.Value);
+
+            if (!isTenantAdmin && assignment.AssignedToUserId != actorUserId && !isGroupMember)
+            {
+                return Task.FromResult(false);
+            }
+
+            _workflowAssignments.Remove(assignment);
+            _workflowAssignments.Add(assignment with
+            {
+                AssignedToUserId = actorUserId,
+                ClaimedByUserId = actorUserId,
+                Status = "Claimed"
+            });
+
+            var request = _jobRequests.FirstOrDefault(item => item.Id == assignment.EntityId);
+            if (request is not null)
+            {
+                _jobRequests.Remove(request);
+                _jobRequests.Add(request with { Stage = "Bench Matching", OwnerId = actorUserId });
+            }
+
+            _outbox.Add(new OutboxState(Guid.NewGuid(), tenantId, "WORKFLOW_ASSIGNMENT_CLAIMED", "Pending", _clock.UtcNow, null));
+            return Task.FromResult(true);
+        }
+    }
+
+    public Task<bool> MarkNotificationReadAsync(Guid tenantId, Guid userId, Guid notificationId, CancellationToken cancellationToken)
+    {
+        lock (_gate)
+        {
+            var notification = _operationNotifications.FirstOrDefault(item => item.Id == notificationId && item.RecipientUserId == userId);
+            if (notification is null)
+            {
+                return Task.FromResult(false);
+            }
+
+            _operationNotifications.Remove(notification);
+            _operationNotifications.Add(notification with { ReadAt = notification.ReadAt ?? _clock.UtcNow });
+            return Task.FromResult(true);
+        }
+    }
+
+    public Task MarkAllNotificationsReadAsync(Guid tenantId, Guid userId, CancellationToken cancellationToken)
+    {
+        lock (_gate)
+        {
+            var unread = _operationNotifications.Where(item => item.RecipientUserId == userId && item.ReadAt is null).ToArray();
+            foreach (var notification in unread)
+            {
+                _operationNotifications.Remove(notification);
+                _operationNotifications.Add(notification with { ReadAt = _clock.UtcNow });
             }
         }
 
@@ -848,6 +1334,88 @@ public sealed class InMemoryTalentPilotRepository :
         return Task.CompletedTask;
     }
 
+    public Task<QueuedAdminTestNotification> QueueTestNotificationAsync(
+        Guid tenantId,
+        Guid actorUserId,
+        string actorEmail,
+        string title,
+        string message,
+        CancellationToken cancellationToken)
+    {
+        lock (_gate)
+        {
+            var now = _clock.UtcNow;
+            var testEvent = _notificationEvents.FirstOrDefault(item =>
+                item.TenantId == tenantId &&
+                item.EventCode.Equals(AdminTestNotificationEventCode, StringComparison.OrdinalIgnoreCase));
+
+            if (testEvent is null)
+            {
+                testEvent = new NotificationEventState(
+                    Guid.NewGuid(),
+                    tenantId,
+                    AdminTestNotificationEventCode,
+                    "Admin test notification",
+                    "User:CurrentAdmin",
+                    "Active",
+                    now);
+                _notificationEvents.Add(testEvent);
+            }
+
+            var notificationId = Guid.NewGuid();
+            _operationNotifications.Add(new OperationsNotification(
+                notificationId,
+                actorUserId,
+                title,
+                message,
+                "AdminNotificationTest",
+                notificationId,
+                null,
+                now));
+
+            var outboxId = Guid.NewGuid();
+            _outbox.Add(new OutboxState(outboxId, tenantId, AdminTestNotificationEventCode, "Pending", now, null));
+            AddAudit(actorUserId, "AdminTestNotificationQueued", "NotificationRecipient", notificationId, "Realtime notification test", "Queued realtime notification test.", "Admin Center", "{}");
+
+            var notification = new RealtimeNotificationPayload(
+                notificationId,
+                tenantId,
+                actorUserId,
+                title,
+                message,
+                "AdminNotificationTest",
+                notificationId,
+                null,
+                now,
+                AdminTestNotificationEventCode);
+
+            return Task.FromResult(new QueuedAdminTestNotification(outboxId, notification));
+        }
+    }
+
+    public Task UpdateOutboxStatusAsync(
+        Guid tenantId,
+        Guid outboxId,
+        string status,
+        string? lastError,
+        CancellationToken cancellationToken)
+    {
+        lock (_gate)
+        {
+            var item = _outbox.FirstOrDefault(item => item.TenantId == tenantId && item.OutboxId == outboxId);
+            if (item is not null)
+            {
+                item.Status = status;
+                if (string.Equals(status, "Sent", StringComparison.OrdinalIgnoreCase))
+                {
+                    item.ProcessedAtUtc = _clock.UtcNow;
+                }
+            }
+        }
+
+        return Task.CompletedTask;
+    }
+
     public Task<int> ProcessPendingAsync(int batchSize, CancellationToken cancellationToken)
     {
         lock (_gate)
@@ -1027,10 +1595,57 @@ public sealed class InMemoryTalentPilotRepository :
         AddUser("88888888-8888-8888-8888-888888888888", "Ayesha Khan", "ayesha.khan@example.com", [candidate], [], "Candidate", _clock.UtcNow.AddDays(-2));
     }
 
+    private void SeedEmployees()
+    {
+        var allocatedUser = _users.FirstOrDefault(user => string.Equals(user.Email, "interviewer@tkxel.com", StringComparison.OrdinalIgnoreCase));
+        if (allocatedUser is not null)
+        {
+            _employees.Add(new EmployeeState
+            {
+                EmployeeId = allocatedUser.UserId,
+                TenantId = TenantId,
+                EmployeeCode = "EMP-000",
+                DisplayName = allocatedUser.DisplayName,
+                Email = allocatedUser.Email,
+                Designation = "Senior Software Engineer",
+                Department = allocatedUser.DepartmentName,
+                Location = "Karachi",
+                Skills = ["C#", "Azure"],
+                Status = allocatedUser.AccountStatus,
+                AvailabilityStatus = "Allocated",
+                BenchStatus = "Allocated",
+                CurrentAllocationPercent = 100
+            });
+        }
+
+        var benchUser = _users.FirstOrDefault(user => string.Equals(user.Email, "employee@tkxel.com", StringComparison.OrdinalIgnoreCase));
+        if (benchUser is null)
+        {
+            return;
+        }
+
+        _employees.Add(new EmployeeState
+        {
+            EmployeeId = benchUser.UserId,
+            TenantId = TenantId,
+            EmployeeCode = "EMP-001",
+            DisplayName = benchUser.DisplayName,
+            Email = benchUser.Email,
+            Designation = "Software Engineer",
+            Department = benchUser.DepartmentName,
+            Location = "Karachi",
+            Skills = ["C#", "SQL Server", "Angular", "Talent Acquisition"],
+            Status = benchUser.AccountStatus,
+            AvailabilityStatus = "Available",
+            BenchStatus = "Benched",
+            CurrentAllocationPercent = 0
+        });
+    }
+
     private void SeedNotifications()
     {
         AddNotification("CREATE_BY_PRESALES", "New request assigned", "PMO Group", "New request assigned", "A resource request is ready for PMO review.", ["requestTitle", "createdBy"]);
-        AddNotification("REFER_INTERNAL_RESOURCE", "Resource referred", "Presales owner", "Resource referred", "PMO referred an internal employee.", ["requestTitle", "employeeName"]);
+        AddNotification("PMO_EMPLOYEE_REFERRED", "Resource referred", "Presales owner", "Resource referred", "PMO referred an internal employee.", ["requestTitle", "employeeName"]);
         AddNotification("CANDIDATE_INVITED", "Candidate invite", "Candidate", "Candidate invite", "You have been invited to apply for a Talent Pilot job.", ["jobTitle", "inviteUrl"]);
         AddNotification("INTERVIEW_SCHEDULED", "Interview scheduled", "Interviewer and candidate", "Interview scheduled", "An interview has been scheduled.", ["candidateName", "scheduledAt"]);
         AddNotification("HIRING_MANAGER_REVIEW_ASSIGNED", "Hiring Manager review assigned", "Hiring Manager", "Candidate ready for final review", "Interview feedback is ready for your review.", ["candidateName", "jobTitle"]);
@@ -1205,6 +1820,78 @@ public sealed class InMemoryTalentPilotRepository :
             user.UpdatedAtUtc);
     }
 
+    private OperationsPerson ToOperationsPerson(UserState user)
+    {
+        var roles = _roles.Where(role => user.RoleIds.Contains(role.RoleId)).OrderBy(role => role.Priority).ToArray();
+        return new OperationsPerson(
+            user.UserId,
+            user.DisplayName,
+            user.Email,
+            roles.Select(role => role.Code).ToArray(),
+            roles.Select(role => role.Name).ToArray());
+    }
+
+    private OperationsBenchMatch[] GetBenchMatchesForJob(Guid tenantId, OperationsJobRequest jobRequest)
+    {
+        return _employees
+            .Where(employee =>
+                employee.TenantId == tenantId &&
+                employee.Status == "Active" &&
+                employee.AvailabilityStatus == "Available" &&
+                employee.BenchStatus == "Benched" &&
+                employee.CurrentAllocationPercent == 0)
+            .Select(employee => ToBenchMatch(employee, jobRequest.Skills))
+            .OrderByDescending(match => match.MatchScore)
+            .ThenBy(match => match.DisplayName, StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+    }
+
+    private static OperationsBenchMatch ToBenchMatch(EmployeeState employee, IReadOnlyCollection<string> requiredSkills)
+    {
+        var skills = employee.Skills.Count == 0 ? new[] { "Generalist" } : employee.Skills.ToArray();
+        var matchScore = OperationsBenchMatchScoring.CalculateScore(requiredSkills, skills);
+        var explanation = OperationsBenchMatchScoring.BuildExplanation(requiredSkills, skills, employee.CurrentAllocationPercent);
+
+        return new OperationsBenchMatch(
+            employee.EmployeeId,
+            employee.EmployeeCode,
+            employee.DisplayName,
+            employee.Email,
+            employee.Designation,
+            employee.Department,
+            employee.Location,
+            skills,
+            employee.AvailabilityStatus,
+            employee.BenchStatus,
+            employee.CurrentAllocationPercent,
+            matchScore,
+            explanation);
+    }
+
+    private static string BuildReferralSummary(OperationsBenchMatch match, string? note)
+    {
+        var trimmedNote = string.IsNullOrWhiteSpace(note) ? null : note.Trim();
+        return trimmedNote is null
+            ? match.MatchExplanation
+            : $"{match.MatchExplanation} Note: {trimmedNote}";
+    }
+
+    private static InternalEmployeeReferral ToInternalEmployeeReferral(EmployeeReferralState referral)
+    {
+        return new InternalEmployeeReferral(
+            referral.ReferralId,
+            referral.JobRequestId,
+            referral.EmployeeId,
+            referral.EmployeeName,
+            referral.EmployeeEmail,
+            referral.Status,
+            referral.FitScore,
+            referral.RecommendationSummary,
+            referral.ReferredByUserId,
+            referral.PresalesUserId,
+            referral.CreatedAtUtc);
+    }
+
     private AdminUserDetails ToUserDetails(UserState user)
     {
         return new AdminUserDetails(
@@ -1374,6 +2061,39 @@ public sealed class InMemoryTalentPilotRepository :
         public DateTimeOffset? LastActiveAtUtc { get; set; }
         public DateTimeOffset CreatedAtUtc { get; init; }
         public DateTimeOffset UpdatedAtUtc { get; set; }
+    }
+
+    private sealed class EmployeeState
+    {
+        public Guid EmployeeId { get; init; }
+        public Guid TenantId { get; init; }
+        public string EmployeeCode { get; init; } = string.Empty;
+        public string DisplayName { get; init; } = string.Empty;
+        public string Email { get; init; } = string.Empty;
+        public string? Designation { get; init; }
+        public string Department { get; init; } = string.Empty;
+        public string Location { get; init; } = string.Empty;
+        public List<string> Skills { get; init; } = [];
+        public string Status { get; init; } = string.Empty;
+        public string AvailabilityStatus { get; init; } = string.Empty;
+        public string BenchStatus { get; init; } = string.Empty;
+        public int CurrentAllocationPercent { get; init; }
+    }
+
+    private sealed class EmployeeReferralState
+    {
+        public Guid ReferralId { get; init; }
+        public Guid TenantId { get; init; }
+        public Guid JobRequestId { get; init; }
+        public Guid EmployeeId { get; init; }
+        public string EmployeeName { get; init; } = string.Empty;
+        public string EmployeeEmail { get; init; } = string.Empty;
+        public string Status { get; init; } = string.Empty;
+        public int FitScore { get; init; }
+        public string RecommendationSummary { get; init; } = string.Empty;
+        public Guid ReferredByUserId { get; init; }
+        public Guid? PresalesUserId { get; init; }
+        public DateTimeOffset CreatedAtUtc { get; init; }
     }
 
     private sealed class GroupState

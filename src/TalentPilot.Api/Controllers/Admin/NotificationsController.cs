@@ -44,6 +44,12 @@ public sealed class NotificationsController : ApiControllerBase
         return FromResult(await _service.ListTemplatesAsync(cancellationToken));
     }
 
+    [HttpPost("test")]
+    public async Task<ActionResult<AdminTestNotificationResponse>> SendTest(CancellationToken cancellationToken)
+    {
+        return FromResult(await _service.SendTestNotificationAsync(cancellationToken));
+    }
+
     [HttpPut("templates/{templateId:guid}")]
     public async Task<ActionResult<NotificationTemplateSummary>> UpdateTemplate(
         Guid templateId,

@@ -26,6 +26,7 @@ DECLARE @CandidateUserId UNIQUEIDENTIFIER = '33333333-3333-3333-3333-33333333330
 DECLARE @PmoGroupId UNIQUEIDENTIFIER = '44444444-4444-4444-4444-444444444401';
 DECLARE @RecruitingGroupId UNIQUEIDENTIFIER = '44444444-4444-4444-4444-444444444402';
 DECLARE @InterviewPanelGroupId UNIQUEIDENTIFIER = '44444444-4444-4444-4444-444444444403';
+DECLARE @DemoPasswordHash NVARCHAR(500) = N'$2a$11$1rAtSdH5kQ8Md5cxRM5IIefOuJg0ax/EYiaCoXCL443RPe4v5/VJK'; -- password: demo
 
 MERGE dbo.Tenants AS target
 USING (VALUES
@@ -124,13 +125,13 @@ WHEN NOT MATCHED THEN
 
 MERGE dbo.AppUsers AS target
 USING (VALUES
-    (@TenantAdminUserId, @TenantId, N'Mudasar Ahmad', N'admin@tkxel.com', N'admin@tkxel.com', N'MA', N'Active', DATEADD(DAY, -1, @Now)),
-    (@PresalesUserId, @TenantId, N'Ahmed Raza', N'presales@tkxel.com', N'presales@tkxel.com', N'AR', N'Active', NULL),
-    (@PmoUserId, @TenantId, N'Ali Khan', N'pmo@tkxel.com', N'pmo@tkxel.com', N'AK', N'Active', NULL),
-    (@RecruiterUserId, @TenantId, N'Sara Malik', N'recruiter@tkxel.com', N'recruiter@tkxel.com', N'SM', N'Active', NULL),
-    (@InterviewerUserId, @TenantId, N'Bilal Hussain', N'interviewer@tkxel.com', N'interviewer@tkxel.com', N'BH', N'Active', NULL),
-    (@HiringManagerUserId, @TenantId, N'Fatima Noor', N'hiring.manager@tkxel.com', N'hiring.manager@tkxel.com', N'FN', N'Active', NULL),
-    (@CandidateUserId, @TenantId, N'Ayesha Khan', N'ayesha.khan@example.com', N'ayesha.khan@example.com', N'AK', N'Active', NULL)
+    (@TenantAdminUserId, @TenantId, N'Mudasar Ahmad', N'admin@tkxel.com', N'ADMIN@TKXEL.COM', N'MA', N'Active', DATEADD(DAY, -1, @Now)),
+    (@PresalesUserId, @TenantId, N'Ahmed Raza', N'presales@tkxel.com', N'PRESALES@TKXEL.COM', N'AR', N'Active', NULL),
+    (@PmoUserId, @TenantId, N'Ali Khan', N'pmo@tkxel.com', N'PMO@TKXEL.COM', N'AK', N'Active', NULL),
+    (@RecruiterUserId, @TenantId, N'Sara Malik', N'recruiter@tkxel.com', N'RECRUITER@TKXEL.COM', N'SM', N'Active', NULL),
+    (@InterviewerUserId, @TenantId, N'Bilal Hussain', N'interviewer@tkxel.com', N'INTERVIEWER@TKXEL.COM', N'BH', N'Active', NULL),
+    (@HiringManagerUserId, @TenantId, N'Fatima Noor', N'hiring.manager@tkxel.com', N'HIRING.MANAGER@TKXEL.COM', N'FN', N'Active', NULL),
+    (@CandidateUserId, @TenantId, N'Ayesha Khan', N'ayesha.khan@example.com', N'AYESHA.KHAN@EXAMPLE.COM', N'AK', N'Active', NULL)
 ) AS source (UserId, TenantId, DisplayName, Email, EmailNormalized, Initials, AccountStatus, LastActiveAtUtc)
 ON target.UserId = source.UserId
 WHEN MATCHED THEN
@@ -150,13 +151,13 @@ WHEN NOT MATCHED THEN
 
 MERGE dbo.UserCredentials AS target
 USING (VALUES
-    ('77777777-7777-7777-7777-777777777301', @TenantId, @TenantAdminUserId, CAST(NULL AS NVARCHAR(500))),
-    ('77777777-7777-7777-7777-777777777302', @TenantId, @PresalesUserId, CAST(NULL AS NVARCHAR(500))),
-    ('77777777-7777-7777-7777-777777777303', @TenantId, @PmoUserId, CAST(NULL AS NVARCHAR(500))),
-    ('77777777-7777-7777-7777-777777777304', @TenantId, @RecruiterUserId, CAST(NULL AS NVARCHAR(500))),
-    ('77777777-7777-7777-7777-777777777305', @TenantId, @InterviewerUserId, CAST(NULL AS NVARCHAR(500))),
-    ('77777777-7777-7777-7777-777777777306', @TenantId, @HiringManagerUserId, CAST(NULL AS NVARCHAR(500))),
-    ('77777777-7777-7777-7777-777777777307', @TenantId, @CandidateUserId, CAST(NULL AS NVARCHAR(500)))
+    ('77777777-7777-7777-7777-777777777301', @TenantId, @TenantAdminUserId, @DemoPasswordHash),
+    ('77777777-7777-7777-7777-777777777302', @TenantId, @PresalesUserId, @DemoPasswordHash),
+    ('77777777-7777-7777-7777-777777777303', @TenantId, @PmoUserId, @DemoPasswordHash),
+    ('77777777-7777-7777-7777-777777777304', @TenantId, @RecruiterUserId, @DemoPasswordHash),
+    ('77777777-7777-7777-7777-777777777305', @TenantId, @InterviewerUserId, @DemoPasswordHash),
+    ('77777777-7777-7777-7777-777777777306', @TenantId, @HiringManagerUserId, @DemoPasswordHash),
+    ('77777777-7777-7777-7777-777777777307', @TenantId, @CandidateUserId, @DemoPasswordHash)
 ) AS source (UserCredentialId, TenantId, UserId, PasswordHash)
 ON target.UserCredentialId = source.UserCredentialId
 WHEN MATCHED THEN
@@ -164,10 +165,11 @@ WHEN MATCHED THEN
         TenantId = source.TenantId,
         UserId = source.UserId,
         PasswordHash = source.PasswordHash,
+        PasswordUpdatedAtUtc = COALESCE(target.PasswordUpdatedAtUtc, @Now),
         UpdatedAtUtc = @Now
 WHEN NOT MATCHED THEN
-    INSERT (UserCredentialId, TenantId, UserId, PasswordHash, CreatedAtUtc, UpdatedAtUtc)
-    VALUES (source.UserCredentialId, source.TenantId, source.UserId, source.PasswordHash, @Now, @Now);
+    INSERT (UserCredentialId, TenantId, UserId, PasswordHash, PasswordUpdatedAtUtc, CreatedAtUtc, UpdatedAtUtc)
+    VALUES (source.UserCredentialId, source.TenantId, source.UserId, source.PasswordHash, @Now, @Now, @Now);
 
 MERGE dbo.UserRoles AS target
 USING (VALUES

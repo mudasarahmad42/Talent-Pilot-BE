@@ -13,13 +13,13 @@ The broader design discussion lives in `../Database/Schema` and `../How workflow
 - `scripts/schema/003_create_views.sql`
   - public jobs, active workflow assignments, dashboard summaries, bench availability.
 - `scripts/seed/001_seed_initial_data.sql`
-  - TKXEL tenant, demo users, roles, permissions, groups, notifications, AI agents.
+  - TKXEL tenant, demo users with BCrypt `demo` password hashes, roles, permissions, groups, notifications, AI agents.
 - `scripts/seed/002_seed_domain_reference_data.sql`
   - departments, locations, skills, employees, candidate/application sample data, workflow routing, interview template, AI runtime.
 - `scripts/stored-procedures/001_user_procedures.sql`
   - user context, admin user list/detail/update procedures.
 - `scripts/stored-procedures/002_workflow_and_candidate_procedures.sql`
-  - workflow assignment claim and candidate re-apply checks.
+  - workflow assignment claim, PMO assignment notification trigger, and candidate re-apply checks.
 
 ## Schema Domains And Why They Exist
 
@@ -66,15 +66,16 @@ The broader design discussion lives in `../Database/Schema` and `../How workflow
 - Permission conflict behavior is stored in tenant access policies.
 - Bulk role assignment writes role rows plus `RoleAssignmentBatches` for auditability.
 - Candidate invite tokens store hashes only, never raw tokens.
+- Demo internal and candidate users are seeded with uppercase `EmailNormalized` values and a BCrypt hash for shared password `demo`.
 - Re-apply checks use final decision timestamp plus configured cooldown.
 - Notification delivery is code-owned. Schema stores events, recipients, templates, and outbox work.
-- Vector embeddings must always be tenant-filtered and model/dimension-aware.
+- Vector embeddings must always be tenant-filtered and model/dimension-aware. `VectorEmbeddings` is created only on SQL Server major version 17 or later because it uses native `VECTOR(768)`.
 
 ## SQL Safety Rules
 
 - Scripts must be idempotent.
 - Prefer additive changes.
-- Prefer `CREATE OR ALTER PROCEDURE`.
+- Prefer `CREATE OR ALTER PROCEDURE` and `CREATE OR ALTER TRIGGER`.
 - Do not drop seeded MVP data without explicit approval.
 - Keep seed data separate from schema.
 - Keep stored procedures separate from seed files.

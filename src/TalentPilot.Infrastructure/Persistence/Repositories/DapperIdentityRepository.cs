@@ -75,7 +75,7 @@ public sealed class DapperIdentityRepository : IIdentityRepository
                 c.PasswordHash
             FROM dbo.AppUsers AS u
             LEFT JOIN dbo.UserCredentials AS c ON c.UserId = u.UserId
-            WHERE u.EmailNormalized = UPPER(@Email)
+            WHERE UPPER(COALESCE(u.EmailNormalized, u.Email)) = UPPER(@Email)
               AND u.DeletedAtUtc IS NULL;
             """;
 

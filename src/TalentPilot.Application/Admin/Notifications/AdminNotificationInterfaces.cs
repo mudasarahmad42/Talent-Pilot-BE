@@ -13,6 +13,8 @@ public interface IAdminNotificationsService
     Task<Result<NotificationTemplateSummary>> UpdateTemplateAsync(Guid templateId, UpdateNotificationTemplateInput input, CancellationToken cancellationToken);
 
     Task<Result> UpdateEventStatusAsync(Guid eventId, UpdateNotificationEventStatusInput input, CancellationToken cancellationToken);
+
+    Task<Result<AdminTestNotificationResponse>> SendTestNotificationAsync(CancellationToken cancellationToken);
 }
 
 public interface IAdminNotificationsRepository
@@ -28,9 +30,18 @@ public interface IAdminNotificationsRepository
     Task UpdateTemplateAsync(Guid tenantId, Guid actorUserId, Guid templateId, UpdateNotificationTemplateInput input, string metadataJson, CancellationToken cancellationToken);
 
     Task UpdateEventStatusAsync(Guid tenantId, Guid actorUserId, Guid eventId, string status, string metadataJson, CancellationToken cancellationToken);
+
+    Task<QueuedAdminTestNotification> QueueTestNotificationAsync(Guid tenantId, Guid actorUserId, string actorEmail, string title, string message, CancellationToken cancellationToken);
+
+    Task UpdateOutboxStatusAsync(Guid tenantId, Guid outboxId, string status, string? lastError, CancellationToken cancellationToken);
 }
 
 public interface INotificationOutboxProcessor
 {
     Task<int> ProcessPendingAsync(int batchSize, CancellationToken cancellationToken);
+}
+
+public interface INotificationRealtimePublisher
+{
+    Task PublishToUserAsync(RealtimeNotificationPayload notification, CancellationToken cancellationToken);
 }

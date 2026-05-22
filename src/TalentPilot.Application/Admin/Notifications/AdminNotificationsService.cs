@@ -2,6 +2,7 @@ using System.Text.Json;
 using System.Text.RegularExpressions;
 using TalentPilot.Application.Abstractions;
 using TalentPilot.Common.Results;
+using TalentPilot.Domain.Notifications;
 
 namespace TalentPilot.Application.Admin.Notifications;
 
@@ -9,14 +10,23 @@ public sealed class AdminNotificationsService : IAdminNotificationsService
 {
     private static readonly Regex TemplateVariablePattern = new("{{\\s*([a-zA-Z][a-zA-Z0-9_]*)\\s*}}", RegexOptions.Compiled);
     private static readonly string[] ValidStatuses = ["Active", "Inactive"];
+    private const string TestNotificationTitle = "Talent Pilot notification test";
+    private const string TestNotificationMessage = "Your realtime in-app notifications are connected.";
+    private const string TestNotificationHubPath = "/hubs/notifications";
+    private const string NotificationReceivedClientMethod = "NotificationReceived";
 
     private readonly IAdminNotificationsRepository _repository;
     private readonly ICurrentUserAccessor _currentUser;
+    private readonly INotificationRealtimePublisher _realtimePublisher;
 
-    public AdminNotificationsService(IAdminNotificationsRepository repository, ICurrentUserAccessor currentUser)
+    public AdminNotificationsService(
+        IAdminNotificationsRepository repository,
+        ICurrentUserAccessor currentUser,
+        INotificationRealtimePublisher realtimePublisher)
     {
         _repository = repository;
         _currentUser = currentUser;
+        _realtimePublisher = realtimePublisher;
     }
 
     public async Task<Result<AdminNotificationEventsResponse>> ListEventsAsync(
@@ -101,6 +111,49 @@ public sealed class AdminNotificationsService : IAdminNotificationsService
         var metadataJson = JsonSerializer.Serialize(new { action = "event_status", eventId, input.Status });
         await _repository.UpdateEventStatusAsync(_currentUser.TenantId, _currentUser.UserId, eventId, input.Status, metadataJson, cancellationToken);
         return Result.Success();
+    }
+
+    public async Task<Result<AdminTestNotificationResponse>> SendTestNotificationAsync(CancellationToken cancellationToken)
+    {
+        if (_currentUser.TenantId == Guid.Empty || _currentUser.UserId == Guid.Empty)
+        {
+            return Result<AdminTestNotificationResponse>.Failure(
+                "notifications.current_user_missing",
+                "Current user context is required to send a test notification.");
+        }
+
+        var queued = await _repository.QueueTestNotificationAsync(
+            _currentUser.TenantId,
+            _currentUser.UserId,
+            _currentUser.Email,
+            TestNotificationTitle,
+            TestNotificationMessage,
+            cancellationToken);
+
+        try
+        {
+            await _realtimePublisher.PublishToUserAsync(queued.Notification, cancellationToken);
+            await _repository.UpdateOutboxStatusAsync(_currentUser.TenantId, queued.OutboxId, "Sent", null, cancellationToken);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            await _repository.UpdateOutboxStatusAsync(_currentUser.TenantId, queued.OutboxId, "Failed", ex.Message, cancellationToken);
+            return Result<AdminTestNotificationResponse>.Failure(
+                "notifications.test_delivery_failed",
+                "Test notification was queued but realtime delivery failed.");
+        }
+
+        return Result<AdminTestNotificationResponse>.Success(new AdminTestNotificationResponse(
+            TestNotificationHubPath,
+            NotificationReceivedClientMethod,
+            NotificationChannels.SignalR,
+            "Sent",
+            queued.OutboxId,
+            queued.Notification));
     }
 
     private static IEnumerable<string> ExtractVariables(string template)

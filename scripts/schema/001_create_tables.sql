@@ -379,7 +379,9 @@ END;
 GO
 
 IF OBJECT_ID(N'dbo.VectorEmbeddings', N'U') IS NULL
+   AND TRY_CONVERT(INT, SERVERPROPERTY('ProductMajorVersion')) >= 17
 BEGIN
+    EXEC(N'
     CREATE TABLE dbo.VectorEmbeddings
     (
         VectorEmbeddingId UNIQUEIDENTIFIER NOT NULL CONSTRAINT PK_VectorEmbeddings PRIMARY KEY,
@@ -396,7 +398,7 @@ BEGIN
         UpdatedAtUtc DATETIME2(3) NULL,
         CONSTRAINT FK_VectorEmbeddings_Tenants FOREIGN KEY (TenantId) REFERENCES dbo.Tenants (TenantId),
         CONSTRAINT CK_VectorEmbeddings_EmbeddingDimensions CHECK (EmbeddingDimensions = 768)
-    );
+    );');
 END;
 GO
 
@@ -432,10 +434,12 @@ IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'IX_AiAgentRuns_Tenant_So
     CREATE INDEX IX_AiAgentRuns_Tenant_Source ON dbo.AiAgentRuns (TenantId, SourceEntityType, SourceEntityId, StartedAtUtc DESC);
 GO
 
-IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'IX_VectorEmbeddings_Tenant_Entity' AND object_id = OBJECT_ID(N'dbo.VectorEmbeddings'))
+IF OBJECT_ID(N'dbo.VectorEmbeddings', N'U') IS NOT NULL
+   AND NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'IX_VectorEmbeddings_Tenant_Entity' AND object_id = OBJECT_ID(N'dbo.VectorEmbeddings'))
     CREATE INDEX IX_VectorEmbeddings_Tenant_Entity ON dbo.VectorEmbeddings (TenantId, EntityType, EntityId, IsActive);
 GO
 
-IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'IX_VectorEmbeddings_Model' AND object_id = OBJECT_ID(N'dbo.VectorEmbeddings'))
+IF OBJECT_ID(N'dbo.VectorEmbeddings', N'U') IS NOT NULL
+   AND NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'IX_VectorEmbeddings_Model' AND object_id = OBJECT_ID(N'dbo.VectorEmbeddings'))
     CREATE INDEX IX_VectorEmbeddings_Model ON dbo.VectorEmbeddings (TenantId, EmbeddingModel, EmbeddingDimensions, IsActive);
 GO

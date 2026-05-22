@@ -3,7 +3,9 @@ using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.IdentityModel.Tokens;
 using TalentPilot.Api.Auth;
+using TalentPilot.Api.Realtime;
 using TalentPilot.Application.Abstractions;
+using TalentPilot.Application.Admin.Notifications;
 using TalentPilot.Application.DependencyInjection;
 using TalentPilot.Infrastructure.Auth;
 using TalentPilot.Infrastructure.DependencyInjection;
@@ -14,7 +16,9 @@ builder.Services.AddHttpContextAccessor();
 builder.Services.AddScoped<ICurrentUserAccessor, CurrentUserAccessor>();
 builder.Services.AddApplicationServices();
 builder.Services.AddInfrastructureServices(builder.Configuration);
+builder.Services.AddScoped<INotificationRealtimePublisher, SignalRNotificationRealtimePublisher>();
 builder.Services.AddControllers();
+builder.Services.AddSignalR();
 builder.Services.AddEndpointsApiExplorer();
 
 builder.Services.AddCors(options =>
@@ -24,7 +28,8 @@ builder.Services.AddCors(options =>
         policy
             .WithOrigins("http://localhost:4200", "http://127.0.0.1:4200")
             .AllowAnyHeader()
-            .AllowAnyMethod();
+            .AllowAnyMethod()
+            .AllowCredentials();
     });
 });
 
@@ -49,6 +54,20 @@ builder.Services
             ValidateLifetime = true,
             ClockSkew = TimeSpan.FromMinutes(1)
         };
+        options.Events = new JwtBearerEvents
+        {
+            OnMessageReceived = context =>
+            {
+                var accessToken = context.Request.Query["access_token"].ToString();
+                if (!string.IsNullOrWhiteSpace(accessToken) &&
+                    context.HttpContext.Request.Path.StartsWithSegments("/hubs/notifications"))
+                {
+                    context.Token = accessToken;
+                }
+
+                return Task.CompletedTask;
+            }
+        };
     });
 
 builder.Services.AddAuthorization(options =>
@@ -72,5 +91,6 @@ app.MapGet("/health", () => Results.Ok(new
 })).AllowAnonymous();
 
 app.MapControllers();
+app.MapHub<NotificationsHub>("/hubs/notifications").RequireAuthorization();
 
 app.Run();
