@@ -1,0 +1,19 @@
+#!/bin/sh
+
+protected_branch="main"
+
+while read local_ref local_sha remote_ref remote_sha
+do
+  if [ "$remote_ref" = "refs/heads/$protected_branch" ]; then
+    current_user="$(git config user.name)"
+
+    if [ "$current_user" != "Mudasar Ahmad" ]; then
+      echo "Direct push to '$protected_branch' is blocked."
+      echo "Create a feature branch and open a pull request instead."
+      echo "Only the code owner, Mudasar Ahmad, may push directly to '$protected_branch'."
+      exit 1
+    fi
+  fi
+done
+
+exit 0

@@ -70,6 +70,7 @@ scripts/
 ## Backend Guardrails
 
 - Keep business behavior auditable.
+- AI agents must read `AGENTS.md` before editing backend, worker, test, or SQL files.
 - Store all persisted timestamps as UTC `DATETIME2(3)` values.
 - Return ISO UTC timestamps to the frontend.
 - Keep tenant-scoped tables keyed by `TenantId`.
@@ -78,6 +79,7 @@ scripts/
 - AI recommendations are advisory only; humans make final PMO, recruiter, interviewer, and hiring-manager decisions.
 - Keep workflow handoffs separate from candidate interview pipeline stages.
 - Do not expose schema notes, endpoint names, or internal technical labels in product UI responses.
+- Follow `SECURITY_GUIDELINES.md` before changing authentication, authorization, SQL, file upload, background workers, integrations, or AI runtime code.
 
 ## Local Database
 
@@ -102,6 +104,29 @@ git clone https://github.com/mudasarahmad42/Talent-Pilot-BE.git
 cd Talent-Pilot-BE
 dotnet restore
 ```
+
+## Branch And PR Policy
+
+- Do not work directly on `main`.
+- Only the code owner, Mudasar Ahmad, is allowed to commit or push directly to `main`.
+- Every contributor, including AI-assisted contributors, must create a separate branch and open a pull request into `main`.
+- GitHub branch protection should block direct pushes to `main` for everyone except the code owner.
+- This repo includes `.githooks/pre-push`; run `git config core.hooksPath .githooks` after cloning to block accidental local pushes to `main`.
+- Use descriptive branch names such as `feature/workflow-claim-api`, `fix/auth-token-refresh`, `schema/job-request-fulfillment`, or `docs/contributor-guardrails`.
+- Keep pull requests focused. Do not mix unrelated schema, API, worker, test, and documentation changes in one PR unless they are required for the same feature.
+- PRs must include validation notes, endpoints changed, SQL scripts changed, files touched, and any known migration/runtime risks.
+- Do not merge your own PR unless you are the code owner or have explicit approval from the code owner.
+- If an AI tool generated or edited code, the contributor remains responsible for reviewing, testing, and documenting the changes.
+- See `CONTRIBUTING.md` for branch protection, PR, and merge-conflict rules.
+
+## Contributor Logs
+
+- Each contributor must add or update a personal README under `contributors/<contributor-name>/README.md`.
+- The contributor README should be 10-20 lines per work session.
+- Include session date, branch name, commit summary, files touched, endpoints changed, schema changes, seed changes, stored procedures changed, tests run, and known risks.
+- If backend changes affect the frontend, link the related frontend PR or document the dependency clearly.
+- Contributors who are non-technical or AI-assisted should use `contributors/README.md` as the template.
+- Missing contributor logs are a PR review issue.
 
 PowerShell environment variable example:
 
@@ -184,6 +209,7 @@ If the API is running and locks build outputs, stop the API before running a ful
 - `api/admin/access-policies/*`
 - `api/admin/notifications/*`
 - `api/admin/ai-settings/*`
+- `api/admin/integrations/status`
 - `api/admin/audit-logs`
 - `api/talent-pilot/*`
 
@@ -225,6 +251,7 @@ Read these before changing backend behavior:
 - `knowledge-base/business-rules.md`
 - `knowledge-base/database-schema.md`
 - `knowledge-base/implemented-vs-planned.md`
+- `CONTRIBUTING.md`
 
 ## Production Readiness Notes
 
@@ -242,4 +269,5 @@ Read these before changing backend behavior:
 - Run `dotnet test`.
 - Run the database script runner if schema, seed, or stored procedure files changed.
 - Update `knowledge-base/` when changing endpoints, schema, workflow behavior, auth, permissions, notifications, or persistence.
+- Update your contributor log in `contributors/<contributor-name>/README.md`.
 - Do not commit `bin`, `obj`, `TestResults`, logs, local secrets, local appsettings files, or real connection strings.
