@@ -2,11 +2,21 @@
 
 This repository uses a protected-main workflow. Contributors must work from feature branches and open pull requests into `main`.
 
+## Push Policy
+
+- Contributors must not push automatically after generating or editing code.
+- A push is allowed only when Mudasar Ahmad or the current user explicitly asks for it in the active session.
+- When a push is requested, push only the contributor's own branch.
+- Never push directly to `main`.
+- Never push unrelated files, another contributor's work, local build outputs, secrets, or temporary files.
+- AI-assisted contributors must summarize what will be pushed before pushing when the branch contains mixed or dirty work.
+
 ## Main Branch Protection
 
 - Do not push directly to `main`.
 - Only the code owner, Mudasar Ahmad, may make direct changes to `main`.
-- All contributors, including AI-assisted contributors, must create a branch and open a pull request.
+- All contributors, including AI-assisted contributors, must create their own branch and open a pull request.
+- Contributors should not share branches unless the code owner explicitly coordinates that work.
 - Pull requests must pass backend validation before merge.
 - Pull requests must include a contributor log update under `contributors/<contributor-name>/README.md`.
 - Direct pushes to `main` should be blocked in GitHub branch protection settings.
@@ -42,13 +52,14 @@ git config core.hooksPath .githooks
 
 ## Branch Naming
 
-Use short, descriptive branches:
+Use short, descriptive branches that identify the owner or workstream:
 
 ```text
-feature/workflow-claim-api
-schema/job-request-fulfillment
-fix/auth-refresh-token
-docs/agent-guardrails
+mudasar/workflow-claim-api
+feature/<contributor-name>/workflow-claim-api
+schema/<contributor-name>/job-request-fulfillment
+fix/<contributor-name>/auth-refresh-token
+docs/<contributor-name>/agent-guardrails
 ```
 
 Avoid vague branch names such as `changes`, `fixes`, `new-work`, or `agent-output`.

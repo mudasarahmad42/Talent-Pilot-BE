@@ -109,10 +109,12 @@ dotnet restore
 
 - Do not work directly on `main`.
 - Only the code owner, Mudasar Ahmad, is allowed to commit or push directly to `main`.
-- Every contributor, including AI-assisted contributors, must create a separate branch and open a pull request into `main`.
+- Every contributor, including AI-assisted contributors, must create their own separate branch and open a pull request into `main`.
+- Contributors and AI agents must not push automatically after making changes; push only when Mudasar Ahmad or the current user explicitly asks for it.
+- When a push is explicitly requested, push only the contributor's own branch and only the files that belong to the requested task.
 - GitHub branch protection should block direct pushes to `main` for everyone except the code owner.
 - This repo includes `.githooks/pre-push`; run `git config core.hooksPath .githooks` after cloning to block accidental local pushes to `main`.
-- Use descriptive branch names such as `feature/workflow-claim-api`, `fix/auth-token-refresh`, `schema/job-request-fulfillment`, or `docs/contributor-guardrails`.
+- Use descriptive owner-aware branch names such as `feature/<contributor-name>/workflow-claim-api`, `fix/<contributor-name>/auth-token-refresh`, `schema/<contributor-name>/job-request-fulfillment`, or `docs/<contributor-name>/contributor-guardrails`.
 - Keep pull requests focused. Do not mix unrelated schema, API, worker, test, and documentation changes in one PR unless they are required for the same feature.
 - PRs must include validation notes, endpoints changed, SQL scripts changed, files touched, and any known migration/runtime risks.
 - Do not merge your own PR unless you are the code owner or have explicit approval from the code owner.

@@ -8,6 +8,14 @@ contributors/<contributor-name>/README.md
 
 Use 10-20 lines per work session. Keep it factual and reviewable.
 
+## Branch And Push Rules
+
+- Each contributor must use their own branch.
+- Do not work directly on `main`.
+- Do not push automatically after a coding or documentation session.
+- Push only when Mudasar Ahmad or the current user explicitly asks for a push.
+- If the working tree contains mixed changes, stage and push only the files that belong to the current requested task.
+
 ## Required Format
 
 ```text
