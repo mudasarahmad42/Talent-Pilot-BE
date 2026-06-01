@@ -105,6 +105,8 @@ Then ask the code owner or coordinating contributor for help.
 
 - Each AI agent must be assigned an explicit file/folder scope.
 - AI agents must read `AGENTS.md`, `SECURITY_GUIDELINES.md`, and this file before editing.
+- AI agents must follow SOLID principles pragmatically while avoiding unnecessary abstractions or overengineered designs.
+- Backend changes must preserve layer boundaries: thin controllers, focused application services, repository-owned persistence, and explicit DTO contracts.
 - AI agents must not overwrite unrelated user or agent work.
 - AI agents must report files changed, tests run, SQL scripts changed, and unresolved risks.
 - Contributors are responsible for reviewing AI-generated code before opening a PR.

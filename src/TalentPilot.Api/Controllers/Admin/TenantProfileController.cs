@@ -4,7 +4,7 @@ using TalentPilot.Application.Admin.TenantProfiles;
 namespace TalentPilot.Api.Controllers.Admin;
 
 [Route("api/admin/tenant-profile")]
-public sealed class TenantProfileController : ApiControllerBase
+public sealed class TenantProfileController : AdminApiControllerBase
 {
     private readonly IAdminTenantProfileService _service;
 

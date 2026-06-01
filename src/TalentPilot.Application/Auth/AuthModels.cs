@@ -4,8 +4,6 @@ namespace TalentPilot.Application.Auth;
 
 public sealed class AuthRuntimeOptions
 {
-    public bool AllowDemoCardLogin { get; init; }
-
     public int AccessTokenMinutes { get; init; } = 60;
 
     public int RefreshTokenDays { get; init; } = 7;

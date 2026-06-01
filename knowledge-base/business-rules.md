@@ -1,11 +1,16 @@
 # Business Rules
 
+Canonical business source of truth: [../../../TALENT_PILOT_SOURCE_OF_TRUTH.md](../../../TALENT_PILOT_SOURCE_OF_TRUTH.md)
+
 - Job Request is the root lifecycle record.
 - Every downstream object should remain linked to JobRequest and BusinessProcessId where applicable.
-- Presales-created requests go to PMO review.
-- PMO-created requests can skip PMO review and proceed to bench proposal or HR hiring request.
+- Presales-created requests go to PMO review through department-based intake routing.
+- Department intake routing is tenant configuration: each active department can route new Presales-created requests to one active user or one active group.
+- If an active department has no active intake route, the request falls back to the Tenant Admin role so admins can correct the missing configuration.
+- PMO-created requests stay in PMO review and are assigned directly to the PMO creator.
 - PMO first checks current employees who are not working on any project and are currently benched.
-- PMO can propose one or more bench employees to Presales.
+- PMO can recommend one or more bench employees to Presales.
+- Presales can accept employees toward fulfillment or reject the recommendation back to PMO.
 - Internal bench referrals do not need internal interviews in MVP.
 - Recruiter/HR gets the request only after PMO requests hiring.
 - Recruiter recommendation priority:
@@ -15,11 +20,20 @@
 - Candidate and application are separate.
 - Candidate must register/log in before applying.
 - Candidate applications use Hiring Pipeline stages, not generic workflow types.
-- Recruiter selects a fixed pipeline template per job post.
+- Recruiter starts from an interview template and can customize interview rounds per job post.
+- Interviewers receive interview tasks tied to candidate application and round; the main Job Request baton does not move to every interviewer.
+- After an interviewer submits feedback, the candidate application returns to Recruiter review. Recruiter decides whether to schedule/forward the next round, hold/reject when allowed, or move the application to Hiring Manager Review after all rounds are complete or skipped.
+- HOD/department head is an interviewer user/group when used, not an approver.
+- Hiring Manager records final outcome and can generate/store an offer draft. Offer approval/signoff is not part of MVP.
 - Notification delivery is backend-owned.
 - SignalR is the realtime delivery path for in-app notifications.
 - Email is sent only for important pending work or assignment events.
 - AI agents are advisory. They can parse, rank, summarize, and explain, but cannot auto-reject or make final hiring decisions.
+- Permissions are application-owned catalog entries.
+- `System Administrator` is the only system-wide role.
+- Tenant roles, role-permission mappings, user-role mappings, groups, and group memberships are tenant-owned.
+- Groups route work; groups do not grant permissions.
+- Workflow action keys and notification event codes are backend-owned constants, not tenant-authored configuration.
 
 ## MVP Flow Types
 
@@ -31,11 +45,14 @@ Flow Types are code-owned and seeded. Tenant Admin can configure templates/decis
 
 ## MVP AI Agents
 
+- Job Description Drafter: generates editable Job Request description text from controlled intake fields only. Human review is required before save, and saved descriptions are embedded for future semantic agents.
 - Requirement Parser
 - CV Parser
-- Bench Matching
-- Talent Rediscovery
+- Bench Matching: ranks active internal employees for PMO Review after claim; PMO remains the decision maker.
+- Job Post Generator
+- Talent Rediscovery: ranks previous warm candidates for claimed Recruiter Sourcing work using candidate history, outcomes, interview feedback, skills, and vectors. It does not use web search, contact candidates, or move workflow stages.
 - Fit Explanation
+- Feedback Summary
 - Hiring Manager Decision Brief
 
 Model runtime comes from configuration/appsettings and database runtime rows. Do not expose model switching as a normal tenant-admin action during MVP.

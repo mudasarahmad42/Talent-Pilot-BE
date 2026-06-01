@@ -3,8 +3,10 @@ using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.IdentityModel.Tokens;
 using TalentPilot.Api.Auth;
+using TalentPilot.Api.Hubs;
 using TalentPilot.Application.Abstractions;
 using TalentPilot.Application.DependencyInjection;
+using TalentPilot.Application.Notifications;
 using TalentPilot.Infrastructure.Auth;
 using TalentPilot.Infrastructure.DependencyInjection;
 
@@ -15,6 +17,10 @@ builder.Services.AddScoped<ICurrentUserAccessor, CurrentUserAccessor>();
 builder.Services.AddApplicationServices();
 builder.Services.AddInfrastructureServices(builder.Configuration);
 builder.Services.AddControllers();
+builder.Services.AddSignalR();
+builder.Services.AddSingleton<RealtimeConnectionTracker>();
+builder.Services.AddSingleton<IRealtimeConnectionCounter>(services => services.GetRequiredService<RealtimeConnectionTracker>());
+builder.Services.AddSingleton<IRealtimeNotificationPublisher, SignalRRealtimeNotificationPublisher>();
 builder.Services.AddEndpointsApiExplorer();
 
 builder.Services.AddCors(options =>
@@ -24,7 +30,9 @@ builder.Services.AddCors(options =>
         policy
             .WithOrigins("http://localhost:4200", "http://127.0.0.1:4200")
             .AllowAnyHeader()
-            .AllowAnyMethod();
+            .AllowAnyMethod()
+            .WithExposedHeaders("Content-Disposition")
+            .AllowCredentials();
     });
 });
 
@@ -38,6 +46,21 @@ builder.Services
     .AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
     .AddJwtBearer(options =>
     {
+        options.Events = new JwtBearerEvents
+        {
+            OnMessageReceived = context =>
+            {
+                var accessToken = context.Request.Query["access_token"];
+                var path = context.HttpContext.Request.Path;
+
+                if (!string.IsNullOrWhiteSpace(accessToken) && path.StartsWithSegments("/hubs/notifications"))
+                {
+                    context.Token = accessToken;
+                }
+
+                return Task.CompletedTask;
+            }
+        };
         options.TokenValidationParameters = new TokenValidationParameters
         {
             ValidateIssuer = true,
@@ -72,5 +95,6 @@ app.MapGet("/health", () => Results.Ok(new
 })).AllowAnonymous();
 
 app.MapControllers();
+app.MapHub<NotificationsHub>("/hubs/notifications");
 
 app.Run();

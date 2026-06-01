@@ -24,10 +24,15 @@ public sealed class DapperIdentityRepository : IIdentityRepository
                 r.RoleId,
                 r.Code,
                 r.Name AS RoleName,
-                r.Priority
+                r.Priority,
+                g.GroupId,
+                g.Name AS GroupName,
+                g.Purpose AS GroupPurpose
             FROM dbo.AppUsers AS u
             INNER JOIN dbo.UserRoles AS ur ON ur.TenantId = u.TenantId AND ur.UserId = u.UserId
             INNER JOIN dbo.Roles AS r ON r.RoleId = ur.RoleId
+            LEFT JOIN dbo.GroupMembers AS gm ON gm.TenantId = u.TenantId AND gm.UserId = u.UserId
+            LEFT JOIN dbo.Groups AS g ON g.TenantId = gm.TenantId AND g.GroupId = gm.GroupId AND g.Status = N'Active'
             WHERE u.AccountStatus = N'Active'
               AND u.DeletedAtUtc IS NULL
               AND r.Status = N'Active'
@@ -46,8 +51,16 @@ public sealed class DapperIdentityRepository : IIdentityRepository
             .Select(group =>
             {
                 var roles = group
-                    .OrderBy(row => row.Priority)
-                    .Select(row => new CurrentUserRole(row.RoleId, row.Code, row.RoleName, row.Priority))
+                    .GroupBy(row => new { row.RoleId, row.Code, row.RoleName, row.Priority })
+                    .OrderBy(row => row.Key.Priority)
+                    .Select(row => new CurrentUserRole(row.Key.RoleId, row.Key.Code, row.Key.RoleName, row.Key.Priority))
+                    .ToArray();
+
+                var groups = group
+                    .Where(row => row.GroupId.HasValue && !string.IsNullOrWhiteSpace(row.GroupName))
+                    .GroupBy(row => new { row.GroupId, row.GroupName, row.GroupPurpose })
+                    .OrderBy(row => row.Key.GroupName)
+                    .Select(row => new CurrentUserGroup(row.Key.GroupId!.Value, row.Key.GroupName!, row.Key.GroupPurpose ?? string.Empty))
                     .ToArray();
 
                 return new LoginOption(
@@ -55,7 +68,8 @@ public sealed class DapperIdentityRepository : IIdentityRepository
                     group.Key.DisplayName,
                     group.Key.Email,
                     roles.FirstOrDefault()?.DisplayName ?? "No assigned role",
-                    roles);
+                    roles,
+                    groups);
             })
             .OrderBy(option => option.Roles.Any(role => role.Code == "Candidate"))
             .ThenBy(option => option.Roles.Min(role => role.Priority))
@@ -259,5 +273,8 @@ public sealed class DapperIdentityRepository : IIdentityRepository
         Guid RoleId,
         string Code,
         string RoleName,
-        int Priority);
+        int Priority,
+        Guid? GroupId,
+        string? GroupName,
+        string? GroupPurpose);
 }

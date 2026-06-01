@@ -4,6 +4,8 @@
 
 The backend owns authentication, authorization context, Admin Center APIs, Talent Pilot operational APIs, SQL persistence, workflow handoffs, notification records, audit, and future AI/background processing.
 
+For cross-system request, email, realtime notification, worker, and AI flow diagrams, keep the root workspace architecture reference updated: `../../ARCHITECTURE.md`.
+
 ## Stack
 
 - .NET 8
@@ -25,14 +27,14 @@ The backend owns authentication, authorization context, Admin Center APIs, Talen
 - Use Dapper and SQL scripts for persistence.
 - Do not introduce Entity Framework unless the team explicitly changes the persistence strategy.
 - Keep background processing simple through the SQL outbox and local worker for MVP.
-- Keep AI runtime local/free by default: mock/Ollama-compatible runtime, `llama3.1:8b`, and `nomic-embed-text`.
+- Keep AI runtime local/free by default: mock/Ollama-compatible runtime, `llama3.2`, and `nomic-embed-text`.
 
 ## Prerequisites
 
 - .NET SDK `8.x`
 - SQL Server 2025 Developer or SQLEXPRESS compatible with `VECTOR(768)`
 - PowerShell
-- Optional: Ollama-compatible local AI runtime for future AI worker integration
+- Optional: Ollama-compatible local AI runtime at `TalentPilotRuntime:OllamaBaseUrl` for the Job Description Drafting Agent and description embeddings
 
 ## Solution Structure
 
@@ -66,6 +68,8 @@ scripts/
 - Keep roles and groups separate:
   - roles grant permissions
   - groups route workflow work
+- Follow SOLID principles pragmatically. Keep classes and methods focused, inject real dependencies, and avoid abstractions that do not simplify a concrete use case.
+- Do not overcomplicate MVP slices. Prefer a clear vertical path through controller, service, repository, SQL, and tests over generic frameworks or speculative extension points.
 
 ## Backend Guardrails
 
@@ -144,6 +148,20 @@ dotnet user-secrets set "ConnectionStrings:TalentPilot" "<connection-string>" --
 dotnet user-secrets set "DataAccess:IdentityProvider" "SqlServer" --project src/TalentPilot.Api
 ```
 
+## AI Web Search
+
+The Bench Matching Agent can enrich PMO explanations with public Tavily web research context when a request needs recent/live client, market, industry, regulatory, or news context. The backend calls Tavily from the code-owned AI agent, so searches remain auditable and quota-controlled.
+
+Store the Tavily API key in user-secrets or deployment secrets:
+
+```powershell
+dotnet user-secrets set "TavilySearch:ApiKey" "<tavily-api-key>" --project src/TalentPilot.Api
+```
+
+`TavilySearch:DailyRequestLimit` is capped at 60 requests per UTC day in code and persisted through `dbo.ExternalToolDailyUsage`.
+
+Talent Rediscovery intentionally does not use web search. It ranks only tenant-owned candidate history, outcomes, interview feedback, skills, and vectors because candidate personal identifiers must never be searched externally.
+
 ## Run Database Scripts
 
 Create the empty `TalentPilot` database first if it does not exist, then run:
@@ -155,16 +173,31 @@ dotnet run --project src/TalentPilot.Database -- --connection "<connection-strin
 Execution order:
 
 1. `scripts/schema/*.sql`
-2. `scripts/seed/*.sql`
-3. `scripts/stored-procedures/*.sql`
+2. `scripts/migrations/*.sql`
+3. `scripts/seed/*.sql`
+4. `scripts/stored-procedures/*.sql`
 
 Scripts are additive and idempotent.
+
+## Database Migration Policy
+
+We maintain plain SQL migrations under `scripts/migrations/` so teammates can keep existing databases current without recreating local data.
+
+- Put current-state table/view definitions in `scripts/schema/`.
+- Put one-off, idempotent upgrade/data-fix scripts in `scripts/migrations/`.
+- Put demo/reference tenant data in `scripts/seed/`.
+- Put `CREATE OR ALTER PROCEDURE` files in `scripts/stored-procedures/`.
+- Name new migration files with the next numeric prefix, for example `002_add_candidate_offer_tracking.sql`.
+- Every migration must be safe to rerun. Use existence checks, `MERGE`, guarded `ALTER TABLE`, or targeted `UPDATE` statements.
+- Do not edit old migration files after they have been shared unless the file has never been run by anyone else.
+- If schema, seed, or stored procedure files changed, run the database runner before testing the API.
 
 Schema, seed, and stored procedure intent is documented in:
 
 ```text
 knowledge-base/database-schema.md
 scripts/README.md
+scripts/migrations/README.md
 ```
 
 ## Run API
@@ -192,6 +225,8 @@ dotnet run --project src/TalentPilot.Worker
 ```
 
 The worker processes SQL-backed outbox records locally. Keep this simple for MVP; do not introduce paid queues unless explicitly approved.
+
+Configure the worker with the same `ConnectionStrings:TalentPilot` value as the API. Workflow email delivery also needs `Resend:ApiKey` and optionally `Resend:FromEmail` from user-secrets or deployment secrets. Pending rows are marked `Sent` after provider delivery succeeds, or `Failed` with `LastError` when the provider rejects the message.
 
 ## Test
 
@@ -258,7 +293,7 @@ Read these before changing backend behavior:
 ## Production Readiness Notes
 
 - Replace the development JWT signing key before any non-local deployment.
-- Keep `Auth:AllowDemoCardLogin=true` only for MVP demo/testing.
+- Demo role cards use the normal email/password auth endpoint with seeded BCrypt password hashes.
 - Store real credentials as BCrypt hashes in `UserCredentials`.
 - Store all persisted timestamps in UTC.
 - Return ISO UTC timestamps to frontend.

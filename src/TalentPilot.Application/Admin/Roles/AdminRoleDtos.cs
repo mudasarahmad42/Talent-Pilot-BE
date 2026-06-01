@@ -9,7 +9,7 @@ public sealed record AdminRolesResponse(
     int PageSize,
     int TotalCount);
 
-public sealed record AdminRolesSummary(int ActiveRoleCount, int ProtectedRoleCount, int CustomRoleCount);
+public sealed record AdminRolesSummary(int ActiveRoleCount, int TenantRoleCount, int CustomRoleCount);
 
 public sealed record RoleSummary(
     Guid RoleId,

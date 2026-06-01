@@ -8,20 +8,18 @@ BEGIN
     (
         TenantId UNIQUEIDENTIFIER NOT NULL CONSTRAINT PK_TenantAiSettings PRIMARY KEY,
         ProviderMode NVARCHAR(60) NOT NULL CONSTRAINT DF_TenantAiSettings_ProviderMode DEFAULT N'Mock/Ollama',
-        LlmModel NVARCHAR(120) NOT NULL CONSTRAINT DF_TenantAiSettings_LlmModel DEFAULT N'llama3.1:8b',
+        LlmModel NVARCHAR(120) NOT NULL CONSTRAINT DF_TenantAiSettings_LlmModel DEFAULT N'llama3.2',
         EmbeddingModel NVARCHAR(120) NOT NULL CONSTRAINT DF_TenantAiSettings_EmbeddingModel DEFAULT N'nomic-embed-text',
         EmbeddingDimensions INT NOT NULL CONSTRAINT DF_TenantAiSettings_EmbeddingDimensions DEFAULT (768),
         VectorStore NVARCHAR(80) NOT NULL CONSTRAINT DF_TenantAiSettings_VectorStore DEFAULT N'SqlServerVector',
         ModelSwitchingLocked BIT NOT NULL CONSTRAINT DF_TenantAiSettings_ModelSwitchingLocked DEFAULT (1),
         HumanReviewRequired BIT NOT NULL CONSTRAINT DF_TenantAiSettings_HumanReviewRequired DEFAULT (1),
         AutoRejectEnabled BIT NOT NULL CONSTRAINT DF_TenantAiSettings_AutoRejectEnabled DEFAULT (0),
-        AutomaticStageMovementEnabled BIT NOT NULL CONSTRAINT DF_TenantAiSettings_AutomaticStageMovementEnabled DEFAULT (0),
         CreatedAtUtc DATETIME2(3) NOT NULL CONSTRAINT DF_TenantAiSettings_CreatedAtUtc DEFAULT SYSUTCDATETIME(),
         UpdatedAtUtc DATETIME2(3) NOT NULL CONSTRAINT DF_TenantAiSettings_UpdatedAtUtc DEFAULT SYSUTCDATETIME(),
         CONSTRAINT FK_TenantAiSettings_Tenants FOREIGN KEY (TenantId) REFERENCES dbo.Tenants (TenantId),
         CONSTRAINT CK_TenantAiSettings_EmbeddingDimensions CHECK (EmbeddingDimensions = 768),
-        CONSTRAINT CK_TenantAiSettings_AutoRejectEnabled CHECK (AutoRejectEnabled = 0),
-        CONSTRAINT CK_TenantAiSettings_AutomaticStageMovementEnabled CHECK (AutomaticStageMovementEnabled = 0)
+        CONSTRAINT CK_TenantAiSettings_AutoRejectEnabled CHECK (AutoRejectEnabled = 0)
     );
 END;
 GO
@@ -174,6 +172,7 @@ BEGIN
         LocationId UNIQUEIDENTIFIER NULL,
         Designation NVARCHAR(160) NULL,
         ExperienceYears DECIMAL(4,1) NULL,
+        JoiningDate DATE NULL,
         AvailabilityStatus NVARCHAR(40) NOT NULL CONSTRAINT DF_Employees_AvailabilityStatus DEFAULT N'Available',
         BenchStatus NVARCHAR(40) NOT NULL CONSTRAINT DF_Employees_BenchStatus DEFAULT N'Benched',
         Status NVARCHAR(20) NOT NULL CONSTRAINT DF_Employees_Status DEFAULT N'Active',
@@ -264,27 +263,6 @@ BEGIN
 END;
 GO
 
-IF OBJECT_ID(N'dbo.CandidateDocuments', N'U') IS NULL
-BEGIN
-    CREATE TABLE dbo.CandidateDocuments
-    (
-        CandidateDocumentId UNIQUEIDENTIFIER NOT NULL CONSTRAINT PK_CandidateDocuments PRIMARY KEY,
-        TenantId UNIQUEIDENTIFIER NOT NULL,
-        CandidateId UNIQUEIDENTIFIER NOT NULL,
-        FileName NVARCHAR(260) NOT NULL,
-        FileExtension NVARCHAR(20) NOT NULL,
-        ContentType NVARCHAR(120) NOT NULL,
-        StoragePath NVARCHAR(600) NOT NULL,
-        ExtractedTextHash NVARCHAR(128) NULL,
-        IsCurrent BIT NOT NULL CONSTRAINT DF_CandidateDocuments_IsCurrent DEFAULT (1),
-        UploadedAtUtc DATETIME2(3) NOT NULL CONSTRAINT DF_CandidateDocuments_UploadedAtUtc DEFAULT SYSUTCDATETIME(),
-        CONSTRAINT FK_CandidateDocuments_Tenants FOREIGN KEY (TenantId) REFERENCES dbo.Tenants (TenantId),
-        CONSTRAINT FK_CandidateDocuments_Candidates FOREIGN KEY (CandidateId) REFERENCES dbo.Candidates (CandidateId),
-        CONSTRAINT CK_CandidateDocuments_FileExtension CHECK (FileExtension = N'.docx')
-    );
-END;
-GO
-
 IF OBJECT_ID(N'dbo.CandidateSkills', N'U') IS NULL
 BEGIN
     CREATE TABLE dbo.CandidateSkills
@@ -300,6 +278,46 @@ BEGIN
         CONSTRAINT FK_CandidateSkills_Tenants FOREIGN KEY (TenantId) REFERENCES dbo.Tenants (TenantId),
         CONSTRAINT FK_CandidateSkills_Candidates FOREIGN KEY (CandidateId) REFERENCES dbo.Candidates (CandidateId),
         CONSTRAINT FK_CandidateSkills_Skills FOREIGN KEY (SkillId) REFERENCES dbo.Skills (SkillId)
+    );
+END;
+GO
+
+IF OBJECT_ID(N'dbo.CandidateEducation', N'U') IS NULL
+BEGIN
+    CREATE TABLE dbo.CandidateEducation
+    (
+        CandidateEducationId UNIQUEIDENTIFIER NOT NULL CONSTRAINT PK_CandidateEducation PRIMARY KEY,
+        TenantId UNIQUEIDENTIFIER NOT NULL,
+        CandidateId UNIQUEIDENTIFIER NOT NULL,
+        UniversityName NVARCHAR(200) NOT NULL,
+        DegreeName NVARCHAR(200) NULL,
+        GraduationYear INT NULL,
+        IsPrimary BIT NOT NULL CONSTRAINT DF_CandidateEducation_IsPrimary DEFAULT (0),
+        CreatedAtUtc DATETIME2(3) NOT NULL CONSTRAINT DF_CandidateEducation_CreatedAtUtc DEFAULT SYSUTCDATETIME(),
+        UpdatedAtUtc DATETIME2(3) NOT NULL CONSTRAINT DF_CandidateEducation_UpdatedAtUtc DEFAULT SYSUTCDATETIME(),
+        CONSTRAINT FK_CandidateEducation_Tenants FOREIGN KEY (TenantId) REFERENCES dbo.Tenants (TenantId),
+        CONSTRAINT FK_CandidateEducation_Candidates FOREIGN KEY (CandidateId) REFERENCES dbo.Candidates (CandidateId),
+        CONSTRAINT CK_CandidateEducation_GraduationYear CHECK (GraduationYear IS NULL OR GraduationYear BETWEEN 1950 AND 2100)
+    );
+END;
+GO
+
+IF OBJECT_ID(N'dbo.CandidateWorkHistory', N'U') IS NULL
+BEGIN
+    CREATE TABLE dbo.CandidateWorkHistory
+    (
+        CandidateWorkHistoryId UNIQUEIDENTIFIER NOT NULL CONSTRAINT PK_CandidateWorkHistory PRIMARY KEY,
+        TenantId UNIQUEIDENTIFIER NOT NULL,
+        CandidateId UNIQUEIDENTIFIER NOT NULL,
+        CompanyName NVARCHAR(200) NOT NULL,
+        Title NVARCHAR(200) NULL,
+        IsCurrent BIT NOT NULL CONSTRAINT DF_CandidateWorkHistory_IsCurrent DEFAULT (0),
+        StartsOn DATE NULL,
+        EndsOn DATE NULL,
+        CreatedAtUtc DATETIME2(3) NOT NULL CONSTRAINT DF_CandidateWorkHistory_CreatedAtUtc DEFAULT SYSUTCDATETIME(),
+        UpdatedAtUtc DATETIME2(3) NOT NULL CONSTRAINT DF_CandidateWorkHistory_UpdatedAtUtc DEFAULT SYSUTCDATETIME(),
+        CONSTRAINT FK_CandidateWorkHistory_Tenants FOREIGN KEY (TenantId) REFERENCES dbo.Tenants (TenantId),
+        CONSTRAINT FK_CandidateWorkHistory_Candidates FOREIGN KEY (CandidateId) REFERENCES dbo.Candidates (CandidateId)
     );
 END;
 GO
@@ -367,7 +385,7 @@ BEGIN
         CONSTRAINT FK_JobRequests_HiringManagerGroup FOREIGN KEY (HiringManagerGroupId) REFERENCES dbo.Groups (GroupId),
         CONSTRAINT FK_JobRequests_CreatedByUser FOREIGN KEY (CreatedByUserId) REFERENCES dbo.AppUsers (UserId),
         CONSTRAINT CK_JobRequests_Positions CHECK (RequiredPositions > 0 AND FulfilledPositions >= 0 AND FulfilledPositions <= RequiredPositions),
-        CONSTRAINT CK_JobRequests_Status CHECK (Status IN (N'PMOReview', N'BenchReview', N'Sourcing', N'Interviewing', N'HiringManagerReview', N'Offer', N'Closed', N'Cancelled')),
+        CONSTRAINT CK_JobRequests_Status CHECK (Status IN (N'PMOReview', N'PresalesReview', N'BenchReview', N'Sourcing', N'Interviewing', N'HiringManagerReview', N'Offer', N'Closed', N'Cancelled')),
         CONSTRAINT CK_JobRequests_PublishStatus CHECK (PublishStatus IN (N'NotPublished', N'Published', N'Unpublished')),
         CONSTRAINT UQ_JobRequests_Tenant_RequestCode UNIQUE (TenantId, RequestCode)
     );
@@ -400,6 +418,7 @@ BEGIN
         TenantId UNIQUEIDENTIFIER NOT NULL,
         CandidateProspectId UNIQUEIDENTIFIER NOT NULL,
         JobRequestId UNIQUEIDENTIFIER NOT NULL,
+        JobPostId UNIQUEIDENTIFIER NULL,
         Status NVARCHAR(30) NOT NULL CONSTRAINT DF_CandidateProspectJobRequests_Status DEFAULT N'Sourced',
         Notes NVARCHAR(1000) NULL,
         CreatedAtUtc DATETIME2(3) NOT NULL CONSTRAINT DF_CandidateProspectJobRequests_CreatedAtUtc DEFAULT SYSUTCDATETIME(),
@@ -420,6 +439,7 @@ BEGIN
         CandidateProspectId UNIQUEIDENTIFIER NULL,
         CandidateId UNIQUEIDENTIFIER NULL,
         JobRequestId UNIQUEIDENTIFIER NULL,
+        JobPostId UNIQUEIDENTIFIER NULL,
         InvitedByUserId UNIQUEIDENTIFIER NOT NULL,
         TokenHash NVARCHAR(256) NOT NULL,
         Email NVARCHAR(320) NOT NULL,
@@ -447,6 +467,7 @@ BEGIN
         JobApplicationId UNIQUEIDENTIFIER NOT NULL CONSTRAINT PK_JobApplications PRIMARY KEY,
         TenantId UNIQUEIDENTIFIER NOT NULL,
         JobRequestId UNIQUEIDENTIFIER NOT NULL,
+        JobPostId UNIQUEIDENTIFIER NULL,
         CandidateId UNIQUEIDENTIFIER NOT NULL,
         CandidateSourceLabelId UNIQUEIDENTIFIER NULL,
         SourceLabel NVARCHAR(80) NOT NULL,
@@ -458,6 +479,12 @@ BEGIN
         AppliedAtUtc DATETIME2(3) NOT NULL CONSTRAINT DF_JobApplications_AppliedAtUtc DEFAULT SYSUTCDATETIME(),
         FinalDecisionAtUtc DATETIME2(3) NULL,
         FinalDecisionReason NVARCHAR(500) NULL,
+        SourceDetail NVARCHAR(200) NULL,
+        SourceUrl NVARCHAR(500) NULL,
+        AddedByUserId UNIQUEIDENTIFIER NULL,
+        RecruiterNotes NVARCHAR(1000) NULL,
+        CoverLetterText NVARCHAR(MAX) NULL,
+        ApplicationSnapshotJson NVARCHAR(MAX) NULL,
         CreatedAtUtc DATETIME2(3) NOT NULL CONSTRAINT DF_JobApplications_CreatedAtUtc DEFAULT SYSUTCDATETIME(),
         UpdatedAtUtc DATETIME2(3) NOT NULL CONSTRAINT DF_JobApplications_UpdatedAtUtc DEFAULT SYSUTCDATETIME(),
         RowVersion ROWVERSION NOT NULL,
@@ -465,9 +492,144 @@ BEGIN
         CONSTRAINT FK_JobApplications_JobRequests FOREIGN KEY (JobRequestId) REFERENCES dbo.JobRequests (JobRequestId),
         CONSTRAINT FK_JobApplications_Candidates FOREIGN KEY (CandidateId) REFERENCES dbo.Candidates (CandidateId),
         CONSTRAINT FK_JobApplications_SourceLabels FOREIGN KEY (CandidateSourceLabelId) REFERENCES dbo.CandidateSourceLabels (CandidateSourceLabelId),
-        CONSTRAINT CK_JobApplications_CurrentStatus CHECK (CurrentStatus IN (N'Invited', N'Applied', N'Screening', N'Interviewing', N'OnHold', N'OfferDeclined', N'Rejected', N'Hired', N'Withdrawn')),
+        CONSTRAINT FK_JobApplications_AddedByUser FOREIGN KEY (AddedByUserId) REFERENCES dbo.AppUsers (UserId),
+        CONSTRAINT CK_JobApplications_CurrentStatus CHECK (CurrentStatus IN (N'Invited', N'Applied', N'Screening', N'Interviewing', N'HiringManagerReview', N'Offered', N'OnHold', N'OfferDeclined', N'Rejected', N'Hired', N'Joined', N'Withdrawn')),
         CONSTRAINT UQ_JobApplications_Tenant_Job_Candidate_Version UNIQUE (TenantId, JobRequestId, CandidateId, ApplicationVersion)
     );
+END;
+GO
+
+IF COL_LENGTH(N'dbo.JobApplications', N'JobPostId') IS NOT NULL
+   AND OBJECT_ID(N'dbo.JobPosts', N'U') IS NOT NULL
+   AND NOT EXISTS (
+        SELECT 1
+        FROM sys.foreign_keys
+        WHERE name = N'FK_JobApplications_JobPosts'
+          AND parent_object_id = OBJECT_ID(N'dbo.JobApplications')
+   )
+BEGIN
+    ALTER TABLE dbo.JobApplications
+    ADD CONSTRAINT FK_JobApplications_JobPosts FOREIGN KEY (JobPostId) REFERENCES dbo.JobPosts (JobPostId);
+END;
+GO
+
+IF OBJECT_ID(N'dbo.JobPosts', N'U') IS NULL
+BEGIN
+    CREATE TABLE dbo.JobPosts
+    (
+        JobPostId UNIQUEIDENTIFIER NOT NULL CONSTRAINT PK_JobPosts PRIMARY KEY,
+        TenantId UNIQUEIDENTIFIER NOT NULL,
+        JobRequestId UNIQUEIDENTIFIER NOT NULL,
+        RecruiterOwnerUserId UNIQUEIDENTIFIER NOT NULL,
+        Title NVARCHAR(200) NOT NULL,
+        Description NVARCHAR(MAX) NOT NULL,
+        DepartmentId UNIQUEIDENTIFIER NULL,
+        LocationId UNIQUEIDENTIFIER NULL,
+        ExperienceMinYears DECIMAL(4,1) NULL,
+        ExperienceMaxYears DECIMAL(4,1) NULL,
+        RequiredPositions INT NOT NULL CONSTRAINT DF_JobPosts_RequiredPositions DEFAULT (1),
+        Status NVARCHAR(30) NOT NULL CONSTRAINT DF_JobPosts_Status DEFAULT N'Draft',
+        PublishedAtUtc DATETIME2(3) NULL,
+        ClosedAtUtc DATETIME2(3) NULL,
+        CreatedAtUtc DATETIME2(3) NOT NULL CONSTRAINT DF_JobPosts_CreatedAtUtc DEFAULT SYSUTCDATETIME(),
+        UpdatedAtUtc DATETIME2(3) NOT NULL CONSTRAINT DF_JobPosts_UpdatedAtUtc DEFAULT SYSUTCDATETIME(),
+        RowVersion ROWVERSION NOT NULL,
+        CONSTRAINT FK_JobPosts_Tenants FOREIGN KEY (TenantId) REFERENCES dbo.Tenants (TenantId),
+        CONSTRAINT FK_JobPosts_JobRequests FOREIGN KEY (JobRequestId) REFERENCES dbo.JobRequests (JobRequestId),
+        CONSTRAINT FK_JobPosts_RecruiterOwner FOREIGN KEY (RecruiterOwnerUserId) REFERENCES dbo.AppUsers (UserId),
+        CONSTRAINT FK_JobPosts_Departments FOREIGN KEY (DepartmentId) REFERENCES dbo.Departments (DepartmentId),
+        CONSTRAINT FK_JobPosts_Locations FOREIGN KEY (LocationId) REFERENCES dbo.Locations (LocationId),
+        CONSTRAINT CK_JobPosts_Positions CHECK (RequiredPositions > 0),
+        CONSTRAINT CK_JobPosts_Status CHECK (Status IN (N'Draft', N'Published', N'Closed')),
+        CONSTRAINT UQ_JobPosts_Tenant_JobRequest UNIQUE (TenantId, JobRequestId)
+    );
+END;
+GO
+
+IF OBJECT_ID(N'dbo.JobPostSkills', N'U') IS NULL
+BEGIN
+    CREATE TABLE dbo.JobPostSkills
+    (
+        TenantId UNIQUEIDENTIFIER NOT NULL,
+        JobPostId UNIQUEIDENTIFIER NOT NULL,
+        SkillId UNIQUEIDENTIFIER NOT NULL,
+        IsRequired BIT NOT NULL CONSTRAINT DF_JobPostSkills_IsRequired DEFAULT (1),
+        Weight INT NOT NULL CONSTRAINT DF_JobPostSkills_Weight DEFAULT (1),
+        CreatedAtUtc DATETIME2(3) NOT NULL CONSTRAINT DF_JobPostSkills_CreatedAtUtc DEFAULT SYSUTCDATETIME(),
+        CONSTRAINT PK_JobPostSkills PRIMARY KEY (TenantId, JobPostId, SkillId),
+        CONSTRAINT FK_JobPostSkills_Tenants FOREIGN KEY (TenantId) REFERENCES dbo.Tenants (TenantId),
+        CONSTRAINT FK_JobPostSkills_JobPosts FOREIGN KEY (JobPostId) REFERENCES dbo.JobPosts (JobPostId),
+        CONSTRAINT FK_JobPostSkills_Skills FOREIGN KEY (SkillId) REFERENCES dbo.Skills (SkillId),
+        CONSTRAINT CK_JobPostSkills_Weight CHECK (Weight BETWEEN 1 AND 10)
+    );
+END;
+GO
+
+IF OBJECT_ID(N'dbo.JobPostInterviewRounds', N'U') IS NULL
+BEGIN
+    CREATE TABLE dbo.JobPostInterviewRounds
+    (
+        JobPostInterviewRoundId UNIQUEIDENTIFIER NOT NULL CONSTRAINT PK_JobPostInterviewRounds PRIMARY KEY,
+        TenantId UNIQUEIDENTIFIER NOT NULL,
+        JobPostId UNIQUEIDENTIFIER NOT NULL,
+        InterviewTemplateRoundId UNIQUEIDENTIFIER NULL,
+        RoundOrder INT NOT NULL,
+        Name NVARCHAR(160) NOT NULL,
+        OwnerUserId UNIQUEIDENTIFIER NULL,
+        DurationMinutes INT NOT NULL CONSTRAINT DF_JobPostInterviewRounds_Duration DEFAULT (60),
+        Status NVARCHAR(20) NOT NULL CONSTRAINT DF_JobPostInterviewRounds_Status DEFAULT N'Active',
+        CreatedAtUtc DATETIME2(3) NOT NULL CONSTRAINT DF_JobPostInterviewRounds_CreatedAtUtc DEFAULT SYSUTCDATETIME(),
+        UpdatedAtUtc DATETIME2(3) NOT NULL CONSTRAINT DF_JobPostInterviewRounds_UpdatedAtUtc DEFAULT SYSUTCDATETIME(),
+        CONSTRAINT FK_JobPostInterviewRounds_Tenants FOREIGN KEY (TenantId) REFERENCES dbo.Tenants (TenantId),
+        CONSTRAINT FK_JobPostInterviewRounds_JobPosts FOREIGN KEY (JobPostId) REFERENCES dbo.JobPosts (JobPostId),
+        CONSTRAINT FK_JobPostInterviewRounds_TemplateRounds FOREIGN KEY (InterviewTemplateRoundId) REFERENCES dbo.InterviewTemplateRounds (InterviewTemplateRoundId),
+        CONSTRAINT FK_JobPostInterviewRounds_OwnerUser FOREIGN KEY (OwnerUserId) REFERENCES dbo.AppUsers (UserId),
+        CONSTRAINT CK_JobPostInterviewRounds_Duration CHECK (DurationMinutes BETWEEN 15 AND 240),
+        CONSTRAINT CK_JobPostInterviewRounds_Status CHECK (Status IN (N'Active', N'Inactive')),
+        CONSTRAINT UQ_JobPostInterviewRounds_Post_Order UNIQUE (JobPostId, RoundOrder)
+    );
+END;
+GO
+
+IF COL_LENGTH(N'dbo.JobApplications', N'JobPostId') IS NOT NULL
+   AND OBJECT_ID(N'dbo.JobPosts', N'U') IS NOT NULL
+   AND NOT EXISTS (
+        SELECT 1
+        FROM sys.foreign_keys
+        WHERE name = N'FK_JobApplications_JobPosts'
+          AND parent_object_id = OBJECT_ID(N'dbo.JobApplications')
+   )
+BEGIN
+    ALTER TABLE dbo.JobApplications
+    ADD CONSTRAINT FK_JobApplications_JobPosts FOREIGN KEY (JobPostId) REFERENCES dbo.JobPosts (JobPostId);
+END;
+GO
+
+IF COL_LENGTH(N'dbo.CandidateInvitations', N'JobPostId') IS NOT NULL
+   AND OBJECT_ID(N'dbo.JobPosts', N'U') IS NOT NULL
+   AND NOT EXISTS (
+        SELECT 1
+        FROM sys.foreign_keys
+        WHERE name = N'FK_CandidateInvitations_JobPosts'
+          AND parent_object_id = OBJECT_ID(N'dbo.CandidateInvitations')
+   )
+BEGIN
+    ALTER TABLE dbo.CandidateInvitations
+    ADD CONSTRAINT FK_CandidateInvitations_JobPosts FOREIGN KEY (JobPostId) REFERENCES dbo.JobPosts (JobPostId);
+END;
+GO
+
+IF COL_LENGTH(N'dbo.CandidateProspectJobRequests', N'JobPostId') IS NOT NULL
+   AND OBJECT_ID(N'dbo.JobPosts', N'U') IS NOT NULL
+   AND NOT EXISTS (
+        SELECT 1
+        FROM sys.foreign_keys
+        WHERE name = N'FK_CandidateProspectJobRequests_JobPosts'
+          AND parent_object_id = OBJECT_ID(N'dbo.CandidateProspectJobRequests')
+   )
+BEGIN
+    ALTER TABLE dbo.CandidateProspectJobRequests
+    ADD CONSTRAINT FK_CandidateProspectJobRequests_JobPosts FOREIGN KEY (JobPostId) REFERENCES dbo.JobPosts (JobPostId);
 END;
 GO
 
@@ -545,23 +707,57 @@ BEGIN
 END;
 GO
 
-IF OBJECT_ID(N'dbo.CandidateEmployeeLinks', N'U') IS NULL
+IF OBJECT_ID(N'dbo.OfferLetters', N'U') IS NULL
 BEGIN
-    CREATE TABLE dbo.CandidateEmployeeLinks
+    CREATE TABLE dbo.OfferLetters
     (
-        CandidateEmployeeLinkId UNIQUEIDENTIFIER NOT NULL CONSTRAINT PK_CandidateEmployeeLinks PRIMARY KEY,
+        OfferLetterId UNIQUEIDENTIFIER NOT NULL CONSTRAINT PK_OfferLetters PRIMARY KEY,
         TenantId UNIQUEIDENTIFIER NOT NULL,
+        JobApplicationId UNIQUEIDENTIFIER NOT NULL,
+        JobPostId UNIQUEIDENTIFIER NULL,
+        JobRequestId UNIQUEIDENTIFIER NOT NULL,
         CandidateId UNIQUEIDENTIFIER NOT NULL,
-        JobApplicationId UNIQUEIDENTIFIER NULL,
-        JobRequestFulfillmentId UNIQUEIDENTIFIER NULL,
-        EmployeeId UNIQUEIDENTIFIER NULL,
-        Status NVARCHAR(40) NOT NULL CONSTRAINT DF_CandidateEmployeeLinks_Status DEFAULT N'PendingExternalSync',
-        CreatedAtUtc DATETIME2(3) NOT NULL CONSTRAINT DF_CandidateEmployeeLinks_CreatedAtUtc DEFAULT SYSUTCDATETIME(),
-        CONSTRAINT FK_CandidateEmployeeLinks_Tenants FOREIGN KEY (TenantId) REFERENCES dbo.Tenants (TenantId),
-        CONSTRAINT FK_CandidateEmployeeLinks_Candidates FOREIGN KEY (CandidateId) REFERENCES dbo.Candidates (CandidateId),
-        CONSTRAINT FK_CandidateEmployeeLinks_Applications FOREIGN KEY (JobApplicationId) REFERENCES dbo.JobApplications (JobApplicationId),
-        CONSTRAINT FK_CandidateEmployeeLinks_Fulfillments FOREIGN KEY (JobRequestFulfillmentId) REFERENCES dbo.JobRequestFulfillments (JobRequestFulfillmentId),
-        CONSTRAINT FK_CandidateEmployeeLinks_Employees FOREIGN KEY (EmployeeId) REFERENCES dbo.Employees (EmployeeId)
+        GeneratedByUserId UNIQUEIDENTIFIER NOT NULL,
+        Version INT NOT NULL CONSTRAINT DF_OfferLetters_Version DEFAULT (1),
+        Status NVARCHAR(30) NOT NULL CONSTRAINT DF_OfferLetters_Status DEFAULT N'Draft',
+        CompensationText NVARCHAR(300) NULL,
+        StartDate DATE NULL,
+        ReportingManager NVARCHAR(160) NULL,
+        WorkLocation NVARCHAR(160) NULL,
+        Body NVARCHAR(MAX) NOT NULL,
+        CreatedAtUtc DATETIME2(3) NOT NULL CONSTRAINT DF_OfferLetters_CreatedAtUtc DEFAULT SYSUTCDATETIME(),
+        UpdatedAtUtc DATETIME2(3) NOT NULL CONSTRAINT DF_OfferLetters_UpdatedAtUtc DEFAULT SYSUTCDATETIME(),
+        CONSTRAINT FK_OfferLetters_Tenants FOREIGN KEY (TenantId) REFERENCES dbo.Tenants (TenantId),
+        CONSTRAINT FK_OfferLetters_Applications FOREIGN KEY (JobApplicationId) REFERENCES dbo.JobApplications (JobApplicationId),
+        CONSTRAINT FK_OfferLetters_JobPosts FOREIGN KEY (JobPostId) REFERENCES dbo.JobPosts (JobPostId),
+        CONSTRAINT FK_OfferLetters_JobRequests FOREIGN KEY (JobRequestId) REFERENCES dbo.JobRequests (JobRequestId),
+        CONSTRAINT FK_OfferLetters_Candidates FOREIGN KEY (CandidateId) REFERENCES dbo.Candidates (CandidateId),
+        CONSTRAINT FK_OfferLetters_GeneratedByUser FOREIGN KEY (GeneratedByUserId) REFERENCES dbo.AppUsers (UserId),
+        CONSTRAINT CK_OfferLetters_Status CHECK (Status IN (N'Draft', N'Presented', N'Accepted', N'Declined', N'Cancelled'))
+    );
+END;
+GO
+
+IF OBJECT_ID(N'dbo.OfferPresentationMeetings', N'U') IS NULL
+BEGIN
+    CREATE TABLE dbo.OfferPresentationMeetings
+    (
+        OfferPresentationMeetingId UNIQUEIDENTIFIER NOT NULL CONSTRAINT PK_OfferPresentationMeetings PRIMARY KEY,
+        TenantId UNIQUEIDENTIFIER NOT NULL,
+        OfferLetterId UNIQUEIDENTIFIER NOT NULL,
+        JobApplicationId UNIQUEIDENTIFIER NOT NULL,
+        ScheduledByUserId UNIQUEIDENTIFIER NOT NULL,
+        MeetingAtUtc DATETIME2(3) NOT NULL,
+        LocationText NVARCHAR(240) NOT NULL,
+        Notes NVARCHAR(1000) NULL,
+        Status NVARCHAR(30) NOT NULL CONSTRAINT DF_OfferPresentationMeetings_Status DEFAULT N'Scheduled',
+        CreatedAtUtc DATETIME2(3) NOT NULL CONSTRAINT DF_OfferPresentationMeetings_CreatedAtUtc DEFAULT SYSUTCDATETIME(),
+        UpdatedAtUtc DATETIME2(3) NOT NULL CONSTRAINT DF_OfferPresentationMeetings_UpdatedAtUtc DEFAULT SYSUTCDATETIME(),
+        CONSTRAINT FK_OfferPresentationMeetings_Tenants FOREIGN KEY (TenantId) REFERENCES dbo.Tenants (TenantId),
+        CONSTRAINT FK_OfferPresentationMeetings_OfferLetters FOREIGN KEY (OfferLetterId) REFERENCES dbo.OfferLetters (OfferLetterId),
+        CONSTRAINT FK_OfferPresentationMeetings_Applications FOREIGN KEY (JobApplicationId) REFERENCES dbo.JobApplications (JobApplicationId),
+        CONSTRAINT FK_OfferPresentationMeetings_ScheduledByUser FOREIGN KEY (ScheduledByUserId) REFERENCES dbo.AppUsers (UserId),
+        CONSTRAINT CK_OfferPresentationMeetings_Status CHECK (Status IN (N'Scheduled', N'Completed', N'Cancelled'))
     );
 END;
 GO
@@ -596,12 +792,14 @@ BEGIN
         RoundOrder INT NOT NULL,
         Name NVARCHAR(160) NOT NULL,
         OwnerRoleId UNIQUEIDENTIFIER NULL,
+        OwnerUserId UNIQUEIDENTIFIER NULL,
         DurationMinutes INT NOT NULL CONSTRAINT DF_InterviewTemplateRounds_Duration DEFAULT (60),
         IsRequired BIT NOT NULL CONSTRAINT DF_InterviewTemplateRounds_IsRequired DEFAULT (1),
         Status NVARCHAR(20) NOT NULL CONSTRAINT DF_InterviewTemplateRounds_Status DEFAULT N'Active',
         CONSTRAINT FK_InterviewTemplateRounds_Tenants FOREIGN KEY (TenantId) REFERENCES dbo.Tenants (TenantId),
         CONSTRAINT FK_InterviewTemplateRounds_Templates FOREIGN KEY (InterviewTemplateId) REFERENCES dbo.InterviewTemplates (InterviewTemplateId),
         CONSTRAINT FK_InterviewTemplateRounds_OwnerRole FOREIGN KEY (OwnerRoleId) REFERENCES dbo.Roles (RoleId),
+        CONSTRAINT FK_InterviewTemplateRounds_OwnerUser FOREIGN KEY (OwnerUserId) REFERENCES dbo.AppUsers (UserId),
         CONSTRAINT UQ_InterviewTemplateRounds_Template_Order UNIQUE (InterviewTemplateId, RoundOrder)
     );
 END;
@@ -618,11 +816,13 @@ BEGIN
         RoundOrder INT NOT NULL,
         Name NVARCHAR(160) NOT NULL,
         OwnerRoleId UNIQUEIDENTIFIER NULL,
+        OwnerUserId UNIQUEIDENTIFIER NULL,
         Status NVARCHAR(30) NOT NULL CONSTRAINT DF_JobRequestInterviewRounds_Status DEFAULT N'Pending',
         CONSTRAINT FK_JobRequestInterviewRounds_Tenants FOREIGN KEY (TenantId) REFERENCES dbo.Tenants (TenantId),
         CONSTRAINT FK_JobRequestInterviewRounds_JobRequests FOREIGN KEY (JobRequestId) REFERENCES dbo.JobRequests (JobRequestId),
         CONSTRAINT FK_JobRequestInterviewRounds_TemplateRounds FOREIGN KEY (InterviewTemplateRoundId) REFERENCES dbo.InterviewTemplateRounds (InterviewTemplateRoundId),
         CONSTRAINT FK_JobRequestInterviewRounds_OwnerRole FOREIGN KEY (OwnerRoleId) REFERENCES dbo.Roles (RoleId),
+        CONSTRAINT FK_JobRequestInterviewRounds_OwnerUser FOREIGN KEY (OwnerUserId) REFERENCES dbo.AppUsers (UserId),
         CONSTRAINT UQ_JobRequestInterviewRounds_Job_Order UNIQUE (JobRequestId, RoundOrder)
     );
 END;
@@ -636,21 +836,35 @@ BEGIN
         TenantId UNIQUEIDENTIFIER NOT NULL,
         JobApplicationId UNIQUEIDENTIFIER NOT NULL,
         JobRequestInterviewRoundId UNIQUEIDENTIFIER NULL,
+        JobPostInterviewRoundId UNIQUEIDENTIFIER NULL,
         InterviewerUserId UNIQUEIDENTIFIER NOT NULL,
         ScheduledByUserId UNIQUEIDENTIFIER NOT NULL,
         StartsAtUtc DATETIME2(3) NOT NULL,
         DurationMinutes INT NOT NULL,
         MeetingLink NVARCHAR(600) NULL,
         LocationText NVARCHAR(300) NULL,
+        SkippedByUserId UNIQUEIDENTIFIER NULL,
+        SkippedAtUtc DATETIME2(3) NULL,
+        SkipReason NVARCHAR(1000) NULL,
         Status NVARCHAR(30) NOT NULL CONSTRAINT DF_Interviews_Status DEFAULT N'Scheduled',
         CreatedAtUtc DATETIME2(3) NOT NULL CONSTRAINT DF_Interviews_CreatedAtUtc DEFAULT SYSUTCDATETIME(),
         UpdatedAtUtc DATETIME2(3) NOT NULL CONSTRAINT DF_Interviews_UpdatedAtUtc DEFAULT SYSUTCDATETIME(),
         CONSTRAINT FK_Interviews_Tenants FOREIGN KEY (TenantId) REFERENCES dbo.Tenants (TenantId),
         CONSTRAINT FK_Interviews_Applications FOREIGN KEY (JobApplicationId) REFERENCES dbo.JobApplications (JobApplicationId),
         CONSTRAINT FK_Interviews_Rounds FOREIGN KEY (JobRequestInterviewRoundId) REFERENCES dbo.JobRequestInterviewRounds (JobRequestInterviewRoundId),
+        CONSTRAINT FK_Interviews_JobPostRounds FOREIGN KEY (JobPostInterviewRoundId) REFERENCES dbo.JobPostInterviewRounds (JobPostInterviewRoundId),
         CONSTRAINT FK_Interviews_InterviewerUser FOREIGN KEY (InterviewerUserId) REFERENCES dbo.AppUsers (UserId),
         CONSTRAINT FK_Interviews_ScheduledByUser FOREIGN KEY (ScheduledByUserId) REFERENCES dbo.AppUsers (UserId),
-        CONSTRAINT CK_Interviews_Status CHECK (Status IN (N'Scheduled', N'Completed', N'Cancelled', N'NoShow'))
+        CONSTRAINT FK_Interviews_SkippedByUser FOREIGN KEY (SkippedByUserId) REFERENCES dbo.AppUsers (UserId),
+        CONSTRAINT CK_Interviews_Status CHECK (Status IN (N'Scheduled', N'Completed', N'Cancelled', N'NoShow', N'Skipped')),
+        CONSTRAINT CK_Interviews_SkippedAudit CHECK (
+            Status <> N'Skipped'
+            OR (
+                SkippedByUserId IS NOT NULL
+                AND SkippedAtUtc IS NOT NULL
+                AND NULLIF(LTRIM(RTRIM(SkipReason)), N'') IS NOT NULL
+            )
+        )
     );
 END;
 GO
@@ -679,6 +893,42 @@ BEGIN
         CONSTRAINT CK_InterviewFeedback_CommunicationScore CHECK (CommunicationScore IS NULL OR CommunicationScore BETWEEN 1 AND 5),
         CONSTRAINT CK_InterviewFeedback_CultureScore CHECK (CultureScore IS NULL OR CultureScore BETWEEN 1 AND 5)
     );
+END;
+GO
+
+IF OBJECT_ID(N'dbo.InterviewFeedback', N'U') IS NOT NULL
+   AND NOT EXISTS
+   (
+       SELECT 1
+       FROM sys.indexes
+       WHERE name = N'UX_InterviewFeedback_Submitted'
+         AND object_id = OBJECT_ID(N'dbo.InterviewFeedback')
+   )
+BEGIN
+    CREATE UNIQUE INDEX UX_InterviewFeedback_Submitted
+        ON dbo.InterviewFeedback (TenantId, InterviewId)
+        WHERE IsSubmitted = CAST(1 AS BIT);
+END;
+GO
+
+IF COL_LENGTH(N'dbo.Interviews', N'JobPostInterviewRoundId') IS NULL
+BEGIN
+    ALTER TABLE dbo.Interviews
+    ADD JobPostInterviewRoundId UNIQUEIDENTIFIER NULL;
+END;
+GO
+
+IF COL_LENGTH(N'dbo.Interviews', N'JobPostInterviewRoundId') IS NOT NULL
+   AND OBJECT_ID(N'dbo.JobPostInterviewRounds', N'U') IS NOT NULL
+   AND NOT EXISTS (
+        SELECT 1
+        FROM sys.foreign_keys
+        WHERE name = N'FK_Interviews_JobPostRounds'
+          AND parent_object_id = OBJECT_ID(N'dbo.Interviews')
+   )
+BEGIN
+    ALTER TABLE dbo.Interviews
+    ADD CONSTRAINT FK_Interviews_JobPostRounds FOREIGN KEY (JobPostInterviewRoundId) REFERENCES dbo.JobPostInterviewRounds (JobPostInterviewRoundId);
 END;
 GO
 
@@ -769,20 +1019,33 @@ BEGIN
 END;
 GO
 
-IF OBJECT_ID(N'dbo.WorkflowActionPermissions', N'U') IS NULL
+IF OBJECT_ID(N'dbo.JobRequestIntakeRoutingRules', N'U') IS NULL
 BEGIN
-    CREATE TABLE dbo.WorkflowActionPermissions
+    CREATE TABLE dbo.JobRequestIntakeRoutingRules
     (
+        JobRequestIntakeRoutingRuleId UNIQUEIDENTIFIER NOT NULL CONSTRAINT PK_JobRequestIntakeRoutingRules PRIMARY KEY,
         TenantId UNIQUEIDENTIFIER NOT NULL,
-        WorkflowTransitionId UNIQUEIDENTIFIER NOT NULL,
-        RoleId UNIQUEIDENTIFIER NOT NULL,
-        MustBeCurrentAssignee BIT NOT NULL CONSTRAINT DF_WorkflowActionPermissions_MustBeCurrentAssignee DEFAULT (0),
-        MustBeGroupMember BIT NOT NULL CONSTRAINT DF_WorkflowActionPermissions_MustBeGroupMember DEFAULT (0),
-        CreatedAtUtc DATETIME2(3) NOT NULL CONSTRAINT DF_WorkflowActionPermissions_CreatedAtUtc DEFAULT SYSUTCDATETIME(),
-        CONSTRAINT PK_WorkflowActionPermissions PRIMARY KEY (TenantId, WorkflowTransitionId, RoleId),
-        CONSTRAINT FK_WorkflowActionPermissions_Tenants FOREIGN KEY (TenantId) REFERENCES dbo.Tenants (TenantId),
-        CONSTRAINT FK_WorkflowActionPermissions_Transitions FOREIGN KEY (WorkflowTransitionId) REFERENCES dbo.WorkflowTransitions (WorkflowTransitionId),
-        CONSTRAINT FK_WorkflowActionPermissions_Roles FOREIGN KEY (RoleId) REFERENCES dbo.Roles (RoleId)
+        DepartmentId UNIQUEIDENTIFIER NOT NULL,
+        AssignmentType NVARCHAR(40) NOT NULL,
+        TargetUserId UNIQUEIDENTIFIER NULL,
+        TargetGroupId UNIQUEIDENTIFIER NULL,
+        Status NVARCHAR(20) NOT NULL CONSTRAINT DF_JobRequestIntakeRoutingRules_Status DEFAULT N'Active',
+        CreatedAtUtc DATETIME2(3) NOT NULL CONSTRAINT DF_JobRequestIntakeRoutingRules_CreatedAtUtc DEFAULT SYSUTCDATETIME(),
+        UpdatedAtUtc DATETIME2(3) NOT NULL CONSTRAINT DF_JobRequestIntakeRoutingRules_UpdatedAtUtc DEFAULT SYSUTCDATETIME(),
+        UpdatedByUserId UNIQUEIDENTIFIER NULL,
+        CONSTRAINT FK_JobRequestIntakeRoutingRules_Tenants FOREIGN KEY (TenantId) REFERENCES dbo.Tenants (TenantId),
+        CONSTRAINT FK_JobRequestIntakeRoutingRules_Departments FOREIGN KEY (DepartmentId) REFERENCES dbo.Departments (DepartmentId),
+        CONSTRAINT FK_JobRequestIntakeRoutingRules_TargetUser FOREIGN KEY (TargetUserId) REFERENCES dbo.AppUsers (UserId),
+        CONSTRAINT FK_JobRequestIntakeRoutingRules_TargetGroup FOREIGN KEY (TargetGroupId) REFERENCES dbo.Groups (GroupId),
+        CONSTRAINT FK_JobRequestIntakeRoutingRules_UpdatedByUser FOREIGN KEY (UpdatedByUserId) REFERENCES dbo.AppUsers (UserId),
+        CONSTRAINT CK_JobRequestIntakeRoutingRules_AssignmentType CHECK (AssignmentType IN (N'User', N'Group')),
+        CONSTRAINT CK_JobRequestIntakeRoutingRules_Status CHECK (Status IN (N'Active', N'Inactive')),
+        CONSTRAINT CK_JobRequestIntakeRoutingRules_Target CHECK (
+            (AssignmentType = N'User' AND TargetUserId IS NOT NULL AND TargetGroupId IS NULL)
+            OR
+            (AssignmentType = N'Group' AND TargetGroupId IS NOT NULL AND TargetUserId IS NULL)
+        ),
+        CONSTRAINT UQ_JobRequestIntakeRoutingRules_Department UNIQUE (TenantId, DepartmentId)
     );
 END;
 GO
@@ -855,12 +1118,19 @@ BEGIN
         TenantId UNIQUEIDENTIFIER NOT NULL,
         NotificationEventId UNIQUEIDENTIFIER NOT NULL,
         RecipientUserId UNIQUEIDENTIFIER NOT NULL,
+        Title NVARCHAR(200) NULL,
+        Message NVARCHAR(1000) NULL,
+        Category NVARCHAR(80) NOT NULL CONSTRAINT DF_NotificationRecipients_Category DEFAULT N'Workflow',
+        Severity NVARCHAR(20) NOT NULL CONSTRAINT DF_NotificationRecipients_Severity DEFAULT N'Info',
+        EntityType NVARCHAR(80) NULL,
+        EntityId UNIQUEIDENTIFIER NULL,
+        MetadataJson NVARCHAR(MAX) NOT NULL CONSTRAINT DF_NotificationRecipients_MetadataJson DEFAULT N'{}',
         ReadAtUtc DATETIME2(3) NULL,
         CreatedAtUtc DATETIME2(3) NOT NULL CONSTRAINT DF_NotificationRecipients_CreatedAtUtc DEFAULT SYSUTCDATETIME(),
         CONSTRAINT FK_NotificationRecipients_Tenants FOREIGN KEY (TenantId) REFERENCES dbo.Tenants (TenantId),
         CONSTRAINT FK_NotificationRecipients_NotificationEvents FOREIGN KEY (NotificationEventId) REFERENCES dbo.NotificationEvents (NotificationEventId),
         CONSTRAINT FK_NotificationRecipients_RecipientUser FOREIGN KEY (RecipientUserId) REFERENCES dbo.AppUsers (UserId),
-        CONSTRAINT UQ_NotificationRecipients_Event_User UNIQUE (NotificationEventId, RecipientUserId)
+        CONSTRAINT CK_NotificationRecipients_MetadataJson CHECK (ISJSON(MetadataJson) = 1)
     );
 END;
 GO
@@ -876,12 +1146,15 @@ BEGIN
         SourceEntityId UNIQUEIDENTIFIER NOT NULL,
         RecommendedEntityType NVARCHAR(80) NOT NULL,
         RecommendedEntityId UNIQUEIDENTIFIER NOT NULL,
+        AiAgentRunId UNIQUEIDENTIFIER NULL,
         Score DECIMAL(8,4) NULL,
         Explanation NVARCHAR(MAX) NULL,
         PayloadJson NVARCHAR(MAX) NOT NULL CONSTRAINT DF_AiRecommendationLogs_PayloadJson DEFAULT N'{}',
         CreatedAtUtc DATETIME2(3) NOT NULL CONSTRAINT DF_AiRecommendationLogs_CreatedAtUtc DEFAULT SYSUTCDATETIME(),
+        UpdatedAtUtc DATETIME2(3) NOT NULL CONSTRAINT DF_AiRecommendationLogs_UpdatedAtUtc DEFAULT SYSUTCDATETIME(),
         CONSTRAINT FK_AiRecommendationLogs_Tenants FOREIGN KEY (TenantId) REFERENCES dbo.Tenants (TenantId),
         CONSTRAINT FK_AiRecommendationLogs_AgentDefinitions FOREIGN KEY (AiAgentDefinitionId) REFERENCES dbo.AiAgentDefinitions (AiAgentDefinitionId),
+        CONSTRAINT FK_AiRecommendationLogs_AgentRuns FOREIGN KEY (AiAgentRunId) REFERENCES dbo.AiAgentRuns (AiAgentRunId),
         CONSTRAINT CK_AiRecommendationLogs_PayloadJson CHECK (ISJSON(PayloadJson) = 1)
     );
 END;
@@ -907,8 +1180,42 @@ IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'IX_JobApplications_Tenan
     CREATE INDEX IX_JobApplications_Tenant_Status ON dbo.JobApplications (TenantId, CurrentStatus, IsActive, AppliedAtUtc DESC);
 GO
 
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'IX_JobPosts_Tenant_Status' AND object_id = OBJECT_ID(N'dbo.JobPosts'))
+    CREATE INDEX IX_JobPosts_Tenant_Status ON dbo.JobPosts (TenantId, Status, UpdatedAtUtc DESC) INCLUDE (JobRequestId, RecruiterOwnerUserId);
+GO
+
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'IX_JobPostInterviewRounds_Post_Status' AND object_id = OBJECT_ID(N'dbo.JobPostInterviewRounds'))
+    CREATE INDEX IX_JobPostInterviewRounds_Post_Status ON dbo.JobPostInterviewRounds (TenantId, JobPostId, Status, RoundOrder);
+GO
+
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'IX_OfferLetters_Application_Version' AND object_id = OBJECT_ID(N'dbo.OfferLetters'))
+    CREATE INDEX IX_OfferLetters_Application_Version ON dbo.OfferLetters (TenantId, JobApplicationId, Version DESC);
+GO
+
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'IX_OfferPresentationMeetings_Application' AND object_id = OBJECT_ID(N'dbo.OfferPresentationMeetings'))
+    CREATE INDEX IX_OfferPresentationMeetings_Application ON dbo.OfferPresentationMeetings (TenantId, JobApplicationId, MeetingAtUtc DESC);
+GO
+
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'IX_Interviews_Application_PostRound' AND object_id = OBJECT_ID(N'dbo.Interviews'))
+    CREATE INDEX IX_Interviews_Application_PostRound ON dbo.Interviews (TenantId, JobApplicationId, JobPostInterviewRoundId, Status);
+GO
+
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'IX_CandidateEducation_Candidate' AND object_id = OBJECT_ID(N'dbo.CandidateEducation'))
+    CREATE INDEX IX_CandidateEducation_Candidate ON dbo.CandidateEducation (TenantId, CandidateId, IsPrimary DESC);
+GO
+
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'IX_CandidateWorkHistory_Candidate' AND object_id = OBJECT_ID(N'dbo.CandidateWorkHistory'))
+    CREATE INDEX IX_CandidateWorkHistory_Candidate ON dbo.CandidateWorkHistory (TenantId, CandidateId, IsCurrent DESC);
+GO
+
 IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'IX_WorkflowAssignments_Tenant_Active' AND object_id = OBJECT_ID(N'dbo.WorkflowAssignments'))
     CREATE INDEX IX_WorkflowAssignments_Tenant_Active ON dbo.WorkflowAssignments (TenantId, AssignmentStatus, EntityType, EntityId) INCLUDE (AssignedToUserId, AssignedToGroupId, AssignedToRoleId);
+GO
+
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'UX_AiRecommendationLogs_Latest' AND object_id = OBJECT_ID(N'dbo.AiRecommendationLogs'))
+    CREATE UNIQUE INDEX UX_AiRecommendationLogs_Latest
+        ON dbo.AiRecommendationLogs (TenantId, AiAgentDefinitionId, SourceEntityType, SourceEntityId, RecommendedEntityType, RecommendedEntityId)
+        WHERE AiAgentDefinitionId IS NOT NULL;
 GO
 
 IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'IX_WorkflowHistory_Tenant_Entity' AND object_id = OBJECT_ID(N'dbo.WorkflowHistory'))

@@ -4,7 +4,7 @@ using TalentPilot.Application.Admin.Users;
 namespace TalentPilot.Api.Controllers.Admin;
 
 [Route("api/admin/users")]
-public sealed class UsersController : ApiControllerBase
+public sealed class UsersController : AdminApiControllerBase
 {
     private readonly IAdminUsersService _usersService;
 

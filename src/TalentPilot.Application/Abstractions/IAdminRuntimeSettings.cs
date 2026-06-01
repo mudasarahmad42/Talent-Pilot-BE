@@ -9,4 +9,8 @@ public interface IAdminRuntimeSettings
     string EmbeddingModel { get; }
 
     int EmbeddingDimensions { get; }
+
+    string VectorStore { get; }
+
+    string OllamaBaseUrl { get; }
 }

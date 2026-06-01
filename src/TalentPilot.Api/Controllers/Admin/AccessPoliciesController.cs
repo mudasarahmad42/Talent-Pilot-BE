@@ -5,7 +5,7 @@ using TalentPilot.Application.Admin.Users;
 namespace TalentPilot.Api.Controllers.Admin;
 
 [Route("api/admin/access-policies")]
-public sealed class AccessPoliciesController : ApiControllerBase
+public sealed class AccessPoliciesController : AdminApiControllerBase
 {
     private readonly IAdminAccessPoliciesService _accessPoliciesService;
     private readonly IAdminRolesService _rolesService;

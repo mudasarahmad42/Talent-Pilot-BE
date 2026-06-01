@@ -10,6 +10,15 @@ public sealed class AdminTenantProfileService : IAdminTenantProfileService
 {
     private static readonly Regex SlugPattern = new("^[a-z0-9]+(?:-[a-z0-9]+)*$", RegexOptions.Compiled);
     private static readonly Regex HexColorPattern = new("^#[0-9a-fA-F]{6}$", RegexOptions.Compiled);
+    private static readonly HashSet<string> SupportedLogoContentTypes = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "image/png",
+        "image/jpeg",
+        "image/webp",
+        "image/svg+xml"
+    };
+
+    private const int MaxLogoBytes = 512 * 1024;
 
     private readonly IAdminTenantProfileRepository _repository;
     private readonly ICurrentUserAccessor _currentUser;
@@ -71,7 +80,8 @@ public sealed class AdminTenantProfileService : IAdminTenantProfileService
                 nameof(input.CandidateCvFormat),
                 nameof(input.PublicJobsEnabled),
                 nameof(input.InviteExpiryDays),
-                nameof(input.ReapplyCooldownDays)
+                nameof(input.ReapplyCooldownDays),
+                nameof(input.LogoFileName)
             }
         });
 
@@ -147,6 +157,40 @@ public sealed class AdminTenantProfileService : IAdminTenantProfileService
         if (input.ReapplyCooldownDays is < 1 or > 365)
         {
             return Result.Failure("tenant.reapply_cooldown_invalid", "Reapply cooldown must be between 1 and 365 days.");
+        }
+
+        if (string.IsNullOrWhiteSpace(input.LogoContentBase64))
+        {
+            return Result.Success();
+        }
+
+        if (string.IsNullOrWhiteSpace(input.LogoFileName))
+        {
+            return Result.Failure("tenant.logo_file_name_invalid", "Logo file name is required when a logo is uploaded.");
+        }
+
+        if (input.LogoFileName.Trim().Length > 260)
+        {
+            return Result.Failure("tenant.logo_file_name_too_long", "Logo file name cannot exceed 260 characters.");
+        }
+
+        if (string.IsNullOrWhiteSpace(input.LogoContentType) ||
+            !SupportedLogoContentTypes.Contains(input.LogoContentType.Trim()))
+        {
+            return Result.Failure("tenant.logo_content_type_invalid", "Logo must be a PNG, JPEG, WebP, or SVG image.");
+        }
+
+        try
+        {
+            var logoBytes = Convert.FromBase64String(input.LogoContentBase64);
+            if (logoBytes.Length > MaxLogoBytes)
+            {
+                return Result.Failure("tenant.logo_too_large", "Logo image cannot exceed 512 KB.");
+            }
+        }
+        catch (FormatException)
+        {
+            return Result.Failure("tenant.logo_invalid", "Logo image payload is not valid base64.");
         }
 
         return Result.Success();

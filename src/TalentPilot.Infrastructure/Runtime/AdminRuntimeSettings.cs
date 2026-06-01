@@ -9,11 +9,13 @@ public sealed class AdminRuntimeSettings : IAdminRuntimeSettings
     {
         var section = configuration.GetSection("TalentPilotRuntime");
         Provider = section["Provider"] ?? "Mock/Ollama";
-        LlmModel = section["LlmModel"] ?? "llama3.1:8b";
+        LlmModel = section["LlmModel"] ?? "llama3.2";
         EmbeddingModel = section["EmbeddingModel"] ?? "nomic-embed-text";
         EmbeddingDimensions = int.TryParse(section["EmbeddingDimensions"], out var dimensions)
             ? dimensions
             : 768;
+        VectorStore = section["VectorStore"] ?? "SqlServerVector";
+        OllamaBaseUrl = section["OllamaBaseUrl"] ?? "http://localhost:11434";
     }
 
     public string Provider { get; }
@@ -23,4 +25,8 @@ public sealed class AdminRuntimeSettings : IAdminRuntimeSettings
     public string EmbeddingModel { get; }
 
     public int EmbeddingDimensions { get; }
+
+    public string VectorStore { get; }
+
+    public string OllamaBaseUrl { get; }
 }

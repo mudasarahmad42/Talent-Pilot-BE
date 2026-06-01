@@ -4,7 +4,7 @@ using TalentPilot.Application.Admin.Notifications;
 namespace TalentPilot.Api.Controllers.Admin;
 
 [Route("api/admin/notifications")]
-public sealed class NotificationsController : ApiControllerBase
+public sealed class NotificationsController : AdminApiControllerBase
 {
     private readonly IAdminNotificationsService _service;
 
@@ -39,9 +39,13 @@ public sealed class NotificationsController : ApiControllerBase
     }
 
     [HttpGet("templates")]
-    public async Task<ActionResult<IReadOnlyList<NotificationTemplateSummary>>> ListTemplates(CancellationToken cancellationToken)
+    public async Task<ActionResult<AdminNotificationTemplatesResponse>> ListTemplates(
+        [FromQuery] string? search,
+        [FromQuery] int page = 1,
+        [FromQuery] int pageSize = 25,
+        CancellationToken cancellationToken = default)
     {
-        return FromResult(await _service.ListTemplatesAsync(cancellationToken));
+        return FromResult(await _service.ListTemplatesAsync(new AdminNotificationTemplatesQuery(search, page, pageSize), cancellationToken));
     }
 
     [HttpPut("templates/{templateId:guid}")]
@@ -51,5 +55,27 @@ public sealed class NotificationsController : ApiControllerBase
         CancellationToken cancellationToken)
     {
         return FromResult(await _service.UpdateTemplateAsync(templateId, input, cancellationToken));
+    }
+
+    [HttpPost("test-email")]
+    public async Task<ActionResult<SendTestNotificationEmailResponse>> SendTestEmail(
+        SendTestNotificationEmailInput input,
+        CancellationToken cancellationToken)
+    {
+        return FromResult(await _service.SendTestEmailAsync(input, cancellationToken));
+    }
+
+    [HttpGet("realtime/status")]
+    public async Task<ActionResult<RealtimeNotificationConnectionStatusResponse>> GetRealtimeConnectionStatus(
+        CancellationToken cancellationToken)
+    {
+        return FromResult(await _service.GetRealtimeConnectionStatusAsync(cancellationToken));
+    }
+
+    [HttpPost("test-realtime")]
+    public async Task<ActionResult<SendTestRealtimeNotificationResponse>> SendTestRealtime(
+        CancellationToken cancellationToken)
+    {
+        return FromResult(await _service.SendTestRealtimeNotificationAsync(cancellationToken));
     }
 }

@@ -3,9 +3,11 @@ SET QUOTED_IDENTIFIER ON;
 GO
 
 DECLARE @Now DATETIME2(3) = SYSUTCDATETIME();
+DECLARE @DemoPasswordHash NVARCHAR(500) = N'$2a$10$394j2/GNOR2jpagThC4RWOCkDm2HrM4Mb5nCBrkW3D5OTyQKsH4Nu';
 
 DECLARE @TenantId UNIQUEIDENTIFIER = '11111111-1111-1111-1111-111111111111';
 
+DECLARE @SystemAdminRoleId UNIQUEIDENTIFIER = '22222222-2222-2222-2222-222222222200';
 DECLARE @TenantAdminRoleId UNIQUEIDENTIFIER = '22222222-2222-2222-2222-222222222201';
 DECLARE @PresalesRoleId UNIQUEIDENTIFIER = '22222222-2222-2222-2222-222222222202';
 DECLARE @PmoRoleId UNIQUEIDENTIFIER = '22222222-2222-2222-2222-222222222203';
@@ -14,6 +16,7 @@ DECLARE @InterviewerRoleId UNIQUEIDENTIFIER = '22222222-2222-2222-2222-222222222
 DECLARE @HiringManagerRoleId UNIQUEIDENTIFIER = '22222222-2222-2222-2222-222222222206';
 DECLARE @EmployeeRoleId UNIQUEIDENTIFIER = '22222222-2222-2222-2222-222222222207';
 DECLARE @CandidateRoleId UNIQUEIDENTIFIER = '22222222-2222-2222-2222-222222222208';
+DECLARE @HodRoleId UNIQUEIDENTIFIER = '22222222-2222-2222-2222-222222222209';
 
 DECLARE @TenantAdminUserId UNIQUEIDENTIFIER = '33333333-3333-3333-3333-333333333301';
 DECLARE @PresalesUserId UNIQUEIDENTIFIER = '33333333-3333-3333-3333-333333333302';
@@ -22,10 +25,26 @@ DECLARE @RecruiterUserId UNIQUEIDENTIFIER = '33333333-3333-3333-3333-33333333330
 DECLARE @InterviewerUserId UNIQUEIDENTIFIER = '33333333-3333-3333-3333-333333333305';
 DECLARE @HiringManagerUserId UNIQUEIDENTIFIER = '33333333-3333-3333-3333-333333333306';
 DECLARE @CandidateUserId UNIQUEIDENTIFIER = '33333333-3333-3333-3333-333333333307';
+DECLARE @HodUserId UNIQUEIDENTIFIER = '33333333-3333-3333-3333-333333333311';
 
-DECLARE @PmoGroupId UNIQUEIDENTIFIER = '44444444-4444-4444-4444-444444444401';
-DECLARE @RecruitingGroupId UNIQUEIDENTIFIER = '44444444-4444-4444-4444-444444444402';
-DECLARE @InterviewPanelGroupId UNIQUEIDENTIFIER = '44444444-4444-4444-4444-444444444403';
+DECLARE @PmoEngineeringGroupId UNIQUEIDENTIFIER = '44444444-4444-4444-4444-444444444401';
+DECLARE @PmoQaGroupId UNIQUEIDENTIFIER = '44444444-4444-4444-4444-444444444404';
+DECLARE @PmoDevOpsGroupId UNIQUEIDENTIFIER = '44444444-4444-4444-4444-444444444405';
+DECLARE @RecruitingDeliveryGroupId UNIQUEIDENTIFIER = '44444444-4444-4444-4444-444444444402';
+DECLARE @InterviewPanelEngineeringGroupId UNIQUEIDENTIFIER = '44444444-4444-4444-4444-444444444403';
+
+DECLARE @PresalesRequestSubmittedEventId UNIQUEIDENTIFIER = '55555555-5555-5555-5555-555555555501';
+DECLARE @PmoEmployeeReferredEventId UNIQUEIDENTIFIER = '55555555-5555-5555-5555-555555555502';
+DECLARE @PmoForwardedToRecruitingEventId UNIQUEIDENTIFIER = '55555555-5555-5555-5555-555555555503';
+DECLARE @RecruiterAssignedInterviewersEventId UNIQUEIDENTIFIER = '55555555-5555-5555-5555-555555555504';
+DECLARE @InterviewFeedbackSubmittedEventId UNIQUEIDENTIFIER = '55555555-5555-5555-5555-555555555505';
+DECLARE @CandidateStageChangedEventId UNIQUEIDENTIFIER = '55555555-5555-5555-5555-555555555506';
+DECLARE @HiringManagerReviewReadyEventId UNIQUEIDENTIFIER = '55555555-5555-5555-5555-555555555507';
+DECLARE @RealtimeNotificationEventId UNIQUEIDENTIFIER = '55555555-5555-5555-5555-555555555508';
+DECLARE @PresalesEmployeeReferralAcceptedEventId UNIQUEIDENTIFIER = '55555555-5555-5555-5555-555555555509';
+DECLARE @PresalesEmployeeReferralRejectedEventId UNIQUEIDENTIFIER = '55555555-5555-5555-5555-555555555510';
+DECLARE @InterviewScheduledEventId UNIQUEIDENTIFIER = '55555555-5555-5555-5555-555555555512';
+DECLARE @OfferPresentationMeetingScheduledEventId UNIQUEIDENTIFIER = '55555555-5555-5555-5555-555555555513';
 
 MERGE dbo.Tenants AS target
 USING (VALUES
@@ -68,14 +87,16 @@ WHEN NOT MATCHED THEN
 
 MERGE dbo.Roles AS target
 USING (VALUES
-    (@TenantAdminRoleId, @TenantId, N'TenantAdmin', N'Tenant Admin', N'System', N'Tenant', 1, CAST(1 AS BIT), N'Active'),
-    (@PresalesRoleId, @TenantId, N'Presales', N'Presales', N'System', N'Tenant', 20, CAST(1 AS BIT), N'Active'),
-    (@PmoRoleId, @TenantId, N'PMO', N'PMO / Resource Manager', N'System', N'Tenant', 10, CAST(1 AS BIT), N'Active'),
-    (@RecruiterRoleId, @TenantId, N'Recruiter', N'Recruiter / HR', N'System', N'Tenant', 30, CAST(1 AS BIT), N'Active'),
-    (@InterviewerRoleId, @TenantId, N'Interviewer', N'Interviewer', N'System', N'Tenant', 50, CAST(1 AS BIT), N'Active'),
-    (@HiringManagerRoleId, @TenantId, N'HiringManager', N'Hiring Manager', N'System', N'Tenant', 40, CAST(1 AS BIT), N'Active'),
-    (@EmployeeRoleId, @TenantId, N'Employee', N'Employee', N'System', N'Tenant', 90, CAST(1 AS BIT), N'Active'),
-    (@CandidateRoleId, @TenantId, N'Candidate', N'Candidate', N'System', N'Portal', 100, CAST(1 AS BIT), N'Active')
+    (@SystemAdminRoleId, CAST(NULL AS UNIQUEIDENTIFIER), N'SystemAdmin', N'System Admin', N'System', N'Platform', 1, CAST(1 AS BIT), N'Active'),
+    (@TenantAdminRoleId, @TenantId, N'TenantAdmin', N'Tenant Admin', N'Tenant', N'Tenant', 1, CAST(0 AS BIT), N'Active'),
+    (@PresalesRoleId, @TenantId, N'Presales', N'Presales', N'Tenant', N'Tenant', 20, CAST(0 AS BIT), N'Active'),
+    (@PmoRoleId, @TenantId, N'PMO', N'PMO / Resource Manager', N'Tenant', N'Tenant', 10, CAST(0 AS BIT), N'Active'),
+    (@RecruiterRoleId, @TenantId, N'Recruiter', N'Recruiter / HR', N'Tenant', N'Tenant', 30, CAST(0 AS BIT), N'Active'),
+    (@InterviewerRoleId, @TenantId, N'Interviewer', N'Interviewer', N'Tenant', N'Tenant', 50, CAST(0 AS BIT), N'Active'),
+    (@HiringManagerRoleId, @TenantId, N'HiringManager', N'Hiring Manager', N'Tenant', N'Tenant', 40, CAST(0 AS BIT), N'Active'),
+    (@HodRoleId, @TenantId, N'HOD', N'HOD / Department Head', N'Tenant', N'Tenant', 45, CAST(0 AS BIT), N'Active'),
+    (@EmployeeRoleId, @TenantId, N'Employee', N'Employee', N'Tenant', N'Tenant', 90, CAST(0 AS BIT), N'Active'),
+    (@CandidateRoleId, @TenantId, N'Candidate', N'Candidate', N'Tenant', N'Tenant', 100, CAST(0 AS BIT), N'Active')
 ) AS source (RoleId, TenantId, Code, Name, Type, Scope, Priority, IsProtected, Status)
 ON target.RoleId = source.RoleId
 WHEN MATCHED THEN
@@ -125,12 +146,13 @@ WHEN NOT MATCHED THEN
 MERGE dbo.AppUsers AS target
 USING (VALUES
     (@TenantAdminUserId, @TenantId, N'Mudasar Ahmad', N'admin@tkxel.com', N'admin@tkxel.com', N'MA', N'Active', DATEADD(DAY, -1, @Now)),
-    (@PresalesUserId, @TenantId, N'Ahmed Raza', N'presales@tkxel.com', N'presales@tkxel.com', N'AR', N'Active', NULL),
-    (@PmoUserId, @TenantId, N'Ali Khan', N'pmo@tkxel.com', N'pmo@tkxel.com', N'AK', N'Active', NULL),
-    (@RecruiterUserId, @TenantId, N'Sara Malik', N'recruiter@tkxel.com', N'recruiter@tkxel.com', N'SM', N'Active', NULL),
-    (@InterviewerUserId, @TenantId, N'Bilal Hussain', N'interviewer@tkxel.com', N'interviewer@tkxel.com', N'BH', N'Active', NULL),
-    (@HiringManagerUserId, @TenantId, N'Fatima Noor', N'hiring.manager@tkxel.com', N'hiring.manager@tkxel.com', N'FN', N'Active', NULL),
-    (@CandidateUserId, @TenantId, N'Ayesha Khan', N'ayesha.khan@example.com', N'ayesha.khan@example.com', N'AK', N'Active', NULL)
+    (@PresalesUserId, @TenantId, N'Ahmed Raza', N'ai-presales@8pkk57.onmicrosoft.com', N'ai-presales@8pkk57.onmicrosoft.com', N'AR', N'Active', NULL),
+    (@PmoUserId, @TenantId, N'Ali Khan', N'ai-pmo@8pkk57.onmicrosoft.com', N'ai-pmo@8pkk57.onmicrosoft.com', N'AK', N'Active', NULL),
+    (@RecruiterUserId, @TenantId, N'Sara Malik', N'ai-recruiter@8pkk57.onmicrosoft.com', N'ai-recruiter@8pkk57.onmicrosoft.com', N'SM', N'Active', NULL),
+    (@InterviewerUserId, @TenantId, N'Bilal Hussain', N'ai-interviewer@8pkk57.onmicrosoft.com', N'ai-interviewer@8pkk57.onmicrosoft.com', N'BH', N'Active', NULL),
+    (@HiringManagerUserId, @TenantId, N'Fatima Noor', N'ai-hiring.manager@8pkk57.onmicrosoft.com', N'ai-hiring.manager@8pkk57.onmicrosoft.com', N'FN', N'Active', NULL),
+    (@HodUserId, @TenantId, N'Zara Siddiqui', N'ai-hod.engineering@8pkk57.onmicrosoft.com', N'ai-hod.engineering@8pkk57.onmicrosoft.com', N'ZS', N'Active', NULL),
+    (@CandidateUserId, @TenantId, N'Ayesha Khan', N'ai-candidate@8pkk57.onmicrosoft.com', N'ai-candidate@8pkk57.onmicrosoft.com', N'AK', N'Active', NULL)
 ) AS source (UserId, TenantId, DisplayName, Email, EmailNormalized, Initials, AccountStatus, LastActiveAtUtc)
 ON target.UserId = source.UserId
 WHEN MATCHED THEN
@@ -138,7 +160,7 @@ WHEN MATCHED THEN
         TenantId = source.TenantId,
         DisplayName = source.DisplayName,
         Email = source.Email,
-        EmailNormalized = source.EmailNormalized,
+        EmailNormalized = UPPER(source.EmailNormalized),
         Initials = source.Initials,
         AccountStatus = source.AccountStatus,
         LastActiveAtUtc = COALESCE(target.LastActiveAtUtc, source.LastActiveAtUtc),
@@ -146,17 +168,18 @@ WHEN MATCHED THEN
         DeletedAtUtc = NULL
 WHEN NOT MATCHED THEN
     INSERT (UserId, TenantId, DisplayName, Email, EmailNormalized, Initials, AccountStatus, LastActiveAtUtc, CreatedAtUtc, UpdatedAtUtc)
-    VALUES (source.UserId, source.TenantId, source.DisplayName, source.Email, source.EmailNormalized, source.Initials, source.AccountStatus, source.LastActiveAtUtc, @Now, @Now);
+    VALUES (source.UserId, source.TenantId, source.DisplayName, source.Email, UPPER(source.EmailNormalized), source.Initials, source.AccountStatus, source.LastActiveAtUtc, @Now, @Now);
 
 MERGE dbo.UserCredentials AS target
 USING (VALUES
-    ('77777777-7777-7777-7777-777777777301', @TenantId, @TenantAdminUserId, CAST(NULL AS NVARCHAR(500))),
-    ('77777777-7777-7777-7777-777777777302', @TenantId, @PresalesUserId, CAST(NULL AS NVARCHAR(500))),
-    ('77777777-7777-7777-7777-777777777303', @TenantId, @PmoUserId, CAST(NULL AS NVARCHAR(500))),
-    ('77777777-7777-7777-7777-777777777304', @TenantId, @RecruiterUserId, CAST(NULL AS NVARCHAR(500))),
-    ('77777777-7777-7777-7777-777777777305', @TenantId, @InterviewerUserId, CAST(NULL AS NVARCHAR(500))),
-    ('77777777-7777-7777-7777-777777777306', @TenantId, @HiringManagerUserId, CAST(NULL AS NVARCHAR(500))),
-    ('77777777-7777-7777-7777-777777777307', @TenantId, @CandidateUserId, CAST(NULL AS NVARCHAR(500)))
+    ('77777777-7777-7777-7777-777777777301', @TenantId, @TenantAdminUserId, @DemoPasswordHash),
+    ('77777777-7777-7777-7777-777777777302', @TenantId, @PresalesUserId, @DemoPasswordHash),
+    ('77777777-7777-7777-7777-777777777303', @TenantId, @PmoUserId, @DemoPasswordHash),
+    ('77777777-7777-7777-7777-777777777304', @TenantId, @RecruiterUserId, @DemoPasswordHash),
+    ('77777777-7777-7777-7777-777777777305', @TenantId, @InterviewerUserId, @DemoPasswordHash),
+    ('77777777-7777-7777-7777-777777777306', @TenantId, @HiringManagerUserId, @DemoPasswordHash),
+    ('77777777-7777-7777-7777-777777777311', @TenantId, @HodUserId, @DemoPasswordHash),
+    ('77777777-7777-7777-7777-777777777307', @TenantId, @CandidateUserId, @DemoPasswordHash)
 ) AS source (UserCredentialId, TenantId, UserId, PasswordHash)
 ON target.UserCredentialId = source.UserCredentialId
 WHEN MATCHED THEN
@@ -177,6 +200,7 @@ USING (VALUES
     (@TenantId, @RecruiterUserId, @RecruiterRoleId, @TenantAdminUserId),
     (@TenantId, @InterviewerUserId, @InterviewerRoleId, @TenantAdminUserId),
     (@TenantId, @HiringManagerUserId, @HiringManagerRoleId, @TenantAdminUserId),
+    (@TenantId, @HodUserId, @HodRoleId, @TenantAdminUserId),
     (@TenantId, @CandidateUserId, @CandidateRoleId, @TenantAdminUserId)
 ) AS source (TenantId, UserId, RoleId, AssignedByUserId)
 ON target.TenantId = source.TenantId AND target.UserId = source.UserId AND target.RoleId = source.RoleId
@@ -193,10 +217,16 @@ USING (
         (@TenantAdminRoleId, N'ai.settings.view'), (@TenantAdminRoleId, N'job.requests.view'), (@TenantAdminRoleId, N'job.requests.create'),
         (@TenantAdminRoleId, N'workflow.assignments.claim'), (@TenantAdminRoleId, N'bench.matches.view'), (@TenantAdminRoleId, N'candidates.manage'),
         (@TenantAdminRoleId, N'interviews.manage'), (@TenantAdminRoleId, N'hiring.decisions.manage'),
+        (@SystemAdminRoleId, N'access.admin.manage'), (@SystemAdminRoleId, N'access.users.manage'), (@SystemAdminRoleId, N'access.roles.manage'),
+        (@SystemAdminRoleId, N'audit.logs.view'), (@SystemAdminRoleId, N'tenant.profile.manage'), (@SystemAdminRoleId, N'notifications.manage'),
+        (@SystemAdminRoleId, N'ai.settings.view'), (@SystemAdminRoleId, N'job.requests.view'), (@SystemAdminRoleId, N'job.requests.create'),
+        (@SystemAdminRoleId, N'workflow.assignments.claim'), (@SystemAdminRoleId, N'bench.matches.view'), (@SystemAdminRoleId, N'candidates.manage'),
+        (@SystemAdminRoleId, N'interviews.manage'), (@SystemAdminRoleId, N'hiring.decisions.manage'),
         (@PresalesRoleId, N'job.requests.view'), (@PresalesRoleId, N'job.requests.create'),
-        (@PmoRoleId, N'job.requests.view'), (@PmoRoleId, N'workflow.assignments.claim'), (@PmoRoleId, N'bench.matches.view'),
+        (@PmoRoleId, N'job.requests.view'), (@PmoRoleId, N'job.requests.create'), (@PmoRoleId, N'workflow.assignments.claim'), (@PmoRoleId, N'bench.matches.view'),
         (@RecruiterRoleId, N'job.requests.view'), (@RecruiterRoleId, N'workflow.assignments.claim'), (@RecruiterRoleId, N'candidates.manage'), (@RecruiterRoleId, N'interviews.manage'),
         (@InterviewerRoleId, N'workflow.assignments.claim'), (@InterviewerRoleId, N'interviews.manage'),
+        (@HodRoleId, N'workflow.assignments.claim'), (@HodRoleId, N'interviews.manage'),
         (@HiringManagerRoleId, N'job.requests.view'), (@HiringManagerRoleId, N'workflow.assignments.claim'), (@HiringManagerRoleId, N'hiring.decisions.manage')
     ) AS roleSource (RoleId, PermissionId)
     INNER JOIN dbo.Permissions AS permissionSource ON permissionSource.PermissionId = roleSource.PermissionId
@@ -208,9 +238,11 @@ WHEN NOT MATCHED THEN
 
 MERGE dbo.Groups AS target
 USING (VALUES
-    (@PmoGroupId, @TenantId, N'PMO Queue', N'WorkflowRouting', @PmoUserId, N'Active'),
-    (@RecruitingGroupId, @TenantId, N'Recruiting Queue', N'WorkflowRouting', @RecruiterUserId, N'Active'),
-    (@InterviewPanelGroupId, @TenantId, N'Interview Panel', N'WorkflowRouting', @InterviewerUserId, N'Active')
+    (@PmoEngineeringGroupId, @TenantId, N'PMO - Engineering', N'WorkflowRouting', @PmoUserId, N'Active'),
+    (@PmoQaGroupId, @TenantId, N'PMO - QA', N'WorkflowRouting', @PmoUserId, N'Active'),
+    (@PmoDevOpsGroupId, @TenantId, N'PMO - DevOps', N'WorkflowRouting', @PmoUserId, N'Active'),
+    (@RecruitingDeliveryGroupId, @TenantId, N'Recruiting - Delivery', N'WorkflowRouting', @RecruiterUserId, N'Active'),
+    (@InterviewPanelEngineeringGroupId, @TenantId, N'Interview Panel - Engineering', N'WorkflowRouting', @InterviewerUserId, N'Active')
 ) AS source (GroupId, TenantId, Name, Purpose, DefaultOwnerUserId, Status)
 ON target.GroupId = source.GroupId
 WHEN MATCHED THEN
@@ -227,10 +259,13 @@ WHEN NOT MATCHED THEN
 
 MERGE dbo.GroupMembers AS target
 USING (VALUES
-    (@TenantId, @PmoGroupId, @PmoUserId, CAST(1 AS BIT)),
-    (@TenantId, @RecruitingGroupId, @RecruiterUserId, CAST(1 AS BIT)),
-    (@TenantId, @InterviewPanelGroupId, @InterviewerUserId, CAST(1 AS BIT)),
-    (@TenantId, @InterviewPanelGroupId, @HiringManagerUserId, CAST(0 AS BIT))
+    (@TenantId, @PmoEngineeringGroupId, @PmoUserId, CAST(1 AS BIT)),
+    (@TenantId, @PmoQaGroupId, @PmoUserId, CAST(1 AS BIT)),
+    (@TenantId, @PmoDevOpsGroupId, @PmoUserId, CAST(1 AS BIT)),
+    (@TenantId, @RecruitingDeliveryGroupId, @RecruiterUserId, CAST(1 AS BIT)),
+    (@TenantId, @InterviewPanelEngineeringGroupId, @InterviewerUserId, CAST(1 AS BIT)),
+    (@TenantId, @InterviewPanelEngineeringGroupId, @HodUserId, CAST(0 AS BIT)),
+    (@TenantId, @InterviewPanelEngineeringGroupId, @HiringManagerUserId, CAST(0 AS BIT))
 ) AS source (TenantId, GroupId, UserId, IsDefaultAssignee)
 ON target.TenantId = source.TenantId AND target.GroupId = source.GroupId AND target.UserId = source.UserId
 WHEN MATCHED THEN
@@ -257,19 +292,22 @@ WHEN NOT MATCHED THEN
 
 MERGE dbo.NotificationEvents AS target
 USING (VALUES
-    ('55555555-5555-5555-5555-555555555501', @TenantId, N'PRESALES_REQUEST_SUBMITTED', N'Presales request submitted', N'Group:PMO', N'Active'),
-    ('55555555-5555-5555-5555-555555555502', @TenantId, N'PMO_EMPLOYEE_REFERRED', N'PMO referred employee', N'User:PresalesOwner', N'Active'),
-    ('55555555-5555-5555-5555-555555555503', @TenantId, N'PMO_FORWARDED_TO_RECRUITING', N'PMO forwarded to recruiting', N'Group:Recruiting', N'Active'),
-    ('55555555-5555-5555-5555-555555555504', @TenantId, N'RECRUITER_ASSIGNED_INTERVIEWERS', N'Recruiter assigned interviewers', N'User:Interviewer', N'Active'),
-    ('55555555-5555-5555-5555-555555555505', @TenantId, N'INTERVIEW_FEEDBACK_SUBMITTED', N'Interview feedback submitted', N'User:Recruiter', N'Active'),
-    ('55555555-5555-5555-5555-555555555506', @TenantId, N'CANDIDATE_STAGE_CHANGED', N'Candidate stage changed', N'User:CandidateOrOwner', N'Active'),
-    ('55555555-5555-5555-5555-555555555507', @TenantId, N'HIRING_MANAGER_REVIEW_READY', N'Hiring manager review ready', N'User:HiringManager', N'Active')
+    (@PresalesRequestSubmittedEventId, @TenantId, N'PRESALES_REQUEST_SUBMITTED', N'Presales request submitted', N'DepartmentIntakeRoute', N'Active'),
+    (@PmoEmployeeReferredEventId, @TenantId, N'PMO_EMPLOYEE_REFERRED', N'PMO referred employee', N'User:PresalesOwner', N'Active'),
+    (@PmoForwardedToRecruitingEventId, @TenantId, N'PMO_FORWARDED_TO_RECRUITING', N'PMO forwarded to recruiting', N'Group:Recruiting', N'Active'),
+    (@PresalesEmployeeReferralAcceptedEventId, @TenantId, N'PRESALES_EMPLOYEE_REFERRAL_ACCEPTED', N'Presales accepted employee referral', N'User:PMOReferralOwner', N'Active'),
+    (@PresalesEmployeeReferralRejectedEventId, @TenantId, N'PRESALES_EMPLOYEE_REFERRAL_REJECTED', N'Presales rejected employee referral', N'User:PMOReferralOwner', N'Active'),
+    (@RecruiterAssignedInterviewersEventId, @TenantId, N'RECRUITER_ASSIGNED_INTERVIEWERS', N'Recruiter assigned interviewers', N'User:Interviewer', N'Active'),
+    (@InterviewScheduledEventId, @TenantId, N'INTERVIEW_SCHEDULED', N'Interview scheduled', N'User:InterviewParticipants', N'Active'),
+    (@InterviewFeedbackSubmittedEventId, @TenantId, N'INTERVIEW_FEEDBACK_SUBMITTED', N'Interview feedback submitted', N'User:Recruiter', N'Active'),
+    (@CandidateStageChangedEventId, @TenantId, N'CANDIDATE_STAGE_CHANGED', N'Candidate stage changed', N'User:CandidateOrOwner', N'Active'),
+    (@HiringManagerReviewReadyEventId, @TenantId, N'HIRING_MANAGER_REVIEW_READY', N'Hiring manager review ready', N'User:HiringManager', N'Active'),
+    (@OfferPresentationMeetingScheduledEventId, @TenantId, N'OFFER_PRESENTATION_MEETING_SCHEDULED', N'Offer presentation meeting scheduled', N'User:Candidate', N'Active'),
+    (@RealtimeNotificationEventId, @TenantId, N'REALTIME_NOTIFICATION', N'Realtime notification', N'Realtime', N'Active')
 ) AS source (NotificationEventId, TenantId, EventCode, Name, DefaultRecipientType, Status)
-ON target.NotificationEventId = source.NotificationEventId
+ON target.TenantId = source.TenantId AND target.EventCode = source.EventCode
 WHEN MATCHED THEN
     UPDATE SET
-        TenantId = source.TenantId,
-        EventCode = source.EventCode,
         Name = source.Name,
         DefaultRecipientType = source.DefaultRecipientType,
         Status = source.Status,
@@ -279,16 +317,41 @@ WHEN NOT MATCHED THEN
     VALUES (source.NotificationEventId, source.TenantId, source.EventCode, source.Name, source.DefaultRecipientType, source.Status, @Now, @Now);
 
 MERGE dbo.NotificationTemplates AS target
-USING (VALUES
-    ('66666666-6666-6666-6666-666666666601', @TenantId, '55555555-5555-5555-5555-555555555501', N'PMO intake email', N'PMO Queue', N'New request: {{jobTitle}}', N'{{requesterName}} submitted {{jobTitle}} for PMO review.', N'["jobTitle","requesterName"]', N'Active', @TenantAdminUserId),
-    ('66666666-6666-6666-6666-666666666602', @TenantId, '55555555-5555-5555-5555-555555555502', N'Employee referral email', N'Presales Owner', N'PMO referred {{employeeName}}', N'{{employeeName}} was referred for {{jobTitle}}. Review the recommendation in Talent Pilot.', N'["employeeName","jobTitle"]', N'Active', @TenantAdminUserId),
-    ('66666666-6666-6666-6666-666666666603', @TenantId, '55555555-5555-5555-5555-555555555503', N'Recruiting handoff email', N'Recruiting Queue', N'Recruiting handoff: {{jobTitle}}', N'PMO forwarded {{jobTitle}} to recruiting after bench review.', N'["jobTitle"]', N'Active', @TenantAdminUserId),
-    ('66666666-6666-6666-6666-666666666604', @TenantId, '55555555-5555-5555-5555-555555555504', N'Interview assignment email', N'Interviewer', N'Interview assigned: {{candidateName}}', N'You have been assigned to interview {{candidateName}} for {{jobTitle}}.', N'["candidateName","jobTitle"]', N'Active', @TenantAdminUserId),
-    ('66666666-6666-6666-6666-666666666605', @TenantId, '55555555-5555-5555-5555-555555555505', N'Feedback received email', N'Recruiter', N'Feedback submitted for {{candidateName}}', N'Interview feedback for {{candidateName}} is ready for recruiter review.', N'["candidateName"]', N'Active', @TenantAdminUserId),
-    ('66666666-6666-6666-6666-666666666606', @TenantId, '55555555-5555-5555-5555-555555555506', N'Candidate stage email', N'Candidate or Owner', N'Application update: {{stageName}}', N'{{candidateName}} moved to {{stageName}} for {{jobTitle}}.', N'["candidateName","stageName","jobTitle"]', N'Active', @TenantAdminUserId),
-    ('66666666-6666-6666-6666-666666666607', @TenantId, '55555555-5555-5555-5555-555555555507', N'Hiring manager review email', N'Hiring Manager', N'Final review ready: {{candidateName}}', N'{{candidateName}} is ready for final hiring-manager review for {{jobTitle}}.', N'["candidateName","jobTitle"]', N'Active', @TenantAdminUserId)
-) AS source (NotificationTemplateId, TenantId, NotificationEventId, Name, Recipient, Subject, Body, AllowedVariablesJson, Status, UpdatedByUserId)
-ON target.NotificationTemplateId = source.NotificationTemplateId
+USING
+(
+    SELECT
+        source.NotificationTemplateId,
+        source.TenantId,
+        event.NotificationEventId,
+        source.Name,
+        source.Recipient,
+        source.Subject,
+        source.Body,
+        source.AllowedVariablesJson,
+        source.Status,
+        source.UpdatedByUserId
+    FROM
+    (
+        VALUES
+            ('66666666-6666-6666-6666-666666666601', @TenantId, N'PRESALES_REQUEST_SUBMITTED', N'PMO intake email', N'Configured department intake recipient', N'New request: {{jobTitle}}', N'{{requesterName}} submitted {{jobTitle}} for PMO review.', N'["jobTitle","requesterName"]', N'Active', @TenantAdminUserId),
+            ('66666666-6666-6666-6666-666666666602', @TenantId, N'PMO_EMPLOYEE_REFERRED', N'Employee referral email', N'Presales Owner', N'PMO referred {{employeeName}}', N'{{employeeName}} was referred for {{jobTitle}}. Review the recommendation in Talent Pilot.', N'["employeeName","jobTitle"]', N'Active', @TenantAdminUserId),
+            ('66666666-6666-6666-6666-666666666603', @TenantId, N'PMO_FORWARDED_TO_RECRUITING', N'Recruiting handoff email', N'Recruiting - Delivery', N'Recruiting handoff: {{jobTitle}}', N'PMO forwarded {{jobTitle}} to recruiting after bench review.', N'["jobTitle"]', N'Active', @TenantAdminUserId),
+            ('66666666-6666-6666-6666-666666666608', @TenantId, N'PRESALES_EMPLOYEE_REFERRAL_ACCEPTED', N'Accepted referral email', N'PMO Referral Owner', N'Presales accepted an internal employee for {{jobTitle}}', N'{{requesterName}} accepted {{acceptedCount}} internal employee recommendation(s) and rejected {{rejectedCount}} for {{jobTitle}}.', N'["requesterName","acceptedCount","rejectedCount","jobTitle"]', N'Active', @TenantAdminUserId),
+            ('66666666-6666-6666-6666-666666666609', @TenantId, N'PRESALES_EMPLOYEE_REFERRAL_REJECTED', N'Rejected referral email', N'PMO Referral Owner', N'Presales rejected internal recommendations for {{jobTitle}}', N'{{requesterName}} rejected {{rejectedCount}} internal employee recommendation(s) for {{jobTitle}}. The request has returned to PMO Review.', N'["requesterName","rejectedCount","jobTitle"]', N'Active', @TenantAdminUserId),
+            ('66666666-6666-6666-6666-666666666604', @TenantId, N'RECRUITER_ASSIGNED_INTERVIEWERS', N'Interview assignment email', N'Interviewer', N'Interview assigned: {{candidateName}}', N'You have been assigned to interview {{candidateName}} for {{jobTitle}}.', N'["candidateName","jobTitle"]', N'Active', @TenantAdminUserId),
+            ('66666666-6666-6666-6666-666666666610', @TenantId, N'INTERVIEW_SCHEDULED', N'Interview scheduled email', N'Candidate, Interviewer, Hiring Manager', N'Interview scheduled: {{jobTitle}}', N'Interview scheduling emails are generated by backend code with candidate, interviewer, hiring manager, date, duration, and meeting details.', N'["jobTitle","candidateName","roundName","startsAtUtc","durationMinutes","meetingLink","locationText"]', N'Active', @TenantAdminUserId),
+            ('66666666-6666-6666-6666-666666666605', @TenantId, N'INTERVIEW_FEEDBACK_SUBMITTED', N'Feedback received email', N'Recruiter', N'Feedback submitted for {{candidateName}}', N'Interview feedback for {{candidateName}} is ready for recruiter review.', N'["candidateName"]', N'Active', @TenantAdminUserId),
+            ('66666666-6666-6666-6666-666666666606', @TenantId, N'CANDIDATE_STAGE_CHANGED', N'Candidate stage email', N'Candidate or Owner', N'Application update: {{stageName}}', N'{{candidateName}} moved to {{stageName}} for {{jobTitle}}.', N'["candidateName","stageName","jobTitle"]', N'Active', @TenantAdminUserId),
+            ('66666666-6666-6666-6666-666666666607', @TenantId, N'HIRING_MANAGER_REVIEW_READY', N'Hiring manager review email', N'Hiring Manager', N'Final review ready: {{candidateName}}', N'{{candidateName}} is ready for final hiring-manager review for {{jobTitle}}.', N'["candidateName","jobTitle"]', N'Active', @TenantAdminUserId),
+            ('66666666-6666-6666-6666-666666666613', @TenantId, N'OFFER_PRESENTATION_MEETING_SCHEDULED', N'Offer presentation meeting email', N'Candidate', N'Offer presentation scheduled: {{jobTitle}}', N'Your in-person offer presentation for {{jobTitle}} is scheduled at {{meetingAtUtc}}. Location: {{physicalLocation}}.', N'["jobTitle","meetingAtUtc","physicalLocation"]', N'Active', @TenantAdminUserId)
+    ) AS source (NotificationTemplateId, TenantId, EventCode, Name, Recipient, Subject, Body, AllowedVariablesJson, Status, UpdatedByUserId)
+    INNER JOIN dbo.NotificationEvents AS event
+        ON event.TenantId = source.TenantId
+        AND event.EventCode = source.EventCode
+) AS source
+ON target.TenantId = source.TenantId
+   AND target.NotificationEventId = source.NotificationEventId
+   AND target.Name = source.Name
 WHEN MATCHED THEN
     UPDATE SET
         TenantId = source.TenantId,
@@ -307,12 +370,14 @@ WHEN NOT MATCHED THEN
 
 MERGE dbo.AiAgentDefinitions AS target
 USING (VALUES
-    (N'requirement-parser', N'Requirement Parser', N'Extracts structured hiring requirements from resource requests and job descriptions.', N'Job request title, description, skills, seniority, location, and hiring context.', N'Structured requirement profile.', N'AI is advisory and does not approve or reject requests.', CAST(1 AS BIT)),
-    (N'cv-parser', N'CV Parser', N'Parses DOCX resumes into candidate profile and matching evidence.', N'DOCX text extracted server-side.', N'Structured candidate profile and skill evidence.', N'DOCX only for MVP; recruiters review extracted data.', CAST(1 AS BIT)),
-    (N'bench-matching', N'Bench Matching', N'Recommends currently benched employees to PMO.', N'Job requirement profile and active benched employee profiles.', N'Ranked employee matches with fit evidence.', N'PMO decides whether to refer an employee.', CAST(1 AS BIT)),
-    (N'talent-rediscovery', N'Talent Rediscovery', N'Prioritizes previous similar-job candidates before external sourcing.', N'Historical applications, interview outcomes, and requirement profile.', N'Ranked warm candidates.', N'Recruiters decide who to contact.', CAST(1 AS BIT)),
-    (N'fit-explanation', N'Fit Explanation', N'Explains why an employee or candidate was recommended.', N'Recommendation evidence, skills, experience, and gaps.', N'Readable strengths, gaps, and confidence notes.', N'Explanation supports human review only.', CAST(1 AS BIT)),
-    (N'hiring-manager-decision-brief', N'Hiring Manager Decision Brief', N'Summarizes interview feedback and candidate context for final human review.', N'Interview feedback, application history, and candidate profile.', N'Decision brief for Hiring Manager.', N'Hiring Manager owns the final decision.', CAST(1 AS BIT))
+    (N'requirement-parser', N'Requirement Parser', N'Builds the saved requirement profile used for future semantic matching when a Job Request is created.', N'Controlled Job Request intake fields, final saved description, department, location, skills, experience range, positions, and priority.', N'Indexed requirement profile and embedding metadata for downstream agents.', N'Runs after save; it cannot approve, reject, or move workflow stages.', CAST(1 AS BIT)),
+    (N'job-description-drafter', N'Job Description Drafter', N'Drafts editable Job Request descriptions from controlled intake fields.', N'Job title, client, department, location, selected tenant skills, experience range, required positions, priority, and hiring manager.', N'Plain-text job description ready for human editing.', N'Human review is required before save; the agent cannot approve, reject, or move workflow stages.', CAST(1 AS BIT)),
+    (N'cv-parser', N'CV Parser', N'Prefills recruiter manual sourcing forms from DOCX resumes.', N'DOCX text extracted server-side from the Add Candidate flow.', N'Structured candidate contact, profile, education, experience, and skill evidence for recruiter review.', N'DOCX only for MVP; recruiters review and edit every extracted field before inviting.', CAST(1 AS BIT)),
+    (N'bench-matching', N'Bench Matching', N'Ranks eligible internal employees for PMO Review using skill coverage, vector similarity, experience, location, availability, project evidence, and optional Tavily web research capped at 60 requests per day.', N'Claimed PMO Review request, required skills, saved job description embedding, active benched employees, employee skills, employee locations, project assignments, and safe public client/project snippets when available.', N'Ranked employee matches with score, confidence, strengths, gaps, location fit, project evidence, web research status, and fit rationale.', N'PMO decides whether to refer an employee; the agent cannot recommend directly to Presales or move workflow stages.', CAST(1 AS BIT)),
+    (N'talent-rediscovery', N'Talent Rediscovery', N'Ranks previous warm candidates before external sourcing using candidate skills, historical applications, interview feedback, outcomes, and vector similarity. No web search is used for candidate data.', N'Claimed Recruiter Sourcing request or draft Job Post, active tenant candidates with useful historical applications, candidate skills, interview feedback, prior outcomes, and candidate profile embeddings.', N'Ranked warm candidates with score, confidence, matched skills, gaps, prior application evidence, interview evidence, and caveats.', N'Recruiters review the ranking manually; the agent cannot contact candidates, move workflow stages, or make hiring decisions.', CAST(1 AS BIT)),
+    (N'applicant-ranking', N'Applicant Ranking', N'Ranks current applications for an active job post using candidate profile data, application evidence, uploaded CV/cover-letter context, interview history, and vector similarity. No web search is used.', N'Claimed Recruiter Sourcing job post, current active job-post applications, candidate skills/profile fields, cover letter, uploaded application documents, historical applications, interview feedback, and application/job post embeddings.', N'Ranked current applications with deterministic score, confidence, matched skills, gaps, document evidence, historical outcome evidence, semantic similarity status, and recruiter-facing rationale.', N'Recruiters decide whether to shortlist, schedule, hold, reject, or forward. The agent cannot contact candidates or move workflow stages.', CAST(1 AS BIT)),
+    (N'fit-explanation', N'Fit Explanation', N'Explains why an employee or candidate was ranked in Bench Matching or Talent Rediscovery.', N'Recommendation evidence, skills, experience, location, project/application history, interview evidence, and gaps.', N'Readable strengths, gaps, confidence notes, and caveats embedded in the ranking result.', N'Explanation supports human review only and never selects or contacts candidates by itself.', CAST(1 AS BIT)),
+    (N'hiring-manager-decision-brief', N'Hiring Manager Decision Brief', N'Summarizes interview feedback and candidate context on Hiring Manager Review.', N'Candidate profile, source details, recruiter notes, job request/post summary, interview statuses, scores, recommendations, and skipped-round reasons.', N'Advisory decision brief shown to the Hiring Manager before offer or final outcome actions.', N'Hiring Manager owns the final decision; the brief cannot generate offers or close requests by itself.', CAST(1 AS BIT))
 ) AS source (AiAgentDefinitionId, DisplayName, Responsibility, InputSummary, OutputSummary, MvpBoundary, Enabled)
 ON target.AiAgentDefinitionId = source.AiAgentDefinitionId
 WHEN MATCHED THEN

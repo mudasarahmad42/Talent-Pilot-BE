@@ -49,10 +49,10 @@ public sealed class AuthService : IAuthService
             return Result<AuthResponse>.Failure("auth.invalid_credentials", "Invalid credentials.");
         }
 
-        var passwordAccepted = IsDemoCardLoginAllowed(request) ||
-            (!string.IsNullOrWhiteSpace(request.Password) &&
-             !string.IsNullOrWhiteSpace(user.PasswordHash) &&
-             _passwordVerifier.Verify(request.Password, user.PasswordHash));
+        var passwordAccepted =
+            !string.IsNullOrWhiteSpace(request.Password) &&
+            !string.IsNullOrWhiteSpace(user.PasswordHash) &&
+            _passwordVerifier.Verify(request.Password, user.PasswordHash);
 
         if (!passwordAccepted)
         {
@@ -118,13 +118,6 @@ public sealed class AuthService : IAuthService
         }
 
         return Result.Success();
-    }
-
-    private bool IsDemoCardLoginAllowed(LoginRequest request)
-    {
-        return _options.AllowDemoCardLogin &&
-            (string.IsNullOrWhiteSpace(request.Password) ||
-             string.Equals(request.Password, "demo", StringComparison.OrdinalIgnoreCase));
     }
 
     private async Task<Result<CurrentUserContext>> BuildCurrentUserAsync(

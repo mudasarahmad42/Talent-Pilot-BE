@@ -39,7 +39,9 @@ public static class RouteAccessMapper
         {
             routes.Add("/app/candidates");
             routes.Add("/app/candidate-pipeline");
+            routes.Add("/app/job-publishing");
             routes.Add("/app/recruitment/queue");
+            routes.Add("/app/recruitment/sourcing");
         }
 
         if (permissions.Contains(AccessConstants.ManageInterviews))
