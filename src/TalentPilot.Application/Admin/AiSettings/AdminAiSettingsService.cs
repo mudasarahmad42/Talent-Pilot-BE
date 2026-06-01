@@ -5,53 +5,89 @@ namespace TalentPilot.Application.Admin.AiSettings;
 
 public interface IAdminAiSettingsService
 {
-    Result<AdminAiRuntimeResponse> GetRuntime();
+    Task<Result<AdminAiRuntimeResponse>> GetRuntimeAsync(CancellationToken cancellationToken);
 
-    Result<AdminAiAgentListResponse> GetAgents();
+    Task<Result<AdminAiAgentListResponse>> GetAgentsAsync(CancellationToken cancellationToken);
 
-    Result<AdminAiGuardrailsResponse> GetGuardrails();
+    Task<Result<AdminAiGuardrailsResponse>> GetGuardrailsAsync(CancellationToken cancellationToken);
+}
+
+public interface IAdminAiSettingsRepository
+{
+    Task<AdminAiRuntimeResponse?> GetRuntimeAsync(Guid tenantId, CancellationToken cancellationToken);
+
+    Task<IReadOnlyList<AdminAiAgentDefinition>> ListAgentsAsync(CancellationToken cancellationToken);
+
+    Task<AdminAiGuardrailSettings?> GetGuardrailsAsync(Guid tenantId, CancellationToken cancellationToken);
 }
 
 public sealed class AdminAiSettingsService : IAdminAiSettingsService
 {
-    private readonly IAdminRuntimeSettings _runtimeSettings;
+    private readonly IAdminAiSettingsRepository _repository;
+    private readonly ICurrentUserAccessor _currentUser;
 
-    public AdminAiSettingsService(IAdminRuntimeSettings runtimeSettings)
+    public AdminAiSettingsService(
+        IAdminAiSettingsRepository repository,
+        ICurrentUserAccessor currentUser)
     {
-        _runtimeSettings = runtimeSettings;
+        _repository = repository;
+        _currentUser = currentUser;
     }
 
-    public Result<AdminAiRuntimeResponse> GetRuntime()
+    public async Task<Result<AdminAiRuntimeResponse>> GetRuntimeAsync(CancellationToken cancellationToken)
     {
-        return Result<AdminAiRuntimeResponse>.Success(new AdminAiRuntimeResponse(
-            _runtimeSettings.Provider,
-            _runtimeSettings.LlmModel,
-            _runtimeSettings.EmbeddingModel,
-            _runtimeSettings.EmbeddingDimensions,
-            "SQL Server",
-            RuntimeEditable: false));
+        var runtime = await _repository.GetRuntimeAsync(_currentUser.TenantId, cancellationToken);
+        return runtime is null
+            ? Result<AdminAiRuntimeResponse>.Failure("admin_ai_settings.runtime_missing", "AI runtime settings were not found for this tenant.")
+            : Result<AdminAiRuntimeResponse>.Success(runtime);
     }
 
-    public Result<AdminAiAgentListResponse> GetAgents()
+    public async Task<Result<AdminAiAgentListResponse>> GetAgentsAsync(CancellationToken cancellationToken)
     {
-        var agents = new[]
+        var agents = await _repository.ListAgentsAsync(cancellationToken);
+        var enabledAgents = agents.Where(agent => agent.Enabled).ToArray();
+
+        return Result<AdminAiAgentListResponse>.Success(new AdminAiAgentListResponse(enabledAgents.Length, enabledAgents));
+    }
+
+    public async Task<Result<AdminAiGuardrailsResponse>> GetGuardrailsAsync(CancellationToken cancellationToken)
+    {
+        var settings = await _repository.GetGuardrailsAsync(_currentUser.TenantId, cancellationToken);
+        if (settings is null)
         {
-            new AdminAiAgentDefinition("requirement-parser", "Requirement Parser", "Extracts structured hiring requirements from resource requests and job descriptions.", "Job request title, description, skills, seniority, location, and hiring context.", "Structured requirement profile.", "AI is advisory and does not approve or reject requests.", true),
-            new AdminAiAgentDefinition("cv-parser", "CV Parser", "Parses DOCX resumes into candidate profile and matching evidence.", "DOCX text extracted server-side.", "Structured candidate profile and skill evidence.", "DOCX only for MVP; recruiters review extracted data.", true),
-            new AdminAiAgentDefinition("bench-matching", "Bench Matching", "Recommends currently benched employees to PMO.", "Job requirement profile and active benched employee profiles.", "Ranked employee matches with fit evidence.", "PMO decides whether to refer an employee.", true),
-            new AdminAiAgentDefinition("talent-rediscovery", "Talent Rediscovery", "Prioritizes previous similar-job candidates before external sourcing.", "Historical applications, interview outcomes, and requirement profile.", "Ranked warm candidates.", "Recruiters decide who to contact.", true),
-            new AdminAiAgentDefinition("fit-explanation", "Fit Explanation", "Explains why an employee or candidate was recommended.", "Recommendation evidence, skills, experience, and gaps.", "Readable strengths, gaps, and confidence notes.", "Explanation supports human review only.", true),
-            new AdminAiAgentDefinition("hiring-manager-decision-brief", "Hiring Manager Decision Brief", "Summarizes interview feedback and candidate context for final human review.", "Interview feedback, application history, and candidate profile.", "Decision brief for Hiring Manager.", "Hiring Manager owns the final decision.", true)
+            return Result<AdminAiGuardrailsResponse>.Failure("admin_ai_settings.guardrails_missing", "AI guardrail settings were not found for this tenant.");
+        }
+
+        var items = new[]
+        {
+            new AdminAiGuardrailItem(
+                "Human Review",
+                settings.HumanReviewRequired ? "Required" : "Optional",
+                settings.HumanReviewRequired
+                    ? "Tenant policy requires human review before AI-supported decisions are applied."
+                    : "Tenant policy does not require human review for advisory AI output."),
+            new AdminAiGuardrailItem(
+                "Auto Reject",
+                settings.AutoRejectEnabled ? "Enabled" : "Disabled",
+                settings.AutoRejectEnabled
+                    ? "Tenant policy allows automatic candidate rejection."
+                    : "Tenant policy prevents AI from rejecting candidates.")
         };
 
-        return Result<AdminAiAgentListResponse>.Success(new AdminAiAgentListResponse(agents.Length, agents));
+        return Result<AdminAiGuardrailsResponse>.Success(new AdminAiGuardrailsResponse(
+            settings.HumanReviewRequired,
+            settings.AutoRejectEnabled,
+            BuildDecisionBoundary(settings),
+            items));
     }
 
-    public Result<AdminAiGuardrailsResponse> GetGuardrails()
+    private static string BuildDecisionBoundary(AdminAiGuardrailSettings settings)
     {
-        return Result<AdminAiGuardrailsResponse>.Success(new AdminAiGuardrailsResponse(
-            HumanReviewRequired: true,
-            AutoRejectEnabled: false,
-            "AI recommendations never auto-reject candidates or make final hiring decisions."));
+        if (settings.HumanReviewRequired && !settings.AutoRejectEnabled)
+        {
+            return "AI output is advisory. Human users remain responsible for candidate decisions and workflow movement.";
+        }
+
+        return "AI behavior follows the tenant guardrail settings returned by the backend.";
     }
 }

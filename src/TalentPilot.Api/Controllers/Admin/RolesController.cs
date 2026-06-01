@@ -4,7 +4,7 @@ using TalentPilot.Application.Admin.Roles;
 namespace TalentPilot.Api.Controllers.Admin;
 
 [Route("api/admin/roles")]
-public sealed class RolesController : ApiControllerBase
+public sealed class RolesController : AdminApiControllerBase
 {
     private readonly IAdminRolesService _service;
 

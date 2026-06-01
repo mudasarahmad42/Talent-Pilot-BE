@@ -1,28 +1,1064 @@
 using System.Text.Json;
+using System.Data.Common;
 using Dapper;
+using Microsoft.Data.SqlClient;
+using TalentPilot.Application.Admin.AiSettings;
 using TalentPilot.Application.Admin.AuditLogs;
+using TalentPilot.Application.Admin.CandidateSources;
+using TalentPilot.Application.Admin.Departments;
 using TalentPilot.Application.Admin.Groups;
+using TalentPilot.Application.Admin.HiringPipelines;
 using TalentPilot.Application.Admin.Notifications;
 using TalentPilot.Application.Admin.Roles;
+using TalentPilot.Application.Admin.Skills;
 using TalentPilot.Application.Admin.Users;
+using TalentPilot.Application.Admin.Workflows;
+using TalentPilot.Application.Notifications;
 using TalentPilot.Domain.Access;
+using TalentPilot.Domain.Notifications;
 
 namespace TalentPilot.Infrastructure.Persistence.Repositories;
 
 public sealed class DapperAdminCenterRepository :
     IAdminUsersRepository,
     IAdminAccessPoliciesRepository,
+    IAdminDepartmentsRepository,
     IAdminGroupsRepository,
     IAdminRolesRepository,
+    IAdminSkillsRepository,
     IAdminNotificationsRepository,
     IAdminAuditLogRepository,
-    INotificationOutboxProcessor
+    IAdminAiSettingsRepository,
+    IAdminCandidateSourcesRepository,
+    IAdminWorkflowsRepository,
+    IAdminHiringPipelinesRepository,
+    IRealtimeNotificationRepository
 {
     private readonly ISqlConnectionFactory _connectionFactory;
 
     public DapperAdminCenterRepository(ISqlConnectionFactory connectionFactory)
     {
         _connectionFactory = connectionFactory;
+    }
+
+    public async Task<AdminAiRuntimeResponse?> GetRuntimeAsync(Guid tenantId, CancellationToken cancellationToken)
+    {
+        const string sql = """
+            SELECT
+                ProviderMode AS Provider,
+                LlmModel,
+                EmbeddingModel,
+                EmbeddingDimensions,
+                VectorStore,
+                CAST(CASE WHEN ModelSwitchingLocked = 0 THEN 1 ELSE 0 END AS bit) AS RuntimeEditable
+            FROM dbo.TenantAiSettings
+            WHERE TenantId = @TenantId;
+            """;
+
+        await using var connection = _connectionFactory.CreateConnection();
+        return await connection.QuerySingleOrDefaultAsync<AdminAiRuntimeResponse>(
+            new CommandDefinition(sql, new { TenantId = tenantId }, cancellationToken: cancellationToken));
+    }
+
+    public async Task<IReadOnlyList<AdminAiAgentDefinition>> ListAgentsAsync(CancellationToken cancellationToken)
+    {
+        const string sql = """
+            SELECT
+                AiAgentDefinitionId AS Id,
+                DisplayName,
+                Responsibility,
+                InputSummary,
+                OutputSummary,
+                MvpBoundary,
+                Enabled
+            FROM dbo.AiAgentDefinitions
+            WHERE Enabled = 1
+            ORDER BY DisplayName;
+            """;
+
+        await using var connection = _connectionFactory.CreateConnection();
+        var agents = await connection.QueryAsync<AdminAiAgentDefinition>(
+            new CommandDefinition(sql, cancellationToken: cancellationToken));
+
+        return agents.ToArray();
+    }
+
+    public async Task<AdminAiGuardrailSettings?> GetGuardrailsAsync(Guid tenantId, CancellationToken cancellationToken)
+    {
+        const string sql = """
+            SELECT
+                HumanReviewRequired,
+                AutoRejectEnabled
+            FROM dbo.TenantAiSettings
+            WHERE TenantId = @TenantId;
+            """;
+
+        await using var connection = _connectionFactory.CreateConnection();
+        return await connection.QuerySingleOrDefaultAsync<AdminAiGuardrailSettings>(
+            new CommandDefinition(sql, new { TenantId = tenantId }, cancellationToken: cancellationToken));
+    }
+
+    public async Task<AdminCandidateSourcesResponse> ListAsync(
+        Guid tenantId,
+        AdminCandidateSourcesQuery query,
+        CancellationToken cancellationToken)
+    {
+        const string sql = """
+            SELECT
+                CandidateSourceLabelId,
+                Code,
+                DisplayName,
+                ReportingCategory,
+                Status,
+                UpdatedAtUtc
+            FROM dbo.CandidateSourceLabels
+            WHERE TenantId = @TenantId
+              AND (
+                  @Search IS NULL
+                  OR Code LIKE @SearchLike
+                  OR DisplayName LIKE @SearchLike
+                  OR ReportingCategory LIKE @SearchLike
+                  OR Status LIKE @SearchLike
+              )
+            ORDER BY DisplayName;
+            """;
+
+        await using var connection = _connectionFactory.CreateConnection();
+        var sources = (await connection.QueryAsync<CandidateSourceLabelRow>(
+                new CommandDefinition(
+                    sql,
+                    SearchParameters(tenantId, query.Search),
+                    cancellationToken: cancellationToken)))
+            .Select(row => new AdminCandidateSourceListItem(
+                row.CandidateSourceLabelId,
+                row.Code,
+                row.DisplayName,
+                row.ReportingCategory,
+                row.Status,
+                Utc(row.UpdatedAtUtc)))
+            .ToArray();
+
+        var items = sources
+            .Skip((query.Page - 1) * query.PageSize)
+            .Take(query.PageSize)
+            .ToArray();
+        var summary = new AdminCandidateSourcesSummary(
+            sources.Count(source => source.Status == "Active"),
+            sources.Select(source => source.ReportingCategory).Distinct(StringComparer.OrdinalIgnoreCase).Count(),
+            sources.Count(source => source.Status == "Inactive"));
+
+        return new AdminCandidateSourcesResponse(summary, items, query.Page, query.PageSize, sources.Length);
+    }
+
+    public async Task<AdminWorkflowConfigurationResponse> GetConfigurationAsync(
+        Guid tenantId,
+        CancellationToken cancellationToken)
+    {
+        const string sql = """
+            SELECT
+                WorkflowDefinitionId,
+                Code,
+                Name,
+                EntityType,
+                Status,
+                UpdatedAtUtc
+            FROM dbo.WorkflowDefinitions
+            WHERE TenantId = @TenantId
+            ORDER BY EntityType, Name;
+
+            SELECT
+                WorkflowStageId,
+                StageKey,
+                Name,
+                StageOrder,
+                IsTerminal,
+                Status
+            FROM dbo.WorkflowStages
+            WHERE TenantId = @TenantId
+            ORDER BY StageOrder, Name;
+
+            SELECT
+                rr.WorkflowRoutingRuleId,
+                rr.WorkflowTransitionId,
+                wt.ActionKey,
+                wt.Name AS ActionName,
+                fs.Name AS FromStage,
+                ts.Name AS ToStage,
+                rr.AssignmentType,
+                CASE rr.AssignmentType
+                    WHEN N'User' THEN COALESCE(targetUser.DisplayName, N'Configured user')
+                    WHEN N'Group' THEN COALESCE(targetGroup.Name, N'Configured group')
+                    WHEN N'Role' THEN COALESCE(targetRole.Name, N'Configured role')
+                    WHEN N'DynamicResolver' THEN COALESCE(rr.ResolverKey, N'Dynamic resolver')
+                    WHEN N'NoAssignment' THEN N'No assignment'
+                    ELSE COALESCE(rr.ResolverKey, N'Unassigned')
+                END AS AssignmentTarget,
+                COALESCE(rr.ResolverKey, N'') AS ResolverKey,
+                rr.Status
+            FROM dbo.WorkflowRoutingRules AS rr
+            INNER JOIN dbo.WorkflowTransitions AS wt ON wt.WorkflowTransitionId = rr.WorkflowTransitionId
+            INNER JOIN dbo.WorkflowStages AS fs ON fs.WorkflowStageId = wt.FromStageId
+            INNER JOIN dbo.WorkflowStages AS ts ON ts.WorkflowStageId = wt.ToStageId
+            LEFT JOIN dbo.AppUsers AS targetUser ON targetUser.UserId = rr.TargetUserId
+            LEFT JOIN dbo.Groups AS targetGroup ON targetGroup.GroupId = rr.TargetGroupId
+            LEFT JOIN dbo.Roles AS targetRole ON targetRole.RoleId = rr.TargetRoleId
+            WHERE rr.TenantId = @TenantId
+            ORDER BY fs.StageOrder, ts.StageOrder, wt.Name;
+
+            SELECT
+                jir.JobRequestIntakeRoutingRuleId,
+                d.DepartmentId,
+                d.Code AS DepartmentCode,
+                d.Name AS DepartmentName,
+                COALESCE(jir.AssignmentType, N'Fallback') AS AssignmentType,
+                jir.TargetUserId,
+                jir.TargetGroupId,
+                CASE jir.AssignmentType
+                    WHEN N'User' THEN COALESCE(targetUser.DisplayName, N'Configured user')
+                    WHEN N'Group' THEN COALESCE(targetGroup.Name, N'Configured group')
+                    ELSE N'Tenant Admin fallback'
+                END AS AssignmentTarget,
+                COALESCE(jir.Status, N'Missing') AS Status,
+                CASE
+                    WHEN jir.JobRequestIntakeRoutingRuleId IS NULL OR jir.Status <> N'Active' THEN CAST(1 AS BIT)
+                    ELSE CAST(0 AS BIT)
+                END AS UsesTenantAdminFallback
+            FROM dbo.Departments AS d
+            LEFT JOIN dbo.JobRequestIntakeRoutingRules AS jir
+                ON jir.TenantId = d.TenantId
+                AND jir.DepartmentId = d.DepartmentId
+            LEFT JOIN dbo.AppUsers AS targetUser
+                ON targetUser.TenantId = d.TenantId
+                AND targetUser.UserId = jir.TargetUserId
+            LEFT JOIN dbo.Groups AS targetGroup
+                ON targetGroup.TenantId = d.TenantId
+                AND targetGroup.GroupId = jir.TargetGroupId
+            WHERE d.TenantId = @TenantId
+              AND d.Status = N'Active'
+            ORDER BY d.Name;
+
+            SELECT COUNT(1)
+            FROM dbo.WorkflowDefinitions
+            WHERE TenantId = @TenantId
+              AND Status = N'Active';
+
+            SELECT COUNT(1)
+            FROM dbo.WorkflowStages
+            WHERE TenantId = @TenantId
+              AND Status = N'Active';
+
+            SELECT COUNT(1)
+            FROM dbo.WorkflowTransitions
+            WHERE TenantId = @TenantId
+              AND Status = N'Active';
+
+            SELECT COUNT(1)
+            FROM dbo.WorkflowRoutingRules
+            WHERE TenantId = @TenantId
+              AND Status = N'Active';
+
+            SELECT COUNT(1)
+            FROM dbo.JobRequestIntakeRoutingRules AS jir
+            INNER JOIN dbo.Departments AS d
+                ON d.TenantId = jir.TenantId
+                AND d.DepartmentId = jir.DepartmentId
+                AND d.Status = N'Active'
+            WHERE jir.TenantId = @TenantId
+              AND jir.Status = N'Active';
+
+            SELECT COUNT(1)
+            FROM dbo.Departments AS d
+            LEFT JOIN dbo.JobRequestIntakeRoutingRules AS jir
+                ON jir.TenantId = d.TenantId
+                AND jir.DepartmentId = d.DepartmentId
+                AND jir.Status = N'Active'
+            WHERE d.TenantId = @TenantId
+              AND d.Status = N'Active'
+              AND jir.JobRequestIntakeRoutingRuleId IS NULL;
+            """;
+
+        await using var connection = _connectionFactory.CreateConnection();
+        using var grid = await connection.QueryMultipleAsync(new CommandDefinition(
+            sql,
+            new { TenantId = tenantId },
+            cancellationToken: cancellationToken));
+
+        var definitions = (await grid.ReadAsync<WorkflowDefinitionRow>())
+            .Select(row => new AdminWorkflowDefinitionItem(
+                row.WorkflowDefinitionId,
+                row.Code,
+                row.Name,
+                row.EntityType,
+                row.Status,
+                Utc(row.UpdatedAtUtc)))
+            .ToArray();
+        var stages = (await grid.ReadAsync<WorkflowStageRow>())
+            .Select(row => new AdminWorkflowStageItem(
+                row.WorkflowStageId,
+                row.StageKey,
+                row.Name,
+                row.StageOrder,
+                row.IsTerminal,
+                row.Status))
+            .ToArray();
+        var routingRules = (await grid.ReadAsync<WorkflowRoutingRuleRow>())
+            .Select(row => new AdminWorkflowRoutingRuleItem(
+                row.WorkflowRoutingRuleId,
+                row.WorkflowTransitionId,
+                row.ActionKey,
+                row.ActionName,
+                row.FromStage,
+                row.ToStage,
+                row.AssignmentType,
+                row.AssignmentTarget,
+                row.ResolverKey,
+                row.Status))
+            .ToArray();
+        var intakeRoutingRules = (await grid.ReadAsync<WorkflowIntakeRoutingRuleRow>())
+            .Select(row => new AdminWorkflowIntakeRoutingRuleItem(
+                row.JobRequestIntakeRoutingRuleId,
+                row.DepartmentId,
+                row.DepartmentCode,
+                row.DepartmentName,
+                row.AssignmentType,
+                row.TargetUserId,
+                row.TargetGroupId,
+                row.AssignmentTarget,
+                row.Status,
+                row.UsesTenantAdminFallback))
+            .ToArray();
+        var workflowDefinitionCount = await grid.ReadSingleAsync<int>();
+        var activeStageCount = await grid.ReadSingleAsync<int>();
+        var activeTransitionCount = await grid.ReadSingleAsync<int>();
+        var activeRoutingRuleCount = await grid.ReadSingleAsync<int>();
+        var activeIntakeRoutingRuleCount = await grid.ReadSingleAsync<int>();
+        var departmentsNeedingIntakeRoutingCount = await grid.ReadSingleAsync<int>();
+
+        return new AdminWorkflowConfigurationResponse(
+            new AdminWorkflowSummary(
+                workflowDefinitionCount,
+                activeStageCount,
+                activeTransitionCount,
+                activeRoutingRuleCount,
+                activeIntakeRoutingRuleCount,
+                departmentsNeedingIntakeRoutingCount),
+            definitions,
+            stages,
+            routingRules,
+            intakeRoutingRules);
+    }
+
+    public async Task UpdateIntakeRoutingAsync(
+        Guid tenantId,
+        Guid actorUserId,
+        UpdateAdminWorkflowIntakeRoutingInput input,
+        string metadataJson,
+        CancellationToken cancellationToken)
+    {
+        await using var connection = _connectionFactory.CreateConnection();
+        await connection.OpenAsync(cancellationToken);
+        await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
+
+        const string mergeSql = """
+            MERGE dbo.JobRequestIntakeRoutingRules AS target
+            USING (VALUES
+            (
+                @JobRequestIntakeRoutingRuleId,
+                @TenantId,
+                @DepartmentId,
+                @AssignmentType,
+                @TargetUserId,
+                @TargetGroupId,
+                @Status
+            ))
+            AS source
+            (
+                JobRequestIntakeRoutingRuleId,
+                TenantId,
+                DepartmentId,
+                AssignmentType,
+                TargetUserId,
+                TargetGroupId,
+                Status
+            )
+            ON target.TenantId = source.TenantId
+               AND target.DepartmentId = source.DepartmentId
+            WHEN MATCHED THEN
+                UPDATE SET
+                    AssignmentType = source.AssignmentType,
+                    TargetUserId = source.TargetUserId,
+                    TargetGroupId = source.TargetGroupId,
+                    Status = source.Status,
+                    UpdatedAtUtc = SYSUTCDATETIME(),
+                    UpdatedByUserId = @ActorUserId
+            WHEN NOT MATCHED THEN
+                INSERT
+                (
+                    JobRequestIntakeRoutingRuleId,
+                    TenantId,
+                    DepartmentId,
+                    AssignmentType,
+                    TargetUserId,
+                    TargetGroupId,
+                    Status,
+                    CreatedAtUtc,
+                    UpdatedAtUtc,
+                    UpdatedByUserId
+                )
+                VALUES
+                (
+                    source.JobRequestIntakeRoutingRuleId,
+                    source.TenantId,
+                    source.DepartmentId,
+                    source.AssignmentType,
+                    source.TargetUserId,
+                    source.TargetGroupId,
+                    source.Status,
+                    SYSUTCDATETIME(),
+                    SYSUTCDATETIME(),
+                    @ActorUserId
+                );
+            """;
+
+        foreach (var rule in input.Rules)
+        {
+            await connection.ExecuteAsync(new CommandDefinition(
+                mergeSql,
+                new
+                {
+                    JobRequestIntakeRoutingRuleId = Guid.NewGuid(),
+                    TenantId = tenantId,
+                    ActorUserId = actorUserId,
+                    rule.DepartmentId,
+                    rule.AssignmentType,
+                    rule.TargetUserId,
+                    rule.TargetGroupId,
+                    rule.Status
+                },
+                transaction,
+                cancellationToken: cancellationToken));
+        }
+
+        await InsertAuditAsync(
+            connection,
+            transaction,
+            tenantId,
+            actorUserId,
+            "WorkflowIntakeRoutingUpdated",
+            "JobRequestIntakeRoutingRules",
+            null,
+            "Department intake routing",
+            "Updated department intake routing rules.",
+            "Admin Center",
+            metadataJson,
+            cancellationToken);
+
+        await transaction.CommitAsync(cancellationToken);
+    }
+
+    public async Task<bool> ActiveDepartmentIdsExistAsync(
+        Guid tenantId,
+        IReadOnlyCollection<Guid> departmentIds,
+        CancellationToken cancellationToken)
+    {
+        if (departmentIds.Count == 0)
+        {
+            return true;
+        }
+
+        const string sql = """
+            SELECT COUNT(DISTINCT DepartmentId)
+            FROM dbo.Departments
+            WHERE TenantId = @TenantId
+              AND DepartmentId IN @DepartmentIds
+              AND Status = N'Active';
+            """;
+
+        await using var connection = _connectionFactory.CreateConnection();
+        var count = await connection.ExecuteScalarAsync<int>(new CommandDefinition(
+            sql,
+            new { TenantId = tenantId, DepartmentIds = departmentIds },
+            cancellationToken: cancellationToken));
+
+        return count == departmentIds.Distinct().Count();
+    }
+
+    public async Task<bool> ActiveUserIdsExistAsync(
+        Guid tenantId,
+        IReadOnlyCollection<Guid> userIds,
+        CancellationToken cancellationToken)
+    {
+        if (userIds.Count == 0)
+        {
+            return true;
+        }
+
+        const string sql = """
+            SELECT COUNT(DISTINCT UserId)
+            FROM dbo.AppUsers
+            WHERE TenantId = @TenantId
+              AND UserId IN @UserIds
+              AND AccountStatus = N'Active'
+              AND DeletedAtUtc IS NULL;
+            """;
+
+        await using var connection = _connectionFactory.CreateConnection();
+        var count = await connection.ExecuteScalarAsync<int>(new CommandDefinition(
+            sql,
+            new { TenantId = tenantId, UserIds = userIds },
+            cancellationToken: cancellationToken));
+
+        return count == userIds.Distinct().Count();
+    }
+
+    public async Task<bool> ActiveGroupIdsExistAsync(
+        Guid tenantId,
+        IReadOnlyCollection<Guid> groupIds,
+        CancellationToken cancellationToken)
+    {
+        if (groupIds.Count == 0)
+        {
+            return true;
+        }
+
+        const string sql = """
+            SELECT COUNT(DISTINCT GroupId)
+            FROM dbo.Groups
+            WHERE TenantId = @TenantId
+              AND GroupId IN @GroupIds
+              AND Status = N'Active';
+            """;
+
+        await using var connection = _connectionFactory.CreateConnection();
+        var count = await connection.ExecuteScalarAsync<int>(new CommandDefinition(
+            sql,
+            new { TenantId = tenantId, GroupIds = groupIds },
+            cancellationToken: cancellationToken));
+
+        return count == groupIds.Distinct().Count();
+    }
+
+    public async Task<AdminHiringPipelineTemplatesResponse> ListTemplatesAsync(
+        Guid tenantId,
+        AdminHiringPipelineTemplatesQuery query,
+        CancellationToken cancellationToken)
+    {
+        const string sql = """
+            SELECT
+                template.InterviewTemplateId,
+                template.DepartmentId,
+                template.Name,
+                COALESCE(department.Name, N'All departments') AS DepartmentName,
+                COALESCE(template.Description, N'') AS Description,
+                template.Status,
+                template.UpdatedAtUtc
+            FROM dbo.InterviewTemplates AS template
+            LEFT JOIN dbo.Departments AS department ON department.DepartmentId = template.DepartmentId
+            WHERE template.TenantId = @TenantId
+            ORDER BY template.Name;
+
+            SELECT
+                round.InterviewTemplateId,
+                round.RoundOrder,
+                round.Name,
+                round.OwnerRoleId,
+                COALESCE(role.Name, N'Unassigned') AS OwnerRoleName,
+                round.OwnerUserId,
+                COALESCE(ownerUser.DisplayName, N'Unassigned') AS OwnerUserName,
+                round.DurationMinutes,
+                CAST(1 AS BIT) AS IsRequired,
+                round.Status
+            FROM dbo.InterviewTemplateRounds AS round
+            LEFT JOIN dbo.Roles AS role ON role.TenantId = round.TenantId AND role.RoleId = round.OwnerRoleId
+            LEFT JOIN dbo.AppUsers AS ownerUser ON ownerUser.TenantId = round.TenantId AND ownerUser.UserId = round.OwnerUserId
+            WHERE round.TenantId = @TenantId
+            ORDER BY round.InterviewTemplateId, round.RoundOrder;
+            """;
+
+        await using var connection = _connectionFactory.CreateConnection();
+        using var grid = await connection.QueryMultipleAsync(new CommandDefinition(
+            sql,
+            new { TenantId = tenantId },
+            cancellationToken: cancellationToken));
+
+        var templates = (await grid.ReadAsync<InterviewTemplateRow>()).ToArray();
+        var rounds = (await grid.ReadAsync<InterviewTemplateRoundRow>())
+            .GroupBy(round => round.InterviewTemplateId)
+            .ToDictionary(group => group.Key, group => group.OrderBy(round => round.RoundOrder).ToArray());
+
+        var materialized = templates
+            .Select(template => ToHiringPipelineTemplateItem(template, rounds.GetValueOrDefault(template.InterviewTemplateId) ?? []))
+            .Where(template => MatchesHiringPipelineSearch(template, query.Search))
+            .OrderBy(template => template.Name, StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+
+        var items = materialized
+            .Skip((query.Page - 1) * query.PageSize)
+            .Take(query.PageSize)
+            .ToArray();
+        var activeTemplateIds = templates
+            .Where(template => template.Status == "Active")
+            .Select(template => template.InterviewTemplateId)
+            .ToHashSet();
+        var activeRounds = rounds.Values
+            .SelectMany(group => group)
+            .Where(round => round.Status == "Active" && activeTemplateIds.Contains(round.InterviewTemplateId))
+            .ToArray();
+        var summary = new AdminHiringPipelineSummary(
+            activeTemplateIds.Count,
+            templates.Count(template => template.Status == "Active" && template.DepartmentId.HasValue),
+            activeRounds.Length,
+            activeRounds.Count(round => !round.OwnerUserId.HasValue));
+
+        return new AdminHiringPipelineTemplatesResponse(summary, items, query.Page, query.PageSize, materialized.Length);
+    }
+
+    public async Task<AdminHiringPipelineTemplateDetails?> GetHiringPipelineTemplateAsync(
+        Guid tenantId,
+        Guid templateId,
+        CancellationToken cancellationToken)
+    {
+        const string sql = """
+            SELECT
+                template.InterviewTemplateId,
+                template.DepartmentId,
+                template.Name,
+                COALESCE(department.Name, N'All departments') AS DepartmentName,
+                COALESCE(template.Description, N'') AS Description,
+                template.Status,
+                template.UpdatedAtUtc
+            FROM dbo.InterviewTemplates AS template
+            LEFT JOIN dbo.Departments AS department ON department.DepartmentId = template.DepartmentId
+            WHERE template.TenantId = @TenantId
+              AND template.InterviewTemplateId = @TemplateId;
+
+            SELECT
+                round.InterviewTemplateRoundId,
+                round.RoundOrder,
+                round.Name,
+                round.OwnerRoleId,
+                COALESCE(role.Name, N'Unassigned') AS OwnerRoleName,
+                round.OwnerUserId,
+                COALESCE(ownerUser.DisplayName, N'Unassigned') AS OwnerUserName,
+                round.DurationMinutes,
+                CAST(1 AS BIT) AS IsRequired,
+                round.Status
+            FROM dbo.InterviewTemplateRounds AS round
+            LEFT JOIN dbo.Roles AS role ON role.TenantId = round.TenantId AND role.RoleId = round.OwnerRoleId
+            LEFT JOIN dbo.AppUsers AS ownerUser ON ownerUser.TenantId = round.TenantId AND ownerUser.UserId = round.OwnerUserId
+            WHERE round.TenantId = @TenantId
+              AND round.InterviewTemplateId = @TemplateId
+            ORDER BY round.RoundOrder;
+            """;
+
+        await using var connection = _connectionFactory.CreateConnection();
+        using var grid = await connection.QueryMultipleAsync(new CommandDefinition(
+            sql,
+            new { TenantId = tenantId, TemplateId = templateId },
+            cancellationToken: cancellationToken));
+
+        var template = await grid.ReadSingleOrDefaultAsync<InterviewTemplateDetailsRow>();
+        if (template is null)
+        {
+            return null;
+        }
+
+        var rounds = (await grid.ReadAsync<InterviewTemplateDetailsRoundRow>())
+            .Select(row => new AdminHiringPipelineTemplateRoundItem(
+                row.InterviewTemplateRoundId,
+                row.RoundOrder,
+                row.Name,
+                row.OwnerRoleId,
+                row.OwnerRoleName,
+                row.OwnerUserId,
+                row.OwnerUserName,
+                row.DurationMinutes,
+                row.IsRequired,
+                row.Status))
+            .ToArray();
+
+        return new AdminHiringPipelineTemplateDetails(
+            template.InterviewTemplateId,
+            template.DepartmentId,
+            template.Name,
+            template.DepartmentName,
+            template.Description,
+            template.Status,
+            Utc(template.UpdatedAtUtc),
+            rounds);
+    }
+
+    public async Task UpdateTemplateAsync(
+        Guid tenantId,
+        Guid actorUserId,
+        Guid templateId,
+        UpdateAdminHiringPipelineTemplateInput input,
+        string metadataJson,
+        CancellationToken cancellationToken)
+    {
+        await using var connection = _connectionFactory.CreateConnection();
+        await connection.OpenAsync(cancellationToken);
+        await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
+
+        const string updateTemplateSql = """
+            UPDATE dbo.InterviewTemplates
+            SET DepartmentId = @DepartmentId,
+                Name = @Name,
+                Description = @Description,
+                Status = @Status,
+                UpdatedAtUtc = SYSUTCDATETIME()
+            WHERE TenantId = @TenantId
+              AND InterviewTemplateId = @TemplateId;
+            """;
+
+        await connection.ExecuteAsync(new CommandDefinition(
+            updateTemplateSql,
+            new
+            {
+                TenantId = tenantId,
+                TemplateId = templateId,
+                input.DepartmentId,
+                input.Name,
+                Description = EmptyToNull(input.Description),
+                input.Status
+            },
+            transaction,
+            cancellationToken: cancellationToken));
+
+        var existingRoundIds = (await connection.QueryAsync<Guid>(new CommandDefinition(
+                """
+                SELECT InterviewTemplateRoundId
+                FROM dbo.InterviewTemplateRounds
+                WHERE TenantId = @TenantId
+                  AND InterviewTemplateId = @TemplateId;
+                """,
+                new { TenantId = tenantId, TemplateId = templateId },
+                transaction,
+                cancellationToken: cancellationToken)))
+            .ToHashSet();
+
+        var temporaryOrder = -1;
+        foreach (var existingRoundId in existingRoundIds)
+        {
+            await connection.ExecuteAsync(new CommandDefinition(
+                """
+                UPDATE dbo.InterviewTemplateRounds
+                SET RoundOrder = @RoundOrder
+                WHERE TenantId = @TenantId
+                  AND InterviewTemplateRoundId = @RoundId;
+                """,
+                new { TenantId = tenantId, RoundId = existingRoundId, RoundOrder = temporaryOrder-- },
+                transaction,
+                cancellationToken: cancellationToken));
+        }
+
+        const string updateRoundSql = """
+            UPDATE dbo.InterviewTemplateRounds
+            SET RoundOrder = @RoundOrder,
+                Name = @Name,
+                OwnerRoleId = @OwnerRoleId,
+                OwnerUserId = @OwnerUserId,
+                DurationMinutes = @DurationMinutes,
+                IsRequired = CAST(1 AS BIT),
+                Status = @Status
+            WHERE TenantId = @TenantId
+              AND InterviewTemplateId = @TemplateId
+              AND InterviewTemplateRoundId = @RoundId;
+            """;
+        const string insertRoundSql = """
+            INSERT INTO dbo.InterviewTemplateRounds
+            (
+                InterviewTemplateRoundId,
+                TenantId,
+                InterviewTemplateId,
+                RoundOrder,
+                Name,
+                OwnerRoleId,
+                OwnerUserId,
+                DurationMinutes,
+                IsRequired,
+                Status
+            )
+            VALUES
+            (
+                @RoundId,
+                @TenantId,
+                @TemplateId,
+                @RoundOrder,
+                @Name,
+                @OwnerRoleId,
+                @OwnerUserId,
+                @DurationMinutes,
+                CAST(1 AS BIT),
+                @Status
+            );
+            """;
+
+        var retainedRoundIds = new HashSet<Guid>();
+        foreach (var round in input.Rounds.OrderBy(round => round.RoundOrder))
+        {
+            var roundId = round.InterviewTemplateRoundId.GetValueOrDefault();
+            if (roundId != Guid.Empty && existingRoundIds.Contains(roundId))
+            {
+                retainedRoundIds.Add(roundId);
+                await connection.ExecuteAsync(new CommandDefinition(
+                    updateRoundSql,
+                    new
+                    {
+                        TenantId = tenantId,
+                        TemplateId = templateId,
+                        RoundId = roundId,
+                        round.RoundOrder,
+                        round.Name,
+                        round.OwnerRoleId,
+                        round.OwnerUserId,
+                        round.DurationMinutes,
+                        round.Status
+                    },
+                    transaction,
+                    cancellationToken: cancellationToken));
+                continue;
+            }
+
+            roundId = Guid.NewGuid();
+            await connection.ExecuteAsync(new CommandDefinition(
+                insertRoundSql,
+                new
+                {
+                    TenantId = tenantId,
+                    TemplateId = templateId,
+                    RoundId = roundId,
+                    round.RoundOrder,
+                    round.Name,
+                    round.OwnerRoleId,
+                    round.OwnerUserId,
+                    round.DurationMinutes,
+                    round.Status
+                },
+                transaction,
+                cancellationToken: cancellationToken));
+        }
+
+        var nextInactiveOrder = input.Rounds.Count + 1;
+        foreach (var omittedRoundId in existingRoundIds.Except(retainedRoundIds))
+        {
+            await connection.ExecuteAsync(new CommandDefinition(
+                """
+                UPDATE dbo.InterviewTemplateRounds
+                SET RoundOrder = @RoundOrder,
+                    Status = N'Inactive'
+                WHERE TenantId = @TenantId
+                  AND InterviewTemplateRoundId = @RoundId;
+                """,
+                new { TenantId = tenantId, RoundId = omittedRoundId, RoundOrder = nextInactiveOrder++ },
+                transaction,
+                cancellationToken: cancellationToken));
+        }
+
+        await InsertAuditAsync(
+            connection,
+            transaction,
+            tenantId,
+            actorUserId,
+            "InterviewTemplateUpdated",
+            "InterviewTemplate",
+            templateId,
+            input.Name,
+            "Updated interview template.",
+            "Admin Center",
+            metadataJson,
+            cancellationToken);
+
+        await transaction.CommitAsync(cancellationToken);
+    }
+
+    public async Task CreateTemplateAsync(
+        Guid tenantId,
+        Guid actorUserId,
+        Guid templateId,
+        UpdateAdminHiringPipelineTemplateInput input,
+        string metadataJson,
+        CancellationToken cancellationToken)
+    {
+        await using var connection = _connectionFactory.CreateConnection();
+        await connection.OpenAsync(cancellationToken);
+        await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
+
+        const string insertTemplateSql = """
+            INSERT INTO dbo.InterviewTemplates
+            (
+                InterviewTemplateId,
+                TenantId,
+                DepartmentId,
+                Name,
+                Description,
+                Status,
+                CreatedAtUtc,
+                UpdatedAtUtc
+            )
+            VALUES
+            (
+                @TemplateId,
+                @TenantId,
+                @DepartmentId,
+                @Name,
+                @Description,
+                @Status,
+                SYSUTCDATETIME(),
+                SYSUTCDATETIME()
+            );
+            """;
+
+        await connection.ExecuteAsync(new CommandDefinition(
+            insertTemplateSql,
+            new
+            {
+                TenantId = tenantId,
+                TemplateId = templateId,
+                input.DepartmentId,
+                input.Name,
+                Description = EmptyToNull(input.Description),
+                input.Status
+            },
+            transaction,
+            cancellationToken: cancellationToken));
+
+        const string insertRoundSql = """
+            INSERT INTO dbo.InterviewTemplateRounds
+            (
+                InterviewTemplateRoundId,
+                TenantId,
+                InterviewTemplateId,
+                RoundOrder,
+                Name,
+                OwnerRoleId,
+                OwnerUserId,
+                DurationMinutes,
+                IsRequired,
+                Status
+            )
+            VALUES
+            (
+                NEWID(),
+                @TenantId,
+                @TemplateId,
+                @RoundOrder,
+                @Name,
+                @OwnerRoleId,
+                @OwnerUserId,
+                @DurationMinutes,
+                CAST(1 AS BIT),
+                @Status
+            );
+            """;
+
+        foreach (var round in input.Rounds.OrderBy(round => round.RoundOrder))
+        {
+            await connection.ExecuteAsync(new CommandDefinition(
+                insertRoundSql,
+                new
+                {
+                    TenantId = tenantId,
+                    TemplateId = templateId,
+                    round.RoundOrder,
+                    round.Name,
+                    round.OwnerRoleId,
+                    round.OwnerUserId,
+                    round.DurationMinutes,
+                    round.Status
+                },
+                transaction,
+                cancellationToken: cancellationToken));
+        }
+
+        await InsertAuditAsync(
+            connection,
+            transaction,
+            tenantId,
+            actorUserId,
+            "InterviewTemplateCreated",
+            "InterviewTemplate",
+            templateId,
+            input.Name,
+            "Created interview template.",
+            "Admin Center",
+            metadataJson,
+            cancellationToken);
+
+        await transaction.CommitAsync(cancellationToken);
+    }
+
+    public async Task<bool> TemplateNameExistsAsync(
+        Guid tenantId,
+        string name,
+        Guid exceptTemplateId,
+        CancellationToken cancellationToken)
+    {
+        const string sql = """
+            SELECT COUNT(1)
+            FROM dbo.InterviewTemplates
+            WHERE TenantId = @TenantId
+              AND InterviewTemplateId <> @ExceptTemplateId
+              AND LOWER(Name) = LOWER(@Name);
+            """;
+
+        await using var connection = _connectionFactory.CreateConnection();
+        var count = await connection.ExecuteScalarAsync<int>(new CommandDefinition(
+            sql,
+            new { TenantId = tenantId, Name = name.Trim(), ExceptTemplateId = exceptTemplateId },
+            cancellationToken: cancellationToken));
+
+        return count > 0;
+    }
+
+    public async Task<bool> DepartmentExistsAsync(
+        Guid tenantId,
+        Guid departmentId,
+        CancellationToken cancellationToken)
+    {
+        const string sql = """
+            SELECT COUNT(1)
+            FROM dbo.Departments
+            WHERE TenantId = @TenantId
+              AND DepartmentId = @DepartmentId
+              AND Status = N'Active';
+            """;
+
+        await using var connection = _connectionFactory.CreateConnection();
+        var count = await connection.ExecuteScalarAsync<int>(new CommandDefinition(
+            sql,
+            new { TenantId = tenantId, DepartmentId = departmentId },
+            cancellationToken: cancellationToken));
+
+        return count > 0;
+    }
+
+    public async Task<bool> RoleIdsExistAsync(
+        Guid tenantId,
+        IReadOnlyCollection<Guid> roleIds,
+        CancellationToken cancellationToken)
+    {
+        var ids = roleIds.Where(roleId => roleId != Guid.Empty).Distinct().ToArray();
+        if (ids.Length == 0)
+        {
+            return true;
+        }
+
+        const string sql = """
+            SELECT COUNT(DISTINCT RoleId)
+            FROM dbo.Roles
+            WHERE TenantId = @TenantId
+              AND RoleId IN @RoleIds
+              AND Status = N'Active';
+            """;
+
+        await using var connection = _connectionFactory.CreateConnection();
+        var count = await connection.ExecuteScalarAsync<int>(new CommandDefinition(
+            sql,
+            new { TenantId = tenantId, RoleIds = ids },
+            cancellationToken: cancellationToken));
+
+        return count == ids.Length;
     }
 
     public async Task<AdminUsersResponse> ListAsync(Guid tenantId, AdminUsersQuery query, CancellationToken cancellationToken)
@@ -38,6 +1074,9 @@ public sealed class DapperAdminCenterRepository :
                 .Where(user =>
                     user.DisplayName.Contains(search, StringComparison.OrdinalIgnoreCase) ||
                     user.Email.Contains(search, StringComparison.OrdinalIgnoreCase) ||
+                    (user.DepartmentName?.Contains(search, StringComparison.OrdinalIgnoreCase) ?? false) ||
+                    (user.ExperienceYears?.ToString("0.0").Contains(search, StringComparison.OrdinalIgnoreCase) ?? false) ||
+                    (user.JoiningDate?.ToString("yyyy-MM-dd").Contains(search, StringComparison.OrdinalIgnoreCase) ?? false) ||
                     user.RoleNames.Any(role => role.Contains(search, StringComparison.OrdinalIgnoreCase)) ||
                     user.GroupNames.Any(group => group.Contains(search, StringComparison.OrdinalIgnoreCase)))
                 .ToArray();
@@ -481,6 +1520,12 @@ public sealed class DapperAdminCenterRepository :
             LEFT JOIN dbo.GroupMembers AS gm ON gm.TenantId = g.TenantId AND gm.GroupId = g.GroupId
             WHERE g.TenantId = @TenantId
               AND (@Purpose IS NULL OR g.Purpose = @Purpose)
+              AND (
+                  @Search IS NULL
+                  OR g.Name LIKE @SearchLike
+                  OR g.Purpose LIKE @SearchLike
+                  OR g.Status LIKE @SearchLike
+              )
             GROUP BY g.GroupId, g.Name, g.Purpose, g.Status
             ORDER BY g.Name;
             """;
@@ -489,7 +1534,7 @@ public sealed class DapperAdminCenterRepository :
         var rows = (await connection.QueryAsync<AdminGroupListItem>(
             new CommandDefinition(
                 sql,
-                new { TenantId = tenantId, Purpose = EmptyToNull(query.Purpose) },
+                new { TenantId = tenantId, Purpose = EmptyToNull(query.Purpose), Search = EmptyToNull(query.Search), SearchLike = Like(query.Search) },
                 cancellationToken: cancellationToken))).ToArray();
 
         var items = rows
@@ -498,6 +1543,766 @@ public sealed class DapperAdminCenterRepository :
             .ToArray();
 
         return new AdminGroupsResponse(items, query.Page, query.PageSize, rows.Length);
+    }
+
+    public async Task<AdminDepartmentsResponse> ListAsync(
+        Guid tenantId,
+        AdminDepartmentsQuery query,
+        CancellationToken cancellationToken)
+    {
+        const string sql = """
+            SELECT
+                d.DepartmentId,
+                d.Code,
+                d.Name,
+                COALESCE(lead.DisplayName, N'Unassigned') AS LeadName,
+                COUNT(DISTINCT e.EmployeeId) AS EmployeeCount,
+                COUNT(DISTINCT CASE
+                    WHEN jr.Status NOT IN (N'Closed', N'Cancelled') THEN jr.JobRequestId
+                END) AS OpenJobRequestCount,
+                d.Status
+            FROM dbo.Departments AS d
+            LEFT JOIN dbo.AppUsers AS lead ON lead.TenantId = d.TenantId AND lead.UserId = d.LeadUserId
+            LEFT JOIN dbo.Employees AS e ON e.TenantId = d.TenantId AND e.DepartmentId = d.DepartmentId AND e.Status = N'Active'
+            LEFT JOIN dbo.JobRequests AS jr ON jr.TenantId = d.TenantId AND jr.DepartmentId = d.DepartmentId
+            WHERE d.TenantId = @TenantId
+              AND (
+                  @Search IS NULL
+                  OR d.Code LIKE @SearchLike
+                  OR d.Name LIKE @SearchLike
+                  OR lead.DisplayName LIKE @SearchLike
+                  OR d.Status LIKE @SearchLike
+              )
+            GROUP BY d.DepartmentId, d.Code, d.Name, lead.DisplayName, d.Status
+            ORDER BY d.Name;
+            """;
+
+        await using var connection = _connectionFactory.CreateConnection();
+        var rows = (await connection.QueryAsync<AdminDepartmentListItem>(
+            new CommandDefinition(
+                sql,
+                SearchParameters(tenantId, query.Search),
+                cancellationToken: cancellationToken))).ToArray();
+
+        var items = rows
+            .Skip((query.Page - 1) * query.PageSize)
+            .Take(query.PageSize)
+            .ToArray();
+        var summary = new AdminDepartmentsSummary(
+            rows.Count(row => row.Status.Equals("Active", StringComparison.OrdinalIgnoreCase)),
+            rows.Sum(row => row.EmployeeCount),
+            rows.Sum(row => row.OpenJobRequestCount),
+            rows.Count(row => row.Status.Equals("Inactive", StringComparison.OrdinalIgnoreCase)));
+
+        return new AdminDepartmentsResponse(summary, items, query.Page, query.PageSize, rows.Length);
+    }
+
+    public async Task<AdminDepartmentListItem?> GetDepartmentAsync(
+        Guid tenantId,
+        Guid departmentId,
+        CancellationToken cancellationToken)
+    {
+        const string sql = """
+            SELECT
+                d.DepartmentId,
+                d.Code,
+                d.Name,
+                COALESCE(lead.DisplayName, N'Unassigned') AS LeadName,
+                COUNT(DISTINCT e.EmployeeId) AS EmployeeCount,
+                COUNT(DISTINCT CASE
+                    WHEN jr.Status NOT IN (N'Closed', N'Cancelled') THEN jr.JobRequestId
+                END) AS OpenJobRequestCount,
+                d.Status
+            FROM dbo.Departments AS d
+            LEFT JOIN dbo.AppUsers AS lead ON lead.TenantId = d.TenantId AND lead.UserId = d.LeadUserId
+            LEFT JOIN dbo.Employees AS e ON e.TenantId = d.TenantId AND e.DepartmentId = d.DepartmentId AND e.Status = N'Active'
+            LEFT JOIN dbo.JobRequests AS jr ON jr.TenantId = d.TenantId AND jr.DepartmentId = d.DepartmentId
+            WHERE d.TenantId = @TenantId
+              AND d.DepartmentId = @DepartmentId
+            GROUP BY d.DepartmentId, d.Code, d.Name, lead.DisplayName, d.Status;
+            """;
+
+        await using var connection = _connectionFactory.CreateConnection();
+        return await connection.QuerySingleOrDefaultAsync<AdminDepartmentListItem>(
+            new CommandDefinition(
+                sql,
+                new { TenantId = tenantId, DepartmentId = departmentId },
+                cancellationToken: cancellationToken));
+    }
+
+    public async Task<bool> DepartmentCodeOrNameExistsAsync(
+        Guid tenantId,
+        string code,
+        string name,
+        CancellationToken cancellationToken)
+    {
+        const string sql = """
+            SELECT COUNT(1)
+            FROM dbo.Departments
+            WHERE TenantId = @TenantId
+              AND (LOWER(Code) = LOWER(@Code) OR LOWER(Name) = LOWER(@Name));
+            """;
+
+        await using var connection = _connectionFactory.CreateConnection();
+        var count = await connection.ExecuteScalarAsync<int>(new CommandDefinition(
+            sql,
+            new { TenantId = tenantId, Code = code.Trim(), Name = name.Trim() },
+            cancellationToken: cancellationToken));
+
+        return count > 0;
+    }
+
+    public async Task<Guid> CreateAsync(
+        Guid tenantId,
+        Guid actorUserId,
+        CreateDepartmentInput input,
+        string metadataJson,
+        CancellationToken cancellationToken)
+    {
+        var departmentId = Guid.NewGuid();
+
+        await using var connection = _connectionFactory.CreateConnection();
+        await connection.OpenAsync(cancellationToken);
+        await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
+
+        const string sql = """
+            INSERT INTO dbo.Departments
+            (
+                DepartmentId,
+                TenantId,
+                Code,
+                Name,
+                LeadUserId,
+                Status,
+                CreatedAtUtc,
+                UpdatedAtUtc
+            )
+            VALUES
+            (
+                @DepartmentId,
+                @TenantId,
+                @Code,
+                @Name,
+                NULL,
+                @Status,
+                SYSUTCDATETIME(),
+                SYSUTCDATETIME()
+            );
+            """;
+
+        await connection.ExecuteAsync(new CommandDefinition(
+            sql,
+            new
+            {
+                TenantId = tenantId,
+                DepartmentId = departmentId,
+                input.Code,
+                input.Name,
+                input.Status
+            },
+            transaction,
+            cancellationToken: cancellationToken));
+
+        await InsertAuditAsync(
+            connection,
+            transaction,
+            tenantId,
+            actorUserId,
+            "DepartmentCreated",
+            "Department",
+            departmentId,
+            input.Name,
+            "Created department.",
+            "Admin Center",
+            metadataJson,
+            cancellationToken);
+
+        await transaction.CommitAsync(cancellationToken);
+        return departmentId;
+    }
+
+    public async Task<AdminGroupListItem?> GetGroupAsync(Guid tenantId, Guid groupId, CancellationToken cancellationToken)
+    {
+        const string sql = """
+            SELECT
+                g.GroupId,
+                g.Name,
+                g.Purpose,
+                g.Status,
+                COUNT(gm.UserId) AS MemberCount
+            FROM dbo.Groups AS g
+            LEFT JOIN dbo.GroupMembers AS gm ON gm.TenantId = g.TenantId AND gm.GroupId = g.GroupId
+            WHERE g.TenantId = @TenantId
+              AND g.GroupId = @GroupId
+            GROUP BY g.GroupId, g.Name, g.Purpose, g.Status;
+            """;
+
+        await using var connection = _connectionFactory.CreateConnection();
+        return await connection.QuerySingleOrDefaultAsync<AdminGroupListItem>(
+            new CommandDefinition(sql, new { TenantId = tenantId, GroupId = groupId }, cancellationToken: cancellationToken));
+    }
+
+    public async Task<bool> GroupNameExistsAsync(
+        Guid tenantId,
+        string purpose,
+        string name,
+        CancellationToken cancellationToken)
+    {
+        const string sql = """
+            SELECT COUNT(1)
+            FROM dbo.Groups
+            WHERE TenantId = @TenantId
+              AND LOWER(Purpose) = LOWER(@Purpose)
+              AND LOWER(Name) = LOWER(@Name);
+            """;
+
+        await using var connection = _connectionFactory.CreateConnection();
+        var count = await connection.ExecuteScalarAsync<int>(new CommandDefinition(
+            sql,
+            new { TenantId = tenantId, Purpose = purpose.Trim(), Name = name.Trim() },
+            cancellationToken: cancellationToken));
+
+        return count > 0;
+    }
+
+    public async Task<AdminSkillsResponse> ListAsync(Guid tenantId, AdminSkillsQuery query, CancellationToken cancellationToken)
+    {
+        const string sql = """
+            SELECT
+                SkillId,
+                Name,
+                NormalizedName,
+                Category,
+                AliasesJson,
+                Status,
+                UpdatedAtUtc
+            FROM dbo.Skills
+            WHERE TenantId = @TenantId
+              AND (@Category IS NULL OR Category = @Category)
+              AND (
+                  @Search IS NULL
+                  OR Name LIKE @SearchLike
+                  OR NormalizedName LIKE @SearchLike
+                  OR Category LIKE @SearchLike
+                  OR AliasesJson LIKE @SearchLike
+                  OR Status LIKE @SearchLike
+              )
+            ORDER BY Category, Name;
+            """;
+
+        await using var connection = _connectionFactory.CreateConnection();
+        var skills = (await connection.QueryAsync<SkillRow>(
+                new CommandDefinition(
+                    sql,
+                    new
+                    {
+                        TenantId = tenantId,
+                        Category = EmptyToNull(query.Category),
+                        Search = EmptyToNull(query.Search),
+                        SearchLike = Like(query.Search)
+                    },
+                    cancellationToken: cancellationToken)))
+            .Select(ToAdminSkillListItem)
+            .ToArray();
+
+        var items = skills
+            .Skip((query.Page - 1) * query.PageSize)
+            .Take(query.PageSize)
+            .ToArray();
+
+        var summary = new AdminSkillsSummary(
+            skills.Count(skill => skill.Status == "Active"),
+            skills.Select(skill => skill.Category).Distinct(StringComparer.OrdinalIgnoreCase).Count(),
+            skills.Sum(skill => skill.Aliases.Count));
+
+        return new AdminSkillsResponse(summary, items, query.Page, query.PageSize, skills.Length);
+    }
+
+    public async Task<AdminSkillListItem?> GetSkillAsync(Guid tenantId, Guid skillId, CancellationToken cancellationToken)
+    {
+        const string sql = """
+            SELECT
+                SkillId,
+                Name,
+                NormalizedName,
+                Category,
+                AliasesJson,
+                Status,
+                UpdatedAtUtc
+            FROM dbo.Skills
+            WHERE TenantId = @TenantId
+              AND SkillId = @SkillId;
+            """;
+
+        await using var connection = _connectionFactory.CreateConnection();
+        var row = await connection.QuerySingleOrDefaultAsync<SkillRow>(
+            new CommandDefinition(sql, new { TenantId = tenantId, SkillId = skillId }, cancellationToken: cancellationToken));
+
+        return row is null ? null : ToAdminSkillListItem(row);
+    }
+
+    public async Task<bool> SkillNormalizedNameExistsAsync(
+        Guid tenantId,
+        string normalizedName,
+        CancellationToken cancellationToken)
+    {
+        const string sql = """
+            SELECT COUNT(1)
+            FROM dbo.Skills
+            WHERE TenantId = @TenantId
+              AND LOWER(NormalizedName) = LOWER(@NormalizedName);
+            """;
+
+        await using var connection = _connectionFactory.CreateConnection();
+        var count = await connection.ExecuteScalarAsync<int>(new CommandDefinition(
+            sql,
+            new { TenantId = tenantId, NormalizedName = normalizedName.Trim() },
+            cancellationToken: cancellationToken));
+
+        return count > 0;
+    }
+
+    public async Task<Guid> CreateAsync(
+        Guid tenantId,
+        Guid actorUserId,
+        CreateSkillInput input,
+        string normalizedName,
+        string aliasesJson,
+        string metadataJson,
+        CancellationToken cancellationToken)
+    {
+        var skillId = Guid.NewGuid();
+
+        await using var connection = _connectionFactory.CreateConnection();
+        await connection.OpenAsync(cancellationToken);
+        await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
+
+        const string sql = """
+            INSERT INTO dbo.Skills
+            (
+                SkillId,
+                TenantId,
+                Name,
+                NormalizedName,
+                Category,
+                AliasesJson,
+                IsVectorRelevant,
+                Status,
+                CreatedAtUtc,
+                UpdatedAtUtc
+            )
+            VALUES
+            (
+                @SkillId,
+                @TenantId,
+                @Name,
+                @NormalizedName,
+                @Category,
+                @AliasesJson,
+                @IsVectorRelevant,
+                @Status,
+                SYSUTCDATETIME(),
+                SYSUTCDATETIME()
+            );
+            """;
+
+        await connection.ExecuteAsync(new CommandDefinition(
+            sql,
+            new
+            {
+                TenantId = tenantId,
+                SkillId = skillId,
+                input.Name,
+                NormalizedName = normalizedName,
+                input.Category,
+                AliasesJson = aliasesJson,
+                IsVectorRelevant = true,
+                input.Status
+            },
+            transaction,
+            cancellationToken: cancellationToken));
+
+        await InsertAuditAsync(
+            connection,
+            transaction,
+            tenantId,
+            actorUserId,
+            "SkillCreated",
+            "Skill",
+            skillId,
+            input.Name,
+            "Created skill.",
+            "Admin Center",
+            metadataJson,
+            cancellationToken);
+
+        await transaction.CommitAsync(cancellationToken);
+        return skillId;
+    }
+
+    public async Task UpdateAsync(
+        Guid tenantId,
+        Guid actorUserId,
+        Guid skillId,
+        UpdateSkillInput input,
+        string normalizedName,
+        string aliasesJson,
+        string metadataJson,
+        CancellationToken cancellationToken)
+    {
+        await using var connection = _connectionFactory.CreateConnection();
+        await connection.OpenAsync(cancellationToken);
+        await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
+
+        const string sql = """
+            UPDATE dbo.Skills
+            SET
+                Name = @Name,
+                NormalizedName = @NormalizedName,
+                Category = @Category,
+                AliasesJson = @AliasesJson,
+                Status = @Status,
+                UpdatedAtUtc = SYSUTCDATETIME()
+            WHERE TenantId = @TenantId
+              AND SkillId = @SkillId;
+            """;
+
+        await connection.ExecuteAsync(new CommandDefinition(
+            sql,
+            new
+            {
+                TenantId = tenantId,
+                SkillId = skillId,
+                input.Name,
+                NormalizedName = normalizedName,
+                input.Category,
+                AliasesJson = aliasesJson,
+                input.Status
+            },
+            transaction,
+            cancellationToken: cancellationToken));
+
+        await InsertAuditAsync(
+            connection,
+            transaction,
+            tenantId,
+            actorUserId,
+            "SkillUpdated",
+            "Skill",
+            skillId,
+            input.Name,
+            "Updated skill.",
+            "Admin Center",
+            metadataJson,
+            cancellationToken);
+
+        await transaction.CommitAsync(cancellationToken);
+    }
+
+    public async Task DeleteAsync(
+        Guid tenantId,
+        Guid actorUserId,
+        Guid skillId,
+        string skillName,
+        string metadataJson,
+        CancellationToken cancellationToken)
+    {
+        await using var connection = _connectionFactory.CreateConnection();
+        await connection.OpenAsync(cancellationToken);
+        await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
+
+        const string sql = """
+            DELETE FROM dbo.EmployeeSkills WHERE TenantId = @TenantId AND SkillId = @SkillId;
+            DELETE FROM dbo.CandidateSkills WHERE TenantId = @TenantId AND SkillId = @SkillId;
+            DELETE FROM dbo.JobRequestSkills WHERE TenantId = @TenantId AND SkillId = @SkillId;
+            DELETE FROM dbo.VectorEmbeddings WHERE TenantId = @TenantId AND EntityType = N'Skill' AND EntityId = @SkillId;
+            DELETE FROM dbo.Skills WHERE TenantId = @TenantId AND SkillId = @SkillId;
+            """;
+
+        await connection.ExecuteAsync(new CommandDefinition(
+            sql,
+            new { TenantId = tenantId, SkillId = skillId },
+            transaction,
+            cancellationToken: cancellationToken));
+
+        await InsertAuditAsync(
+            connection,
+            transaction,
+            tenantId,
+            actorUserId,
+            "SkillDeleted",
+            "Skill",
+            skillId,
+            skillName,
+            "Deleted skill.",
+            "Admin Center",
+            metadataJson,
+            cancellationToken);
+
+        await transaction.CommitAsync(cancellationToken);
+    }
+
+    public async Task<Guid> CreateAsync(
+        Guid tenantId,
+        Guid actorUserId,
+        CreateGroupInput input,
+        string metadataJson,
+        CancellationToken cancellationToken)
+    {
+        var groupId = Guid.NewGuid();
+
+        await using var connection = _connectionFactory.CreateConnection();
+        await connection.OpenAsync(cancellationToken);
+        await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
+
+        const string sql = """
+            INSERT INTO dbo.Groups
+            (
+                GroupId,
+                TenantId,
+                Name,
+                Purpose,
+                DefaultOwnerUserId,
+                Status,
+                CreatedAtUtc,
+                UpdatedAtUtc
+            )
+            VALUES
+            (
+                @GroupId,
+                @TenantId,
+                @Name,
+                @Purpose,
+                NULL,
+                @Status,
+                SYSUTCDATETIME(),
+                SYSUTCDATETIME()
+            );
+            """;
+
+        await connection.ExecuteAsync(new CommandDefinition(
+            sql,
+            new
+            {
+                TenantId = tenantId,
+                GroupId = groupId,
+                input.Name,
+                input.Purpose,
+                input.Status
+            },
+            transaction,
+            cancellationToken: cancellationToken));
+
+        await InsertAuditAsync(
+            connection,
+            transaction,
+            tenantId,
+            actorUserId,
+            "GroupCreated",
+            "Group",
+            groupId,
+            input.Name,
+            "Created routing group.",
+            "Admin Center",
+            metadataJson,
+            cancellationToken);
+
+        await transaction.CommitAsync(cancellationToken);
+        return groupId;
+    }
+
+    public async Task<AdminGroupMembershipResponse> ListMembershipAsync(
+        Guid tenantId,
+        Guid groupId,
+        AdminGroupMembershipQuery query,
+        CancellationToken cancellationToken)
+    {
+        var group = await GetGroupAsync(tenantId, groupId, cancellationToken)
+            ?? throw new InvalidOperationException("Group must exist before loading membership.");
+        var candidates = await BuildGroupMembershipCandidatesAsync(tenantId, groupId, cancellationToken);
+        var searchedUsers = ApplyGroupMembershipSearch(candidates, query.Search);
+        var users = ApplyGroupMembershipFilter(searchedUsers, query.Membership);
+
+        var ordered = users
+            .OrderByDescending(user => user.IsMember)
+            .ThenBy(user => user.DisplayName, StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+        var items = ordered
+            .Skip((query.Page - 1) * query.PageSize)
+            .Take(query.PageSize)
+            .ToArray();
+        var summary = new AdminGroupMembershipSummary(
+            candidates.Count(user => user.IsMember),
+            candidates.Count(user => !user.IsMember),
+            searchedUsers.Count(user => user.IsMember),
+            searchedUsers.Count(user => !user.IsMember));
+
+        return new AdminGroupMembershipResponse(group, summary, items, query.Page, query.PageSize, ordered.Length);
+    }
+
+    public async Task<bool> InternalUsersExistAsync(
+        Guid tenantId,
+        IReadOnlyCollection<Guid> userIds,
+        CancellationToken cancellationToken)
+    {
+        var distinctUserIds = userIds.Distinct().ToArray();
+        if (distinctUserIds.Length == 0)
+        {
+            return true;
+        }
+
+        var users = await LoadAdminUsersAsync(tenantId, cancellationToken);
+        return distinctUserIds.All(userId => users.Any(user => user.UserId == userId && user.IsInternalUser));
+    }
+
+    public async Task<UpdateGroupMembersResult> UpdateMembershipAsync(
+        Guid tenantId,
+        Guid actorUserId,
+        Guid groupId,
+        UpdateGroupMembersInput input,
+        string metadataJson,
+        CancellationToken cancellationToken)
+    {
+        var (userIdsToAdd, userIdsToRemove) = await ResolveGroupMembershipChangesAsync(
+            tenantId,
+            groupId,
+            input,
+            cancellationToken);
+
+        await using var connection = _connectionFactory.CreateConnection();
+        await connection.OpenAsync(cancellationToken);
+        await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
+
+        const string groupNameSql = """
+            SELECT Name
+            FROM dbo.Groups
+            WHERE TenantId = @TenantId
+              AND GroupId = @GroupId;
+            """;
+
+        var groupName = await connection.QuerySingleAsync<string>(new CommandDefinition(
+            groupNameSql,
+            new { TenantId = tenantId, GroupId = groupId },
+            transaction,
+            cancellationToken: cancellationToken));
+
+        var removedCount = 0;
+        if (userIdsToRemove.Count > 0)
+        {
+            const string deleteSql = """
+                DELETE FROM dbo.GroupMembers
+                WHERE TenantId = @TenantId
+                  AND GroupId = @GroupId
+                  AND UserId IN @UserIds;
+                """;
+
+            removedCount = await connection.ExecuteAsync(new CommandDefinition(
+                deleteSql,
+                new { TenantId = tenantId, GroupId = groupId, UserIds = userIdsToRemove.ToArray() },
+                transaction,
+                cancellationToken: cancellationToken));
+        }
+
+        var addedCount = 0;
+        const string insertSql = """
+            INSERT INTO dbo.GroupMembers (TenantId, GroupId, UserId, IsDefaultAssignee, CreatedAtUtc)
+            SELECT @TenantId, @GroupId, @UserId, 0, SYSUTCDATETIME()
+            WHERE NOT EXISTS
+            (
+                SELECT 1
+                FROM dbo.GroupMembers
+                WHERE TenantId = @TenantId
+                  AND GroupId = @GroupId
+                  AND UserId = @UserId
+            );
+            """;
+
+        foreach (var userId in userIdsToAdd)
+        {
+            addedCount += await connection.ExecuteAsync(new CommandDefinition(
+                insertSql,
+                new { TenantId = tenantId, GroupId = groupId, UserId = userId },
+                transaction,
+                cancellationToken: cancellationToken));
+        }
+
+        const string countSql = """
+            SELECT COUNT(1)
+            FROM dbo.GroupMembers
+            WHERE TenantId = @TenantId
+              AND GroupId = @GroupId;
+            """;
+
+        var memberCount = await connection.ExecuteScalarAsync<int>(new CommandDefinition(
+            countSql,
+            new { TenantId = tenantId, GroupId = groupId },
+            transaction,
+            cancellationToken: cancellationToken));
+
+        await InsertAuditAsync(
+            connection,
+            transaction,
+            tenantId,
+            actorUserId,
+            "GroupMembershipUpdated",
+            "Group",
+            groupId,
+            groupName,
+            $"Updated {groupName} membership. Added {addedCount}, removed {removedCount}.",
+            "Admin Center",
+            metadataJson,
+            cancellationToken);
+
+        await transaction.CommitAsync(cancellationToken);
+        return new UpdateGroupMembersResult(addedCount, removedCount, memberCount);
+    }
+
+    private async Task<(HashSet<Guid> UserIdsToAdd, HashSet<Guid> UserIdsToRemove)> ResolveGroupMembershipChangesAsync(
+        Guid tenantId,
+        Guid groupId,
+        UpdateGroupMembersInput input,
+        CancellationToken cancellationToken)
+    {
+        var explicitAddIds = (input.UserIdsToAdd ?? []).Distinct().ToArray();
+        var explicitRemoveIds = (input.UserIdsToRemove ?? []).Distinct().ToArray();
+        var userIdsToAdd = new HashSet<Guid>();
+        var userIdsToRemove = new HashSet<Guid>();
+
+        if (input.BulkSelection is not null)
+        {
+            var candidates = await BuildGroupMembershipCandidatesAsync(tenantId, groupId, cancellationToken);
+            var searchedUsers = ApplyGroupMembershipSearch(candidates, input.BulkSelection.Search);
+            var matchingUsers = ApplyGroupMembershipFilter(searchedUsers, input.BulkSelection.Membership);
+
+            if (string.Equals(input.BulkSelection.Mode, "AddMatching", StringComparison.OrdinalIgnoreCase))
+            {
+                foreach (var user in matchingUsers.Where(user => !user.IsMember))
+                {
+                    userIdsToAdd.Add(user.UserId);
+                }
+            }
+            else if (string.Equals(input.BulkSelection.Mode, "RemoveMatching", StringComparison.OrdinalIgnoreCase))
+            {
+                foreach (var user in matchingUsers.Where(user => user.IsMember))
+                {
+                    userIdsToRemove.Add(user.UserId);
+                }
+            }
+        }
+
+        foreach (var userId in explicitAddIds)
+        {
+            userIdsToRemove.Remove(userId);
+            userIdsToAdd.Add(userId);
+        }
+
+        foreach (var userId in explicitRemoveIds)
+        {
+            userIdsToAdd.Remove(userId);
+            userIdsToRemove.Add(userId);
+        }
+
+        return (userIdsToAdd, userIdsToRemove);
     }
 
     public async Task<AdminRolesResponse> ListAsync(Guid tenantId, AdminRolesQuery query, CancellationToken cancellationToken)
@@ -526,7 +2331,7 @@ public sealed class DapperAdminCenterRepository :
 
         var summary = new AdminRolesSummary(
             roles.Count(role => role.Status == "Active"),
-            roles.Count(role => role.IsProtected),
+            roles.Count(role => role.Type == "Tenant"),
             roles.Count(role => role.Type == "Custom"));
 
         return new AdminRolesResponse(summary, items, query.Page, query.PageSize, ordered.Length);
@@ -938,7 +2743,7 @@ public sealed class DapperAdminCenterRepository :
             ORDER BY e.EventCode;
 
             SELECT
-                SUM(CASE WHEN Status = N'Active' THEN 1 ELSE 0 END) AS ActiveEventCount
+                COUNT(CASE WHEN Status = N'Active' THEN 1 END) AS ActiveEventCount
             FROM dbo.NotificationEvents
             WHERE TenantId = @TenantId;
 
@@ -1034,7 +2839,10 @@ public sealed class DapperAdminCenterRepository :
         return new AdminNotificationEventDetails(row.EventId, row.EventCode, row.Name, row.Recipient, row.LifecycleStatus, templates);
     }
 
-    public async Task<IReadOnlyList<NotificationTemplateSummary>> ListTemplatesAsync(Guid tenantId, CancellationToken cancellationToken)
+    public async Task<AdminNotificationTemplatesResponse> ListTemplatesAsync(
+        Guid tenantId,
+        AdminNotificationTemplatesQuery query,
+        CancellationToken cancellationToken)
     {
         const string sql = """
             SELECT
@@ -1051,14 +2859,75 @@ public sealed class DapperAdminCenterRepository :
             FROM dbo.NotificationTemplates AS t
             INNER JOIN dbo.NotificationEvents AS e ON e.NotificationEventId = t.NotificationEventId
             WHERE t.TenantId = @TenantId
+              AND (
+                    @Search IS NULL
+                    OR t.Name LIKE @SearchLike
+                    OR e.EventCode LIKE @SearchLike
+                    OR t.Subject LIKE @SearchLike
+                    OR t.Recipient LIKE @SearchLike
+                  )
             ORDER BY t.Name;
+
+            SELECT COUNT(1)
+            FROM dbo.NotificationTemplates AS t
+            INNER JOIN dbo.NotificationEvents AS e ON e.NotificationEventId = t.NotificationEventId
+            WHERE t.TenantId = @TenantId
+              AND (
+                    @Search IS NULL
+                    OR t.Name LIKE @SearchLike
+                    OR e.EventCode LIKE @SearchLike
+                    OR t.Subject LIKE @SearchLike
+                    OR t.Recipient LIKE @SearchLike
+                  );
+
+            SELECT
+                COUNT(CASE WHEN Status = N'Active' THEN 1 END) AS ActiveEventCount
+            FROM dbo.NotificationEvents
+            WHERE TenantId = @TenantId;
+
+            SELECT COUNT(1)
+            FROM dbo.NotificationTemplates
+            WHERE TenantId = @TenantId
+              AND Status = N'Active';
+
+            SELECT COUNT(1)
+            FROM dbo.NotificationOutbox
+            WHERE TenantId = @TenantId
+              AND Status = N'Pending';
+
+            SELECT COUNT(1)
+            FROM dbo.NotificationOutbox
+            WHERE TenantId = @TenantId
+              AND Status = N'Failed';
             """;
 
         await using var connection = _connectionFactory.CreateConnection();
-        return (await connection.QueryAsync<NotificationTemplateRow>(
-            new CommandDefinition(sql, new { TenantId = tenantId }, cancellationToken: cancellationToken)))
+        using var grid = await connection.QueryMultipleAsync(new CommandDefinition(
+            sql,
+            SearchParameters(tenantId, query.Search),
+            cancellationToken: cancellationToken));
+
+        var rows = (await grid.ReadAsync<NotificationTemplateRow>())
             .Select(ToNotificationTemplateSummary)
             .ToArray();
+        var totalCount = await grid.ReadSingleAsync<int>();
+        var activeEventCount = await grid.ReadSingleAsync<int>();
+        var editableTemplateCount = await grid.ReadSingleAsync<int>();
+        var pendingOutboxCount = await grid.ReadSingleAsync<int>();
+        var failedOutboxCount = await grid.ReadSingleAsync<int>();
+
+        var items = rows
+            .Skip((query.Page - 1) * query.PageSize)
+            .Take(query.PageSize)
+            .ToArray();
+
+        var summary = new AdminNotificationEventsSummary(
+            activeEventCount,
+            editableTemplateCount,
+            pendingOutboxCount,
+            failedOutboxCount);
+
+        return new AdminNotificationTemplatesResponse(summary, items, query.Page, query.PageSize, totalCount);
     }
 
     public async Task<NotificationTemplateSummary?> GetTemplateAsync(Guid tenantId, Guid templateId, CancellationToken cancellationToken)
@@ -1126,6 +2995,151 @@ public sealed class DapperAdminCenterRepository :
         await transaction.CommitAsync(cancellationToken);
     }
 
+    public async Task RecordTestEmailSentAsync(
+        Guid tenantId,
+        Guid actorUserId,
+        string recipientEmail,
+        string providerMessageId,
+        string metadataJson,
+        CancellationToken cancellationToken)
+    {
+        await using var connection = _connectionFactory.CreateConnection();
+        await connection.OpenAsync(cancellationToken);
+        await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
+
+        await InsertAuditAsync(
+            connection,
+            transaction,
+            tenantId,
+            actorUserId,
+            "NotificationTestEmailSent",
+            "NotificationTestEmail",
+            null,
+            "Notification test email",
+            $"Sent test email to {recipientEmail}.",
+            "Admin Center",
+            metadataJson,
+            cancellationToken);
+
+        await transaction.CommitAsync(cancellationToken);
+    }
+
+    public async Task RecordRealtimeTestNotificationSentAsync(
+        Guid tenantId,
+        Guid actorUserId,
+        Guid notificationId,
+        int connectedClientCount,
+        string metadataJson,
+        CancellationToken cancellationToken)
+    {
+        await using var connection = _connectionFactory.CreateConnection();
+        await connection.OpenAsync(cancellationToken);
+        await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
+
+        await InsertAuditAsync(
+            connection,
+            transaction,
+            tenantId,
+            actorUserId,
+            "NotificationRealtimeTestSent",
+            "RealtimeNotification",
+            notificationId,
+            "Realtime test notification",
+            $"Sent realtime test notification to {connectedClientCount} connected client(s).",
+            "Admin Center",
+            metadataJson,
+            cancellationToken);
+
+        await transaction.CommitAsync(cancellationToken);
+    }
+
+    public async Task<IReadOnlyList<PersistedRealtimeNotification>> InsertForUsersAsync(
+        Guid tenantId,
+        IReadOnlyCollection<Guid> recipientUserIds,
+        RealtimeNotificationMessage notification,
+        CancellationToken cancellationToken)
+    {
+        var uniqueRecipientUserIds = recipientUserIds
+            .Where(userId => userId != Guid.Empty)
+            .Distinct()
+            .ToArray();
+        if (uniqueRecipientUserIds.Length == 0)
+        {
+            return [];
+        }
+
+        await using var connection = _connectionFactory.CreateConnection();
+        await connection.OpenAsync(cancellationToken);
+        await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
+
+        var eventCode = notification.Metadata.TryGetValue("eventCode", out var configuredEventCode) &&
+                        !string.IsNullOrWhiteSpace(configuredEventCode)
+            ? configuredEventCode.Trim()
+            : NotificationEventCodes.RealtimeNotification;
+        var eventId = await EnsureNotificationEventAsync(connection, transaction, tenantId, eventCode, cancellationToken);
+        var metadataJson = JsonSerializer.Serialize(notification.Metadata);
+        var entityId = Guid.TryParse(notification.EntityId, out var parsedEntityId)
+            ? parsedEntityId
+            : (Guid?)null;
+        var rows = uniqueRecipientUserIds
+            .Select(userId => new
+            {
+                NotificationRecipientId = Guid.NewGuid(),
+                TenantId = tenantId,
+                NotificationEventId = eventId,
+                RecipientUserId = userId,
+                Title = Truncate(notification.Title, 200),
+                Message = Truncate(notification.Message, 1000),
+                Category = Truncate(notification.Category, 80),
+                Severity = Truncate(notification.Severity, 20),
+                EntityType = Truncate(notification.EntityType, 80),
+                EntityId = entityId,
+                MetadataJson = metadataJson,
+                CreatedAtUtc = notification.CreatedAtUtc.UtcDateTime
+            })
+            .ToArray();
+
+        const string insertSql = """
+            INSERT INTO dbo.NotificationRecipients
+            (
+                NotificationRecipientId,
+                TenantId,
+                NotificationEventId,
+                RecipientUserId,
+                Title,
+                Message,
+                Category,
+                Severity,
+                EntityType,
+                EntityId,
+                MetadataJson,
+                CreatedAtUtc
+            )
+            VALUES
+            (
+                @NotificationRecipientId,
+                @TenantId,
+                @NotificationEventId,
+                @RecipientUserId,
+                @Title,
+                @Message,
+                @Category,
+                @Severity,
+                @EntityType,
+                @EntityId,
+                @MetadataJson,
+                @CreatedAtUtc
+            );
+            """;
+
+        await connection.ExecuteAsync(new CommandDefinition(insertSql, rows, transaction, cancellationToken: cancellationToken));
+        await transaction.CommitAsync(cancellationToken);
+
+        return rows
+            .Select(row => new PersistedRealtimeNotification(row.RecipientUserId, row.NotificationRecipientId))
+            .ToArray();
+    }
+
     public async Task UpdateEventStatusAsync(
         Guid tenantId,
         Guid actorUserId,
@@ -1160,30 +3174,6 @@ public sealed class DapperAdminCenterRepository :
 
         await InsertAuditAsync(connection, transaction, tenantId, actorUserId, "NotificationEventStatusUpdated", "NotificationEvent", eventId, eventName ?? "Notification event", $"Changed notification event status to {status}.", "Admin Center", metadataJson, cancellationToken);
         await transaction.CommitAsync(cancellationToken);
-    }
-
-    public async Task<int> ProcessPendingAsync(int batchSize, CancellationToken cancellationToken)
-    {
-        const string sql = """
-            ;WITH pending AS
-            (
-                SELECT TOP (@BatchSize) *
-                FROM dbo.NotificationOutbox
-                WHERE Status = N'Pending'
-                  AND AvailableAtUtc <= SYSUTCDATETIME()
-                ORDER BY CreatedAtUtc
-            )
-            UPDATE pending
-            SET Status = N'Sent',
-                ProcessedAtUtc = SYSUTCDATETIME(),
-                UpdatedAtUtc = SYSUTCDATETIME();
-
-            SELECT @@ROWCOUNT;
-            """;
-
-        await using var connection = _connectionFactory.CreateConnection();
-        return await connection.ExecuteScalarAsync<int>(
-            new CommandDefinition(sql, new { BatchSize = Math.Max(1, batchSize) }, cancellationToken: cancellationToken));
     }
 
     public async Task<AdminAuditLogListResponse> ListAsync(Guid tenantId, AdminAuditLogQuery query, CancellationToken cancellationToken)
@@ -1322,10 +3312,21 @@ public sealed class DapperAdminCenterRepository :
                 u.CreatedAtUtc,
                 u.UpdatedAtUtc,
                 e.DepartmentId,
-                d.Name AS DepartmentName
+                d.Name AS DepartmentName,
+                e.ExperienceYears,
+                e.JoiningDate,
+                COALESCE(interviewStats.CompletedInterviewCount, 0) AS CompletedInterviewCount
             FROM dbo.AppUsers AS u
             LEFT JOIN dbo.Employees AS e ON e.TenantId = u.TenantId AND e.AppUserId = u.UserId
             LEFT JOIN dbo.Departments AS d ON d.DepartmentId = e.DepartmentId
+            OUTER APPLY
+            (
+                SELECT COUNT(1) AS CompletedInterviewCount
+                FROM dbo.Interviews AS interview
+                WHERE interview.TenantId = u.TenantId
+                  AND interview.InterviewerUserId = u.UserId
+                  AND interview.Status = N'Completed'
+            ) AS interviewStats
             WHERE u.TenantId = @TenantId
               AND u.DeletedAtUtc IS NULL;
 
@@ -1374,7 +3375,10 @@ public sealed class DapperAdminCenterRepository :
                 CreatedAtUtc = user.CreatedAtUtc,
                 UpdatedAtUtc = user.UpdatedAtUtc,
                 DepartmentId = user.DepartmentId,
-                DepartmentName = user.DepartmentName
+                DepartmentName = user.DepartmentName,
+                ExperienceYears = user.ExperienceYears,
+                JoiningDate = user.JoiningDate,
+                CompletedInterviewCount = user.CompletedInterviewCount
             });
 
         foreach (var role in roleRows)
@@ -1394,6 +3398,85 @@ public sealed class DapperAdminCenterRepository :
         }
 
         return users.Values.ToArray();
+    }
+
+    private async Task<HashSet<Guid>> LoadDefaultGroupAssigneeUserIdsAsync(
+        Guid tenantId,
+        Guid groupId,
+        CancellationToken cancellationToken)
+    {
+        const string sql = """
+            SELECT UserId
+            FROM dbo.GroupMembers
+            WHERE TenantId = @TenantId
+              AND GroupId = @GroupId
+              AND IsDefaultAssignee = 1;
+            """;
+
+        await using var connection = _connectionFactory.CreateConnection();
+        var rows = await connection.QueryAsync<Guid>(new CommandDefinition(
+            sql,
+            new { TenantId = tenantId, GroupId = groupId },
+            cancellationToken: cancellationToken));
+
+        return rows.ToHashSet();
+    }
+
+    private async Task<AdminGroupMembershipUser[]> BuildGroupMembershipCandidatesAsync(
+        Guid tenantId,
+        Guid groupId,
+        CancellationToken cancellationToken)
+    {
+        var defaultAssigneeUserIds = await LoadDefaultGroupAssigneeUserIdsAsync(tenantId, groupId, cancellationToken);
+
+        return (await LoadAdminUsersAsync(tenantId, cancellationToken))
+            .Where(user => user.IsInternalUser)
+            .Select(user => new AdminGroupMembershipUser(
+                user.UserId,
+                user.DisplayName,
+                user.Email,
+                user.Initials,
+                user.RoleNames,
+                user.AccountStatus,
+                user.GroupIds.Contains(groupId),
+                defaultAssigneeUserIds.Contains(user.UserId)))
+            .ToArray();
+    }
+
+    private static AdminGroupMembershipUser[] ApplyGroupMembershipSearch(
+        IReadOnlyCollection<AdminGroupMembershipUser> users,
+        string? search)
+    {
+        if (string.IsNullOrWhiteSpace(search))
+        {
+            return users.ToArray();
+        }
+
+        var normalized = search.Trim();
+        return users
+            .Where(user =>
+                user.DisplayName.Contains(normalized, StringComparison.OrdinalIgnoreCase) ||
+                user.Email.Contains(normalized, StringComparison.OrdinalIgnoreCase) ||
+                user.RoleNames.Any(role => role.Contains(normalized, StringComparison.OrdinalIgnoreCase)) ||
+                user.AccountStatus.Contains(normalized, StringComparison.OrdinalIgnoreCase))
+            .ToArray();
+    }
+
+    private static AdminGroupMembershipUser[] ApplyGroupMembershipFilter(
+        IReadOnlyCollection<AdminGroupMembershipUser> users,
+        string? membership)
+    {
+        if (string.Equals(membership, "Members", StringComparison.OrdinalIgnoreCase))
+        {
+            return users.Where(user => user.IsMember).ToArray();
+        }
+
+        if (string.Equals(membership, "Available", StringComparison.OrdinalIgnoreCase))
+        {
+            return users.Where(user => !user.IsMember).ToArray();
+        }
+
+        return users.ToArray();
     }
 
     private async Task<List<RoleMaterialized>> LoadRolesAsync(Guid tenantId, CancellationToken cancellationToken)
@@ -1688,6 +3771,11 @@ public sealed class DapperAdminCenterRepository :
             highestRole?.Priority ?? int.MaxValue,
             user.GroupIds,
             user.GroupNames,
+            user.DepartmentId,
+            user.DepartmentName,
+            user.ExperienceYears,
+            ToDateOnly(user.JoiningDate),
+            user.CompletedInterviewCount,
             user.AccountStatus,
             ToUtc(user.LastActiveAtUtc),
             Utc(user.CreatedAtUtc),
@@ -1748,6 +3836,18 @@ public sealed class DapperAdminCenterRepository :
             user.AccountStatus);
     }
 
+    private static AdminSkillListItem ToAdminSkillListItem(SkillRow row)
+    {
+        return new AdminSkillListItem(
+            row.SkillId,
+            row.Name,
+            row.NormalizedName,
+            row.Category,
+            ParseStringArray(row.AliasesJson),
+            row.Status,
+            Utc(row.UpdatedAtUtc));
+    }
+
     private static AdminNotificationEventListItem ToNotificationEventListItem(NotificationEventRow row)
     {
         return new AdminNotificationEventListItem(
@@ -1804,6 +3904,111 @@ public sealed class DapperAdminCenterRepository :
         }
     }
 
+    private static async Task<Guid> EnsureNotificationEventAsync(
+        SqlConnection connection,
+        DbTransaction transaction,
+        Guid tenantId,
+        string eventCode,
+        CancellationToken cancellationToken)
+    {
+        const string sql = """
+            DECLARE @EventId UNIQUEIDENTIFIER;
+
+            SELECT @EventId = NotificationEventId
+            FROM dbo.NotificationEvents
+            WHERE TenantId = @TenantId
+              AND EventCode = @EventCode;
+
+            IF @EventId IS NULL
+            BEGIN
+                SET @EventId = NEWID();
+
+                INSERT INTO dbo.NotificationEvents
+                (
+                    NotificationEventId,
+                    TenantId,
+                    EventCode,
+                    Name,
+                    DefaultRecipientType,
+                    Status,
+                    CreatedAtUtc,
+                    UpdatedAtUtc
+                )
+                VALUES
+                (
+                    @EventId,
+                    @TenantId,
+                    @EventCode,
+                    N'Realtime notification',
+                    N'Realtime',
+                    N'Active',
+                    SYSUTCDATETIME(),
+                    SYSUTCDATETIME()
+                );
+            END;
+
+            SELECT @EventId;
+            """;
+
+        return await connection.ExecuteScalarAsync<Guid>(new CommandDefinition(
+            sql,
+            new { TenantId = tenantId, EventCode = eventCode },
+            transaction,
+            cancellationToken: cancellationToken));
+    }
+
+    private static string? Truncate(string? value, int maxLength)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return value;
+        }
+
+        return value.Length <= maxLength ? value : value[..maxLength];
+    }
+
+    private static AdminHiringPipelineTemplateItem ToHiringPipelineTemplateItem(
+        InterviewTemplateRow template,
+        IReadOnlyCollection<InterviewTemplateRoundRow> rounds)
+    {
+        var activeRounds = rounds
+            .Where(round => round.Status == "Active")
+            .OrderBy(round => round.RoundOrder)
+            .ToArray();
+        var stageFlow = activeRounds.Length == 0
+            ? "No active rounds"
+            : string.Join(" -> ", activeRounds.Select(round => round.Name));
+        var defaultInterviewers = activeRounds.Length == 0
+            ? "Unassigned"
+            : string.Join(", ", activeRounds.Select(round => round.OwnerUserName).Distinct(StringComparer.OrdinalIgnoreCase));
+
+        return new AdminHiringPipelineTemplateItem(
+            template.InterviewTemplateId,
+            template.Name,
+            template.DepartmentName,
+            template.Description,
+            stageFlow,
+            defaultInterviewers,
+            activeRounds.Length,
+            template.Status,
+            Utc(template.UpdatedAtUtc));
+    }
+
+    private static bool MatchesHiringPipelineSearch(AdminHiringPipelineTemplateItem template, string? search)
+    {
+        if (string.IsNullOrWhiteSpace(search))
+        {
+            return true;
+        }
+
+        var value = search.Trim();
+        return template.Name.Contains(value, StringComparison.OrdinalIgnoreCase)
+            || template.DepartmentName.Contains(value, StringComparison.OrdinalIgnoreCase)
+            || template.StageFlow.Contains(value, StringComparison.OrdinalIgnoreCase)
+            || template.DefaultInterviewers.Contains(value, StringComparison.OrdinalIgnoreCase)
+            || template.Status.Contains(value, StringComparison.OrdinalIgnoreCase);
+    }
+
     private static object SearchParameters(Guid tenantId, string? search)
     {
         return new
@@ -1832,6 +4037,11 @@ public sealed class DapperAdminCenterRepository :
     private static DateTimeOffset? ToUtc(DateTime? value)
     {
         return value.HasValue ? Utc(value.Value) : null;
+    }
+
+    private static DateOnly? ToDateOnly(DateTime? value)
+    {
+        return value.HasValue ? DateOnly.FromDateTime(value.Value) : null;
     }
 
     private static string BuildInitials(string displayName)
@@ -1863,6 +4073,9 @@ public sealed class DapperAdminCenterRepository :
         public DateTime UpdatedAtUtc { get; init; }
         public Guid? DepartmentId { get; init; }
         public string? DepartmentName { get; init; }
+        public decimal? ExperienceYears { get; init; }
+        public DateTime? JoiningDate { get; init; }
+        public int CompletedInterviewCount { get; init; }
         public List<UserRoleMaterialized> Roles { get; } = [];
         public List<UserGroupMaterialized> Groups { get; } = [];
         public IReadOnlyList<Guid> RoleIds => Roles.Select(role => role.RoleId).ToArray();
@@ -1889,7 +4102,7 @@ public sealed class DapperAdminCenterRepository :
     private sealed record UserRoleMaterialized(Guid RoleId, string Code, string Name, int Priority, string Scope);
     private sealed record UserGroupMaterialized(Guid GroupId, string Name);
     private sealed record PermissionMaterialized(string PermissionId, string DisplayName);
-    private sealed record UserRow(Guid UserId, string DisplayName, string Email, string Initials, string AccountStatus, DateTime? LastActiveAtUtc, DateTime CreatedAtUtc, DateTime UpdatedAtUtc, Guid? DepartmentId, string? DepartmentName);
+    private sealed record UserRow(Guid UserId, string DisplayName, string Email, string Initials, string AccountStatus, DateTime? LastActiveAtUtc, DateTime CreatedAtUtc, DateTime UpdatedAtUtc, Guid? DepartmentId, string? DepartmentName, decimal? ExperienceYears, DateTime? JoiningDate, int CompletedInterviewCount);
     private sealed record UserRoleRow(Guid UserId, Guid RoleId, string Code, string Name, int Priority, string Scope);
     private sealed record UserGroupRow(Guid UserId, Guid GroupId, string Name);
     private sealed record BenchPolicyRow(Guid RoleId, string RoleName, DateTime UpdatedAtUtc, Guid? UpdatedByUserId);
@@ -1898,6 +4111,16 @@ public sealed class DapperAdminCenterRepository :
     private sealed record RolePermissionRow(Guid RoleId, string PermissionId, string DisplayName);
     private sealed record RoleAssignmentCountRow(Guid RoleId, int AssignedUserCount);
     private sealed record NotificationEventRow(Guid EventId, string EventCode, string Name, string Recipient, string TemplateName, string LifecycleStatus, DateTime UpdatedAtUtc);
+    private sealed record SkillRow(Guid SkillId, string Name, string NormalizedName, string Category, string AliasesJson, string Status, DateTime UpdatedAtUtc);
+    private sealed record CandidateSourceLabelRow(Guid CandidateSourceLabelId, string Code, string DisplayName, string ReportingCategory, string Status, DateTime UpdatedAtUtc);
+    private sealed record WorkflowDefinitionRow(Guid WorkflowDefinitionId, string Code, string Name, string EntityType, string Status, DateTime UpdatedAtUtc);
+    private sealed record WorkflowStageRow(Guid WorkflowStageId, string StageKey, string Name, int StageOrder, bool IsTerminal, string Status);
+    private sealed record WorkflowRoutingRuleRow(Guid WorkflowRoutingRuleId, Guid WorkflowTransitionId, string ActionKey, string ActionName, string FromStage, string ToStage, string AssignmentType, string AssignmentTarget, string ResolverKey, string Status);
+    private sealed record WorkflowIntakeRoutingRuleRow(Guid? JobRequestIntakeRoutingRuleId, Guid DepartmentId, string DepartmentCode, string DepartmentName, string AssignmentType, Guid? TargetUserId, Guid? TargetGroupId, string AssignmentTarget, string Status, bool UsesTenantAdminFallback);
+    private sealed record InterviewTemplateRow(Guid InterviewTemplateId, Guid? DepartmentId, string Name, string DepartmentName, string Description, string Status, DateTime UpdatedAtUtc);
+    private sealed record InterviewTemplateRoundRow(Guid InterviewTemplateId, int RoundOrder, string Name, Guid? OwnerRoleId, string OwnerRoleName, Guid? OwnerUserId, string OwnerUserName, int DurationMinutes, bool IsRequired, string Status);
+    private sealed record InterviewTemplateDetailsRow(Guid InterviewTemplateId, Guid? DepartmentId, string Name, string DepartmentName, string Description, string Status, DateTime UpdatedAtUtc);
+    private sealed record InterviewTemplateDetailsRoundRow(Guid InterviewTemplateRoundId, int RoundOrder, string Name, Guid? OwnerRoleId, string OwnerRoleName, Guid? OwnerUserId, string OwnerUserName, int DurationMinutes, bool IsRequired, string Status);
     private sealed record NotificationEventDetailsRow(Guid EventId, string EventCode, string Name, string Recipient, string LifecycleStatus);
     private sealed record NotificationTemplateRow(Guid TemplateId, string EventCode, string Name, string Recipient, string Subject, string Body, string AllowedVariablesJson, string LifecycleStatus, DateTime UpdatedAtUtc, Guid? UpdatedByUserId);
     private sealed record AuditLogListRow(Guid Id, DateTime OccurredAtUtc, string ActorDisplayName, string EventSummary, string RecordLabel, string Area);

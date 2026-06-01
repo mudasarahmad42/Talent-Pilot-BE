@@ -21,6 +21,9 @@ public sealed record TenantProfileSettings(
     bool SetupComplete,
     string ConfiguredLlmModel,
     string ConfiguredEmbeddingModel,
+    string? LogoFileName,
+    string? LogoContentType,
+    string? LogoContentBase64,
     DateTimeOffset UpdatedAt);
 
 public sealed record UpdateTenantProfileSettingsInput(
@@ -37,6 +40,9 @@ public sealed record UpdateTenantProfileSettingsInput(
     string CandidateCvFormat,
     bool PublicJobsEnabled,
     int InviteExpiryDays,
-    int ReapplyCooldownDays);
+    int ReapplyCooldownDays,
+    string? LogoFileName,
+    string? LogoContentType,
+    string? LogoContentBase64);
 
 public sealed record SlugAvailabilityResponse(string Slug, bool Available);

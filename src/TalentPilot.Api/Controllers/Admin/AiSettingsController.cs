@@ -4,7 +4,7 @@ using TalentPilot.Application.Admin.AiSettings;
 namespace TalentPilot.Api.Controllers.Admin;
 
 [Route("api/admin/ai-settings")]
-public sealed class AiSettingsController : ApiControllerBase
+public sealed class AiSettingsController : AdminApiControllerBase
 {
     private readonly IAdminAiSettingsService _service;
 
@@ -14,20 +14,20 @@ public sealed class AiSettingsController : ApiControllerBase
     }
 
     [HttpGet("runtime")]
-    public ActionResult<AdminAiRuntimeResponse> Runtime()
+    public async Task<ActionResult<AdminAiRuntimeResponse>> Runtime(CancellationToken cancellationToken)
     {
-        return FromResult(_service.GetRuntime());
+        return FromResult(await _service.GetRuntimeAsync(cancellationToken));
     }
 
     [HttpGet("agents")]
-    public ActionResult<AdminAiAgentListResponse> Agents()
+    public async Task<ActionResult<AdminAiAgentListResponse>> Agents(CancellationToken cancellationToken)
     {
-        return FromResult(_service.GetAgents());
+        return FromResult(await _service.GetAgentsAsync(cancellationToken));
     }
 
     [HttpGet("guardrails")]
-    public ActionResult<AdminAiGuardrailsResponse> Guardrails()
+    public async Task<ActionResult<AdminAiGuardrailsResponse>> Guardrails(CancellationToken cancellationToken)
     {
-        return FromResult(_service.GetGuardrails());
+        return FromResult(await _service.GetGuardrailsAsync(cancellationToken));
     }
 }

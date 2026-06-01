@@ -2,6 +2,8 @@ namespace TalentPilot.Application.Admin.Notifications;
 
 public sealed record AdminNotificationEventsQuery(string? Search, int Page, int PageSize);
 
+public sealed record AdminNotificationTemplatesQuery(string? Search, int Page, int PageSize);
+
 public sealed record AdminNotificationEventsResponse(
     AdminNotificationEventsSummary Summary,
     IReadOnlyList<AdminNotificationEventListItem> Items,
@@ -14,6 +16,13 @@ public sealed record AdminNotificationEventsSummary(
     int EditableTemplateCount,
     int PendingOutboxCount,
     int FailedOutboxCount);
+
+public sealed record AdminNotificationTemplatesResponse(
+    AdminNotificationEventsSummary Summary,
+    IReadOnlyList<NotificationTemplateSummary> Items,
+    int Page,
+    int PageSize,
+    int TotalCount);
 
 public sealed record AdminNotificationEventListItem(
     Guid EventId,
@@ -47,3 +56,27 @@ public sealed record NotificationTemplateSummary(
 public sealed record UpdateNotificationTemplateInput(string Subject, string Body);
 
 public sealed record UpdateNotificationEventStatusInput(string Status);
+
+public sealed record SendTestNotificationEmailInput(string ToEmail);
+
+public sealed record SendTestNotificationEmailResponse(
+    string ToEmail,
+    string Subject,
+    string Provider,
+    string MessageId,
+    DateTimeOffset SubmittedAtUtc);
+
+public sealed record SendTestRealtimeNotificationResponse(
+    Guid NotificationId,
+    string Title,
+    string Message,
+    int ConnectedClientCount,
+    DateTimeOffset SentAtUtc);
+
+public sealed record RealtimeNotificationConnectionStatusResponse(
+    int ConnectedClientCount,
+    DateTimeOffset CheckedAtUtc);
+
+public sealed record NotificationEmailMessage(string ToEmail, string Subject, string TextBody, string HtmlBody);
+
+public sealed record NotificationEmailSendResult(string Provider, string MessageId, DateTimeOffset SubmittedAtUtc);

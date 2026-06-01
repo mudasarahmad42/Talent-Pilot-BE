@@ -76,12 +76,17 @@ BEGIN
         Email NVARCHAR(320) NOT NULL,
         Initials NVARCHAR(8) NOT NULL,
         AccountStatus NVARCHAR(20) NOT NULL,
+        DepartmentId UNIQUEIDENTIFIER NULL,
+        DepartmentName NVARCHAR(200) NULL,
+        ExperienceYears DECIMAL(4,1) NULL,
+        JoiningDate DATE NULL,
+        CompletedInterviewCount INT NOT NULL DEFAULT (0),
         LastActiveAtUtc DATETIME2(3) NULL,
         CreatedAtUtc DATETIME2(3) NOT NULL,
         UpdatedAtUtc DATETIME2(3) NOT NULL
     );
 
-    INSERT INTO #FilteredUsers (UserId, TenantId, DisplayName, Email, Initials, AccountStatus, LastActiveAtUtc, CreatedAtUtc, UpdatedAtUtc)
+    INSERT INTO #FilteredUsers (UserId, TenantId, DisplayName, Email, Initials, AccountStatus, DepartmentId, DepartmentName, ExperienceYears, JoiningDate, CompletedInterviewCount, LastActiveAtUtc, CreatedAtUtc, UpdatedAtUtc)
     SELECT
         u.UserId,
         u.TenantId,
@@ -89,13 +94,28 @@ BEGIN
         u.Email,
         u.Initials,
         u.AccountStatus,
+        e.DepartmentId,
+        d.Name AS DepartmentName,
+        e.ExperienceYears,
+        e.JoiningDate,
+        COALESCE(interviewStats.CompletedInterviewCount, 0) AS CompletedInterviewCount,
         u.LastActiveAtUtc,
         u.CreatedAtUtc,
         u.UpdatedAtUtc
     FROM dbo.AppUsers AS u
+    LEFT JOIN dbo.Employees AS e ON e.TenantId = u.TenantId AND e.AppUserId = u.UserId
+    LEFT JOIN dbo.Departments AS d ON d.DepartmentId = e.DepartmentId
+    OUTER APPLY
+    (
+        SELECT COUNT(1) AS CompletedInterviewCount
+        FROM dbo.Interviews AS interview
+        WHERE interview.TenantId = u.TenantId
+          AND interview.InterviewerUserId = u.UserId
+          AND interview.Status = N'Completed'
+    ) AS interviewStats
     WHERE u.TenantId = @TenantId
       AND u.DeletedAtUtc IS NULL
-      AND (@SearchPattern IS NULL OR u.DisplayName LIKE @SearchPattern OR u.Email LIKE @SearchPattern)
+      AND (@SearchPattern IS NULL OR u.DisplayName LIKE @SearchPattern OR u.Email LIKE @SearchPattern OR d.Name LIKE @SearchPattern)
       AND (@AccountStatus IS NULL OR u.AccountStatus = @AccountStatus)
       AND (@RoleId IS NULL OR EXISTS
       (
@@ -139,6 +159,11 @@ BEGIN
         highest.Priority AS HighestPriorityRolePriority,
         groups.GroupIdsCsv,
         groups.GroupNamesCsv,
+        fu.DepartmentId,
+        fu.DepartmentName,
+        fu.ExperienceYears,
+        fu.JoiningDate,
+        fu.CompletedInterviewCount,
         fu.AccountStatus,
         fu.LastActiveAtUtc,
         fu.CreatedAtUtc,

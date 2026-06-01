@@ -24,4 +24,14 @@ public sealed record AdminAiAgentDefinition(
 public sealed record AdminAiGuardrailsResponse(
     bool HumanReviewRequired,
     bool AutoRejectEnabled,
-    string DecisionBoundary);
+    string DecisionBoundary,
+    IReadOnlyList<AdminAiGuardrailItem> Items);
+
+public sealed record AdminAiGuardrailItem(
+    string Name,
+    string Value,
+    string Reason);
+
+public sealed record AdminAiGuardrailSettings(
+    bool HumanReviewRequired,
+    bool AutoRejectEnabled);

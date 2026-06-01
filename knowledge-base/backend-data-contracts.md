@@ -7,22 +7,25 @@
 - Authentication:
   - `GET /api/auth/login-options` returns selectable MVP users for card login.
   - `POST /api/auth/login` builds the full user profile from `AppUsers`, `Roles`, `RolePermissions`, `Groups`, and tenant policies.
-  - `Auth:AllowDemoCardLogin=true` permits null passwords for card-based MVP testing only.
+  - Demo role cards use normal email/password login with seeded BCrypt password hashes.
 - Admin Center endpoints:
-  - `/api/admin/tenant-profile`
+  - `/api/admin/tenant-profile` owns tenant identity, defaults, career settings, and persisted branding logo data.
   - `/api/admin/users`
   - `/api/admin/roles`
   - `/api/admin/groups`
   - `/api/admin/access-policies/*`
   - `/api/admin/notifications/*`
   - `/api/admin/ai-settings/*`
-  - `/api/admin/audit-logs`
+  - `/api/admin/audit-logs` and `/api/admin/audit-logs/export` for tenant-scoped audit review and Excel export.
 - Talent Pilot internal operations use `/api/talent-pilot/*`.
+- Recruiter sourcing is backend-owned through `/api/talent-pilot/recruitment/queue`, `/api/talent-pilot/job-requests/{id}/recruiter-sourcing`, and `/api/talent-pilot/job-posts*`.
+- `JobPosts`, `JobPostSkills`, and `JobPostInterviewRounds` are first-class SQL records. They stay linked to the root `JobRequests` row and are separate from future `JobApplications`.
 - Candidate Experience backend contracts still need endpoint implementation before candidate pages can show real jobs, applications, interviews, and profile data.
-- Recruiter, interviewer, and hiring-manager command APIs still need endpoint implementation for the full flow.
+- Recruiter candidate, interviewer, and hiring-manager command APIs still need endpoint implementation for the full flow.
 - Store all persisted timestamps in UTC. Return ISO UTC values; frontend formats local display.
 - Metric responses should include useful counts/statuses from database queries, not static explanatory labels.
 - Do not put endpoint names, SQL hints, or schema explanations in UI response text. Keep those in API docs and this knowledge base.
 - Notification delivery is backend-owned. Workflow events should create Email and SignalR work; frontend displays notification data returned by API.
 - Invitation resend writes audit history in the SQL admin repository. Add a seeded internal-user invitation event/template before wiring it to `NotificationOutbox`.
 - Role bulk assignment exists as an API contract; keep frontend selection behavior aligned with backend preview/apply payloads.
+- Generic document export is backend-owned. Current Excel export accepts server-shaped `DataTable` data through `IDocumentExportService`; audit logs are the first consumer.

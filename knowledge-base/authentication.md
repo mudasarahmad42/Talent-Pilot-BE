@@ -16,5 +16,5 @@
 - Groups route work only; groups do not grant permissions.
 - Access tokens include role code claims and permission claims.
 - Refresh tokens are stored hashed in `RefreshTokens` and revoked on logout/refresh rotation.
-- Demo card login accepts a null password only when `Auth:AllowDemoCardLogin=true`.
+- Demo role cards submit the seeded user email and shared demo password through the same credential login endpoint as manual sign-in.
 - Production credentials can use the same endpoint after password hashing or external identity is enabled.

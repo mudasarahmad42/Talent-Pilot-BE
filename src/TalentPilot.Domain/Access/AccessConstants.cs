@@ -2,8 +2,10 @@ namespace TalentPilot.Domain.Access;
 
 public static class AccessConstants
 {
+    public const string SystemAdminRoleCode = "SystemAdmin";
     public const string TenantAdminRoleCode = "TenantAdmin";
     public const string PmoRoleCode = "PMO";
+    public const string HodRoleCode = "HOD";
 
     public const string ManageAdminCenter = "access.admin.manage";
     public const string ManageUsers = "access.users.manage";

@@ -36,6 +36,9 @@ public sealed class DapperAdminTenantProfileRepository : IAdminTenantProfileRepo
                 trs.PublicJobsEnabled,
                 trs.InviteExpiryDays,
                 trs.ReapplyCooldownDays,
+                trs.LogoFileName,
+                trs.LogoContentType,
+                trs.LogoContent,
                 (SELECT COUNT(1)
                  FROM dbo.AppUsers AS u
                  WHERE u.TenantId = t.TenantId
@@ -58,7 +61,7 @@ public sealed class DapperAdminTenantProfileRepository : IAdminTenantProfileRepo
             """;
 
         await using var connection = _connectionFactory.CreateConnection();
-        return await connection.QuerySingleOrDefaultAsync<TenantProfileSettings>(
+        var row = await connection.QuerySingleOrDefaultAsync<TenantProfileSettingsRow>(
             new CommandDefinition(
                 sql,
                 new
@@ -68,6 +71,34 @@ public sealed class DapperAdminTenantProfileRepository : IAdminTenantProfileRepo
                     ConfiguredEmbeddingModel = configuredEmbeddingModel
                 },
                 cancellationToken: cancellationToken));
+
+        return row is null
+            ? null
+            : new TenantProfileSettings(
+                row.TenantId,
+                row.DisplayName,
+                row.Slug,
+                row.Domain,
+                row.AdminContactEmail,
+                row.DefaultTimezone,
+                row.DefaultCurrency,
+                row.Status,
+                row.CareerDisplayName,
+                row.PrimaryColor,
+                row.CandidateLoginRequired,
+                row.CandidateCvFormat,
+                row.PublicJobsEnabled,
+                row.InviteExpiryDays,
+                row.ReapplyCooldownDays,
+                row.UserCount,
+                row.RoleCount,
+                row.SetupComplete,
+                row.ConfiguredLlmModel,
+                row.ConfiguredEmbeddingModel,
+                row.LogoFileName,
+                row.LogoContentType,
+                ToBase64(row.LogoContent),
+                Utc(row.UpdatedAt));
     }
 
     public async Task<bool> IsSlugAvailableAsync(Guid tenantId, string slug, CancellationToken cancellationToken)
@@ -138,6 +169,9 @@ public sealed class DapperAdminTenantProfileRepository : IAdminTenantProfileRepo
                 PublicJobsEnabled = @PublicJobsEnabled,
                 InviteExpiryDays = @InviteExpiryDays,
                 ReapplyCooldownDays = @ReapplyCooldownDays,
+                LogoFileName = @LogoFileName,
+                LogoContentType = @LogoContentType,
+                LogoContent = @LogoContent,
                 UpdatedAtUtc = SYSUTCDATETIME()
             WHERE TenantId = @TenantId;
             """;
@@ -153,7 +187,10 @@ public sealed class DapperAdminTenantProfileRepository : IAdminTenantProfileRepo
                 CandidateCvFormat = input.CandidateCvFormat.Trim().ToUpperInvariant(),
                 input.PublicJobsEnabled,
                 input.InviteExpiryDays,
-                input.ReapplyCooldownDays
+                input.ReapplyCooldownDays,
+                LogoFileName = string.IsNullOrWhiteSpace(input.LogoContentBase64) ? null : input.LogoFileName?.Trim(),
+                LogoContentType = string.IsNullOrWhiteSpace(input.LogoContentBase64) ? null : input.LogoContentType?.Trim(),
+                LogoContent = FromBase64(input.LogoContentBase64)
             },
             transaction,
             cancellationToken: cancellationToken));
@@ -204,4 +241,45 @@ public sealed class DapperAdminTenantProfileRepository : IAdminTenantProfileRepo
 
         await transaction.CommitAsync(cancellationToken);
     }
+
+    private static DateTimeOffset Utc(DateTime value)
+    {
+        return new DateTimeOffset(DateTime.SpecifyKind(value, DateTimeKind.Utc));
+    }
+
+    private static string? ToBase64(byte[]? value)
+    {
+        return value is { Length: > 0 } ? Convert.ToBase64String(value) : null;
+    }
+
+    private static byte[]? FromBase64(string? value)
+    {
+        return string.IsNullOrWhiteSpace(value) ? null : Convert.FromBase64String(value);
+    }
+
+    private sealed record TenantProfileSettingsRow(
+        Guid TenantId,
+        string DisplayName,
+        string Slug,
+        string Domain,
+        string AdminContactEmail,
+        string DefaultTimezone,
+        string DefaultCurrency,
+        string Status,
+        string CareerDisplayName,
+        string PrimaryColor,
+        bool CandidateLoginRequired,
+        string CandidateCvFormat,
+        bool PublicJobsEnabled,
+        int InviteExpiryDays,
+        int ReapplyCooldownDays,
+        string? LogoFileName,
+        string? LogoContentType,
+        byte[]? LogoContent,
+        int UserCount,
+        int RoleCount,
+        bool SetupComplete,
+        string ConfiguredLlmModel,
+        string ConfiguredEmbeddingModel,
+        DateTime UpdatedAt);
 }

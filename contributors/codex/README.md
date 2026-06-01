@@ -1,5 +1,29 @@
 # Codex Contributor Log
 
+## 2026-05-22 - Branch: mudasar-ahmad
+
+- Commit summary: pending backend generic Excel export service and audit log export endpoint.
+- Purpose: provide a reusable `DataTable`-based document export service and wire audit logs to `.xlsx` export.
+- Files touched: document export DTO/interface/implementation, audit log service/controller, DI, CORS, docs, export service test.
+- Endpoints changed: added `GET /api/admin/audit-logs/export`.
+- Schema changed: no.
+- Seed/stored procedures changed: no.
+- Tests run: `dotnet test` passed with 4 tests; API smoke test downloaded a valid XLSX payload.
+- Known risks: export currently caps audit log rows at 5,000 per request.
+- AI assistance: Codex implemented and reviewed the changes.
+
+## 2026-05-22 - Branch: mudasar-ahmad
+
+- Commit summary: pending documentation update for backend engineering instructions.
+- Purpose: add pragmatic SOLID and simplicity guidance for backend contributors and AI agents.
+- Files touched: `AGENTS.md`, `CONTRIBUTING.md`, `README.md`, contributor log.
+- Endpoints changed: no.
+- Schema changed: no.
+- Seed/stored procedures changed: no.
+- Tests run: not run; documentation-only update.
+- Known risks: none.
+- AI assistance: Codex implemented and reviewed the documentation.
+
 ## 2026-05-22 - Branch: contributor-guardrails-docs
 
 - Commit summary: pending commit for PMO-to-recruitment operations API slice.

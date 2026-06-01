@@ -5,7 +5,7 @@ Keep this file aligned when controllers or frontend contracts change.
 ## Auth
 
 - `GET /api/auth/login-options`
-  - Returns backend-provided MVP login cards.
+  - Returns backend-provided MVP login cards, including roles and active group memberships for routing-context display.
 - `POST /api/auth/login`
   - Card login for MVP or credential login when password flow is enabled.
   - Returns tokens and full user context.
@@ -19,7 +19,9 @@ Keep this file aligned when controllers or frontend contracts change.
 ## Admin Center
 
 - `GET /api/admin/tenant-profile`
+  - Returns tenant identity, defaults, career settings, summary counts, AI runtime labels, and optional logo metadata/base64 content.
 - `PUT /api/admin/tenant-profile`
+  - Updates tenant identity, defaults, career settings, and optional logo metadata/base64 content.
 - `GET /api/admin/tenant-profile/slug-availability?slug={slug}`
 - `GET /api/admin/users`
 - `GET /api/admin/users/{userId}`
@@ -41,49 +43,124 @@ Keep this file aligned when controllers or frontend contracts change.
 - `GET /api/admin/access-policies/permission-resolution`
 - `PUT /api/admin/access-policies/permission-resolution`
 - `GET /api/admin/notifications/events`
+  - Returns the system notification event catalog. Event codes are code-owned and not tenant-authored.
 - `GET /api/admin/notifications/events/{eventId}`
 - `PATCH /api/admin/notifications/events/{eventId}/status`
 - `GET /api/admin/notifications/templates`
+    - Supports `search`, `page`, and `pageSize`; returns summary counts plus paged editable template rows.
 - `PUT /api/admin/notifications/templates/{templateId}`
+- `POST /api/admin/notifications/test-email`
+    - Tenant Admin only. Sends a standalone Resend delivery-check email to a test recipient and records audit history.
+- `POST /api/admin/notifications/test-realtime`
+    - Tenant Admin only. Broadcasts a SignalR test notification to connected clients in the current tenant and records audit history.
+- `GET /api/admin/workflows/configuration`
+    - Returns Job Request workflow definitions, stages, system transition/routing rows, and department intake routing rows.
+- `PUT /api/admin/workflows/intake-routing`
+    - Tenant Admin only. Upserts department intake routing for Presales-created Job Requests. Body: `rules[]` with `departmentId`, `assignmentType` (`User` or `Group`), matching target id, and `status`. Returns the refreshed workflow configuration.
+- `GET /api/admin/hiring-pipeline/templates`
+    - Supports `search`, `page`, and `pageSize`; returns summary counts plus paged interview template rows.
+- `GET /api/admin/hiring-pipeline/templates/{templateId}`
+- `POST /api/admin/hiring-pipeline/templates`
+    - Creates a reusable interview template with ordered required rounds and writes audit history.
+- `PUT /api/admin/hiring-pipeline/templates/{templateId}`
 - `GET /api/admin/ai-settings/runtime`
 - `GET /api/admin/ai-settings/agents`
 - `GET /api/admin/ai-settings/guardrails`
 - `GET /api/admin/audit-logs`
+- `GET /api/admin/audit-logs/export`
+  - Returns a filtered `.xlsx` workbook using the same audit log query filters.
 - `GET /api/admin/audit-logs/{auditLogId}`
 
 ## Talent Pilot Internal Operations
 
 - `GET /api/talent-pilot/snapshot`
-  - Dashboard, work lists, job request list, PMO queue, and notifications snapshot.
+  - Dashboard, work lists, job request list, PMO queue, and notifications snapshot. Results are scoped to the current user's role/assignment context; Tenant Admins can inspect all.
+- `GET /api/talent-pilot/job-requests/intake-options`
+  - Returns active departments, locations, skills, hiring managers, and department routing previews for the Job Request create form.
 - `GET /api/talent-pilot/job-requests/{entityId}/activity`
-  - Job request timeline/activity.
+  - Job request timeline/activity, using the same visibility guardrails as Job Request snapshots.
 - `POST /api/talent-pilot/job-requests`
-  - Creates a Job Request and starts the relevant operational path.
+  - Creates a Job Request from tenant IDs: department, location, skills, experience range, priority, required positions, and hiring manager. PMO-created requests assign to the PMO creator; Presales-created requests route by department intake configuration and fall back to Tenant Admins when no active recipient exists. Presales handoff notifications use the `PRESALES_REQUEST_SUBMITTED` notification event/template.
+- `POST /api/talent-pilot/job-requests/description-draft`
+  - Runs the code-owned `job-description-drafter` agent against structured intake fields only. Returns editable plain-text description content plus agent run metadata. The endpoint is not open chat and does not move workflow stages or make hiring decisions.
+  - Job Request creation runs the code-owned `requirement-parser` indexing step and embeds the final saved requirement profile into `VectorEmbeddings` as `JobRequestDescription`; embedding failures are logged in `AiAgentRuns` and do not roll back the request.
 - `POST /api/talent-pilot/workflow-assignments/{assignmentId}/claim`
-  - Atomic PMO/recruiter ownership claim.
+  - Atomic PMO/recruiter ownership claim. Claiming a PMO group assignment only assigns ownership; it does not move the Job Request out of PMO Review.
+- `GET /api/talent-pilot/job-requests/{entityId}/pmo-review`
+  - Loads PMO Review data: request summary, assignment state, existing employee referrals, eligible benched employees for PMO/Tenant Admin users, latest Bench Matching results, selectable Presales users, and recruiter handoff target preview.
+- `POST /api/talent-pilot/job-requests/{entityId}/bench-matches/rank`
+  - Runs the code-owned `bench-matching` agent after PMO claim or Tenant Admin override. Scores eligible active tenant employees using skills, vectors, experience, bench readiness, project evidence, and optional safe Tavily recent/live public context when the request needs it. Persists latest ranked recommendations in `AiRecommendationLogs`.
+  - Tavily web research is backend-capped at 60 requests per UTC day through `ExternalToolDailyUsage`.
+- `POST /api/talent-pilot/job-requests/{entityId}/employee-referrals`
+  - PMO/Tenant Admin recommends selected internal employees to a Presales user. Completes PMO Review, creates Presales Review assignment, queues email, and publishes realtime/in-app notification.
+- `POST /api/talent-pilot/job-requests/{entityId}/employee-referrals/decision`
+  - Presales/Tenant Admin accepts or rejects referred employees. Accepted referrals create internal fulfillment rows; rejected referrals store client feedback. The Job Request closes when required positions are fulfilled, otherwise it returns to PMO Review.
+- `POST /api/talent-pilot/job-requests/{entityId}/forward-to-recruiters`
+  - PMO/Tenant Admin forwards the request to recruiter sourcing when no internal employee should be recommended. Uses backend-owned recruiting routing and notification behavior.
+- `GET /api/talent-pilot/recruitment/queue`
+  - Recruiter/Tenant Admin list of visible `Recruiter Sourcing` assignments, claim state, request summary, current job post status, and recruiter owner.
+- `GET /api/talent-pilot/job-requests/{entityId}/recruiter-sourcing`
+  - Recruiter/Tenant Admin workspace data for one sourcing assignment: request summary, current sourcing assignment, existing Job Post, latest Talent Rediscovery rankings, active interview templates, and active skills.
+- `POST /api/talent-pilot/job-requests/{entityId}/talent-rediscovery/rank`
+  - Runs the code-owned `talent-rediscovery` agent after recruiter sourcing claim or Tenant Admin override. Scores active warm candidates with useful historical applications using skills, vectors, prior outcomes, interview feedback, similar role history, and experience/availability signal.
+  - Uses draft Job Post requirements first when one exists; otherwise uses the Job Request profile. Does not use web search and never contacts candidates or moves workflow stages. Persists latest candidate rankings in `AiRecommendationLogs`.
+- `GET /api/talent-pilot/job-posts`
+  - Recruiter/Tenant Admin list of visible draft/published/closed Job Posts for Job Publishing.
+- `POST /api/talent-pilot/job-requests/{entityId}/job-posts`
+  - Creates one draft recruiter-owned Job Post linked to the Job Request. Copies/uses the selected interview template rounds into post-specific rounds. Requires claimed recruiter sourcing ownership or Tenant Admin override.
+- `PUT /api/talent-pilot/job-posts/{jobPostId}`
+  - Updates draft Job Post content, skills, experience range, required positions, and post-specific interview rounds.
+- `POST /api/talent-pilot/job-posts/{jobPostId}/publish`
+  - Marks a draft Job Post as `Published`. The Job Request remains in Recruiter Sourcing and the post becomes visible through candidate portal APIs.
+- `POST /api/talent-pilot/job-posts/{jobPostId}/close`
+  - Marks a draft/published Job Post as `Closed` without closing the parent Job Request.
+- `POST /api/talent-pilot/job-posts/{jobPostId}/manual-candidates`
+  - Recruiter/Tenant Admin adds or reuses a manually sourced candidate for a published Job Post. Creates an invited `JobApplications` row linked to the Job Post and Job Request, stores source/education/work-history metadata, and queues the invitation email.
+- `POST /api/talent-pilot/candidates/cv-parse`
+  - Recruiter/Tenant Admin uploads a DOCX resume for the code-owned `cv-parser` agent. The endpoint extracts candidate contact/profile/education/experience/skill evidence and returns it for recruiter review; it does not create candidates, applications, or workflow movement by itself.
+- `POST /api/talent-pilot/job-applications/{jobApplicationId}/screening-decision`
+  - Recruiter/Tenant Admin moves a job-post application to screening, hold, or rejected.
+- `POST /api/talent-pilot/job-applications/{jobApplicationId}/interviews`
+  - Recruiter/Tenant Admin schedules a candidate interview task from a Job Post interview round. Uses the round default interviewer when no override is supplied, requires prior active rounds to be completed or skipped, and queues candidate/interviewer/hiring-manager email rows.
+- `GET /api/talent-pilot/interviews/my-tasks`
+  - Interviewer/Tenant Admin loads scheduled/completed interview tasks assigned to them.
+- `POST /api/talent-pilot/interviews/{interviewId}/feedback`
+  - Assigned interviewer/Tenant Admin submits scores, recommendation, and comments. Marks the interview completed and queues recruiter notification email.
+- `POST /api/talent-pilot/job-applications/{jobApplicationId}/forward-to-hiring-manager`
+  - Assigned recruiter/Tenant Admin forwards the candidate to Hiring Manager Review. Requires every active Job Post interview round for the application to be `Completed` or `Skipped`, creates the Hiring Manager Review assignment, updates application/request status, and queues `HIRING_MANAGER_REVIEW_READY`.
+- `GET /api/talent-pilot/hiring-manager/reviews`
+  - Hiring Manager/Tenant Admin list of final-review applications assigned to them or visible for administration.
+- `GET /api/talent-pilot/job-applications/{jobApplicationId}/hiring-review`
+  - Hiring Manager/Tenant Admin detail view with candidate summary, job request/post context, interview feedback, skipped-round reasons, advisory Hiring Manager Decision Brief, latest offer draft, and offer presentation meetings.
+- `POST /api/talent-pilot/job-applications/{jobApplicationId}/offer-letter`
+  - Generates or returns a deterministic editable offer-letter draft for the application.
+- `PUT /api/talent-pilot/offer-letters/{offerLetterId}`
+  - Saves offer-letter body and draft metadata edits.
+- `POST /api/talent-pilot/offer-letters/{offerLetterId}/presentation-meeting`
+  - Records the in-person offer presentation meeting and queues a candidate email invite.
+- `POST /api/talent-pilot/job-applications/{jobApplicationId}/hiring-outcome`
+  - Records `Offered`, `Rejected`, `OnHold`, or `Joined`. `Joined` creates an external-candidate fulfillment and closes the request/post when required positions are filled.
+- `POST /api/talent-pilot/job-requests/{entityId}/close`
+  - Hiring Manager/Tenant Admin closes the Job Request with a required reason.
+- `GET /api/talent-pilot/portal/job-posts`
+  - Anonymous candidate-safe list of published Job Posts only.
+- `GET /api/talent-pilot/portal/job-posts/{jobPostId}`
+  - Anonymous candidate-safe detail for a single published Job Post.
+- `POST /api/talent-pilot/portal/job-posts/{jobPostId}/applications`
+  - Candidate-authenticated apply endpoint. Creates or returns the active application for the signed-in Candidate and stores source/snapshot/status-history metadata.
+- `GET /api/talent-pilot/portal/my-applications`
+  - Candidate-authenticated application history/status list scoped to the signed-in Candidate.
 - `PATCH /api/talent-pilot/notifications/{notificationId}/read`
 - `PATCH /api/talent-pilot/notifications/read-all`
 
 ## Planned API Groups
 
 - Candidate Experience:
-  - public jobs
-  - job detail
-  - candidate registration/login if separate from internal auth
-  - apply with DOCX CV
-  - candidate profile
-  - applications
-  - interview schedule
+  - candidate profile editing
+  - CV/document upload
+  - candidate-facing interview schedule
 - Recruiter:
-  - candidate prospects
-  - invite links
-  - job post publishing
-  - hiring pipeline stage movement
-- Interviewer:
-  - assigned interviews
-  - feedback submission
-- Hiring Manager:
-  - final review
-  - offer outcome recording
+  - richer candidate prospect CRM beyond job-post invited applications
+  - reschedule/skip interview command surface
 - SignalR:
-  - notification hub for realtime unread counts and new task events
+  - notification hub refinements for realtime unread counts and task events

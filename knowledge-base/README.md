@@ -12,4 +12,5 @@
 - [Database schema](database-schema.md)
 - [Backend data contracts](backend-data-contracts.md)
 - [Business rules](business-rules.md)
+- [Notifications](notifications.md)
 - [Implemented vs planned](implemented-vs-planned.md)

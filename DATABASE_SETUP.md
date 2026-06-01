@@ -29,21 +29,25 @@ The database `TalentPilot` is created through the SQL runner. The backend script
 1. `scripts/schema/001_create_tables.sql`
 2. `scripts/schema/002_create_domain_tables.sql`
 3. `scripts/schema/003_create_views.sql`
-4. `scripts/seed/001_seed_initial_data.sql`
-5. `scripts/seed/002_seed_domain_reference_data.sql`
-6. `scripts/stored-procedures/001_user_procedures.sql`
-7. `scripts/stored-procedures/002_workflow_and_candidate_procedures.sql`
+4. `scripts/schema/004_add_tenant_logo.sql`
+5. `scripts/schema/005_normalize_roles_model.sql`
+6. `scripts/schema/006_persist_realtime_notifications.sql`
+7. `scripts/migrations/001_align_workflow_routing_source_of_truth.sql`
+8. `scripts/seed/001_seed_initial_data.sql`
+9. `scripts/seed/002_seed_domain_reference_data.sql`
+10. `scripts/stored-procedures/001_user_procedures.sql`
+11. `scripts/stored-procedures/002_workflow_and_candidate_procedures.sql`
 
 The scripts are additive and idempotent. The design discussion scripts under `../Database/Schema` are reference material only; they use earlier naming conventions and should not be run directly against this backend database.
 
-Current sanity counts after seed:
+Minimum sanity counts after seed:
 
-| Object | Count |
+| Object | Minimum count |
 | --- | ---: |
 | Tenants | 1 |
 | AppUsers | 7 |
-| Roles | 8 |
-| Groups | 3 |
+| Roles | 9 |
+| Groups | 5 |
 | Permissions | 14 |
 | Departments | 6 |
 | Skills | 9 |
@@ -53,7 +57,7 @@ Current sanity counts after seed:
 | Candidates | 1 |
 | CandidateSourceLabels | 4 |
 | InterviewTemplates | 1 |
-| NotificationEvents | 7 |
+| NotificationEvents | 8 |
 | AiAgentDefinitions | 6 |
 | Stored procedures | 6 |
 

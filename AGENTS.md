@@ -43,6 +43,15 @@ This repository is the .NET backend, SQL script, worker, and test repository for
 
 Do not put SQL access in controllers. Do not return database rows directly as API contracts.
 
+## Engineering Principles
+
+- Follow SOLID principles pragmatically: one clear responsibility per class/method, explicit dependencies through interfaces where they create a real boundary, and behavior that is easy to test in isolation.
+- Keep solutions simple. Do not add factories, generic frameworks, inheritance trees, or broad abstractions unless they remove real duplication or match an established repository pattern.
+- Prefer small vertical changes that keep each layer honest: controllers translate HTTP, application services own use-case orchestration and validation, repositories own persistence, and domain helpers own shared business rules.
+- Keep DTOs explicit and version-conscious. Do not leak SQL rows, Dapper-specific shapes, or infrastructure models into API responses.
+- When adding a new abstraction, document the concrete problem it solves in the PR or contributor log. If there is only one caller and no clear boundary, direct code is usually better.
+- Keep methods short enough to review. Extract private helpers when they name a meaningful step, not just to split code mechanically.
+
 ## Database And Migration Flow
 
 The script runner executes:

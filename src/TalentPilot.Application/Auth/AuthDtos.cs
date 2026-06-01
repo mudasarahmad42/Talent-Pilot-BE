@@ -33,4 +33,5 @@ public sealed record LoginOption(
     string DisplayName,
     string Email,
     string RoleDisplayName,
-    IReadOnlyList<CurrentUserRole> Roles);
+    IReadOnlyList<CurrentUserRole> Roles,
+    IReadOnlyList<CurrentUserGroup> Groups);

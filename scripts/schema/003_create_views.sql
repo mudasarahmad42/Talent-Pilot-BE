@@ -104,6 +104,7 @@ SELECT
     e.Email,
     e.Designation,
     e.ExperienceYears,
+    e.JoiningDate,
     d.Name AS DepartmentName,
     l.Name AS LocationName,
     e.AvailabilityStatus,

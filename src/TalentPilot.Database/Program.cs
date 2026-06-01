@@ -121,7 +121,7 @@ internal static class SqlScriptRunnerApp
 
     private static IReadOnlyList<SqlScript> FindScripts(string scriptsRoot)
     {
-        string[] folders = ["schema", "seed", "stored-procedures"];
+        string[] folders = ["schema", "migrations", "seed", "stored-procedures"];
         var scripts = new List<SqlScript>();
 
         foreach (var folder in folders)
@@ -292,7 +292,7 @@ internal static class SqlScriptRunnerApp
     {
         Console.WriteLine("TalentPilot.Database");
         Console.WriteLine();
-        Console.WriteLine("Runs SQL scripts in schema, seed, stored-procedures order.");
+        Console.WriteLine("Runs SQL scripts in schema, migrations, seed, stored-procedures order.");
         Console.WriteLine();
         Console.WriteLine("Usage:");
         Console.WriteLine("  dotnet run --project src/TalentPilot.Database -- --connection \"<connection string>\"");
