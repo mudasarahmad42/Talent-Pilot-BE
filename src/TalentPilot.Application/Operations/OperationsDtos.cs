@@ -244,6 +244,57 @@ public sealed record PmoDashboardAiHealth(
     int RankedRequests,
     int EmployeeEmbeddings);
 
+public sealed record HiringManagerDashboard(
+    DateTimeOffset GeneratedAtUtc,
+    HiringManagerDashboardSummary Summary,
+    IReadOnlyList<HiringManagerDashboardReviewItem> PriorityReviews,
+    IReadOnlyList<HiringManagerDashboardStatusBreakdownItem> OfferPipeline,
+    IReadOnlyList<HiringManagerDashboardAgingBucket> AgingBuckets,
+    IReadOnlyList<HiringManagerDashboardStatusBreakdownItem> OutcomeSplit,
+    IReadOnlyList<HiringManagerDashboardActivityItem> RecentActivity);
+
+public sealed record HiringManagerDashboardSummary(
+    int PendingReviews,
+    int OfferFollowUps,
+    int OnHold,
+    int CompletedOutcomes,
+    int OldestWaitingDays);
+
+public sealed record HiringManagerDashboardReviewItem(
+    Guid JobApplicationId,
+    Guid JobRequestId,
+    Guid? JobPostId,
+    string RequestCode,
+    string JobTitle,
+    string Client,
+    string Department,
+    string CandidateName,
+    string CandidateEmail,
+    string Status,
+    string HiringManagerName,
+    DateTimeOffset UpdatedAt,
+    int DaysWaiting,
+    int CompletedInterviews,
+    decimal? AverageScore,
+    int PositiveRecommendations,
+    string? OfferLetterStatus,
+    DateTimeOffset? LatestMeetingAt);
+
+public sealed record HiringManagerDashboardStatusBreakdownItem(string Status, int Count);
+
+public sealed record HiringManagerDashboardAgingBucket(string Label, int Count);
+
+public sealed record HiringManagerDashboardActivityItem(
+    Guid Id,
+    Guid JobApplicationId,
+    Guid JobRequestId,
+    string RequestCode,
+    string CandidateName,
+    string ActorName,
+    string Title,
+    string Detail,
+    DateTimeOffset CreatedAt);
+
 public sealed record OperationsPmoReview(
     OperationsJobRequest JobRequest,
     OperationsWorkflowAssignment? Assignment,
@@ -274,6 +325,7 @@ public sealed record OperationsRecruiterSourcing(
     IReadOnlyList<OperationsTalentRediscoveryMatch> TalentRediscoveryMatches,
     IReadOnlyList<OperationsApplicantRankingMatch> ApplicantRankings,
     IReadOnlyList<OperationsInterviewTemplateOption> InterviewTemplates,
+    IReadOnlyList<OperationsInterviewerOption> Interviewers,
     IReadOnlyList<OperationsLookupOption> HodInterviewers,
     IReadOnlyList<OperationsLookupOption> Skills);
 
@@ -297,7 +349,19 @@ public sealed record OperationsRecruiterApplication(
     int InterviewsPassed,
     int InterviewsTotal,
     string InterviewPassSummary,
+    IReadOnlyList<OperationsRecruiterApplicationDocument> Documents,
     IReadOnlyList<OperationsRecruiterApplicationInterview> Interviews);
+
+public sealed record OperationsRecruiterApplicationDocument(
+    Guid ApplicationDocumentId,
+    Guid JobApplicationId,
+    string DocumentType,
+    string DisplayName,
+    string ContentType,
+    long SizeBytes,
+    DateTimeOffset UploadedAt,
+    string ExtractionStatus,
+    bool HasTextEvidence);
 
 public sealed record OperationsRecruiterApplicationInterview(
     Guid InterviewId,
@@ -305,6 +369,8 @@ public sealed record OperationsRecruiterApplicationInterview(
     string RoundName,
     string InterviewerName,
     Guid InterviewerUserId,
+    string InterviewerAccountStatus,
+    bool InterviewerIsDeleted,
     string Status,
     DateTimeOffset StartsAt,
     int DurationMinutes,
@@ -350,6 +416,17 @@ public sealed record PortalJobPostDetail(
     string Status,
     DateTimeOffset PublishedAt,
     IReadOnlyList<OperationsJobPostSkill> Skills);
+
+public sealed record PortalInvitationContext(
+    Guid CandidateInvitationId,
+    Guid JobPostId,
+    string JobTitle,
+    string CompanyName,
+    string Status,
+    DateTimeOffset ExpiresAtUtc,
+    DateTimeOffset? UsedAtUtc,
+    bool IsExpired,
+    bool IsRevoked);
 
 public sealed record OperationsJobPostListItem(
     Guid JobPostId,
@@ -406,6 +483,18 @@ public sealed record OperationsInterviewTemplateOption(
     string DepartmentName,
     string Description,
     IReadOnlyList<OperationsJobPostInterviewRound> Rounds);
+
+public sealed record OperationsInterviewerOption(
+    Guid UserId,
+    string DisplayName,
+    string Email,
+    Guid? DepartmentId,
+    string? DepartmentName,
+    string? Designation,
+    IReadOnlyList<string> RoleNames,
+    int CompletedInterviewCount,
+    bool IsJobDepartmentMatch,
+    bool IsDepartmentHod);
 
 public sealed record OperationsJobRequestIntakeOptions(
     IReadOnlyList<OperationsIntakeDepartmentOption> Departments,
@@ -473,7 +562,8 @@ public sealed record OperationsNotification(
     string EntityType,
     Guid EntityId,
     DateTimeOffset? ReadAt,
-    DateTimeOffset CreatedAt);
+    DateTimeOffset CreatedAt,
+    IReadOnlyDictionary<string, string>? Metadata = null);
 
 public sealed record OperationsActivityEvent(
     Guid Id,
@@ -561,7 +651,9 @@ public sealed record OperationsCandidateApplicationEvidence(
     string? DisplayJobTitle = null,
     int InterviewsPassed = 0,
     int InterviewsTotal = 0,
-    string? InterviewPassSummary = null);
+    string? InterviewPassSummary = null,
+    string? CoverLetterText = null,
+    IReadOnlyList<OperationsApplicantDocumentEvidence>? DocumentEvidence = null);
 
 public sealed record OperationsCandidateInterviewEvidence(
     Guid InterviewId,
@@ -684,7 +776,33 @@ public sealed record OperationsCandidateProfileSkill(
 public sealed record OperationsCandidateProfile(
     OperationsHistoricalCandidateSummary Candidate,
     IReadOnlyList<OperationsCandidateProfileSkill> Skills,
-    IReadOnlyList<OperationsHistoricalApplicationSummary> Applications);
+    IReadOnlyList<OperationsHistoricalApplicationSummary> Applications,
+    IReadOnlyList<OperationsCandidateMeetingEvent> MeetingEvents);
+
+public sealed record OperationsCandidateMeetingParticipant(
+    string DisplayName,
+    string Email,
+    string Role,
+    bool IsOptional);
+
+public sealed record OperationsCandidateMeetingEvent(
+    Guid InterviewId,
+    Guid JobApplicationId,
+    Guid JobRequestId,
+    Guid? JobPostId,
+    string RequestCode,
+    string JobTitle,
+    string Client,
+    string RoundName,
+    string Status,
+    DateTimeOffset StartsAt,
+    int DurationMinutes,
+    string? MeetingLink,
+    string? CalendarProvider,
+    string? CalendarEventId,
+    string? CalendarEventHtmlLink,
+    string? LocationText,
+    IReadOnlyList<OperationsCandidateMeetingParticipant> Participants);
 
 public sealed record OperationsTalentRediscoveryContext(
     OperationsJobRequest JobRequest,
@@ -742,7 +860,21 @@ public sealed record OperationsApplicantDocumentEvidence(
     string StorageKey,
     string? StorageContainer,
     string ContentHashSha256,
-    DateTimeOffset UploadedAt);
+    DateTimeOffset UploadedAt,
+    string ExtractionStatus,
+    bool HasExtractedText,
+    string? ExtractedText,
+    string? ExtractedTextHashSha256,
+    string? ParserVersion,
+    DateTimeOffset? ExtractedAt,
+    string? ExtractionError);
+
+public sealed record OperationsApplicationDocumentDownload(
+    Guid ApplicationDocumentId,
+    Guid JobApplicationId,
+    string FileName,
+    string ContentType,
+    byte[] Content);
 
 public sealed record OperationsApplicantRankingMatch(
     Guid JobApplicationId,
@@ -789,10 +921,14 @@ public sealed record PortalApplyToJobPostInput(
     string? CurrentCompany,
     decimal? ExperienceYears,
     int? NoticePeriodDays,
+    DateOnly? InterviewAvailabilityStartDate,
+    DateOnly? InterviewAvailabilityEndDate,
     string? UniversityName,
     string? DegreeName,
     int? GraduationYear,
-    string? CoverLetter);
+    string? CoverLetter,
+    Guid? CandidateInvitationId,
+    string? InvitationToken);
 
 public sealed record PortalJobApplicationResult(
     Guid JobApplicationId,
@@ -806,6 +942,64 @@ public sealed record PortalUploadApplicationDocumentResult(
 
 public sealed record PortalMyApplications(
     IReadOnlyList<PortalMyApplicationItem> Items);
+
+public sealed record PortalCandidateProfile(
+    Guid? CandidateId,
+    string DisplayName,
+    string Email,
+    string? Phone,
+    string? LinkedInUrl,
+    string? CurrentDesignation,
+    string? CurrentCompany,
+    decimal? ExperienceYears,
+    decimal? ExpectedSalaryAmount,
+    string? ExpectedSalaryCurrency,
+    int? NoticePeriodDays,
+    PortalCandidateProfileEducation? PrimaryEducation,
+    PortalCandidateProfileWorkHistory? CurrentWorkHistory,
+    IReadOnlyList<PortalCandidateProfileSkill> Skills,
+    IReadOnlyList<PortalCandidateProfileSkillOption> SkillOptions);
+
+public sealed record PortalCandidateProfileEducation(
+    string? UniversityName,
+    string? DegreeName,
+    int? GraduationYear);
+
+public sealed record PortalCandidateProfileWorkHistory(
+    string? CompanyName,
+    string? Title);
+
+public sealed record PortalCandidateProfileSkill(
+    Guid SkillId,
+    string SkillName,
+    string SkillLevel,
+    decimal? YearsExperience,
+    bool IsPrimary);
+
+public sealed record PortalCandidateProfileSkillOption(
+    Guid SkillId,
+    string SkillName,
+    string? Category);
+
+public sealed record UpdatePortalCandidateProfileInput(
+    string DisplayName,
+    string? Phone,
+    string? LinkedInUrl,
+    string? CurrentDesignation,
+    string? CurrentCompany,
+    decimal? ExperienceYears,
+    decimal? ExpectedSalaryAmount,
+    string? ExpectedSalaryCurrency,
+    int? NoticePeriodDays,
+    PortalCandidateProfileEducation? PrimaryEducation,
+    PortalCandidateProfileWorkHistory? CurrentWorkHistory,
+    IReadOnlyList<UpdatePortalCandidateProfileSkillInput>? Skills);
+
+public sealed record UpdatePortalCandidateProfileSkillInput(
+    Guid SkillId,
+    string? SkillLevel,
+    decimal? YearsExperience,
+    bool IsPrimary);
 
 public sealed record PortalMyApplicationItem(
     Guid JobApplicationId,
@@ -836,7 +1030,12 @@ public sealed record PortalApplicationDocument(
     string ContentType,
     long SizeBytes,
     string StorageProvider,
-    DateTimeOffset UploadedAt);
+    DateTimeOffset UploadedAt,
+    string ExtractionStatus,
+    bool HasTextEvidence,
+    string? ParserVersion,
+    DateTimeOffset? ExtractedAt,
+    string? ExtractionError);
 
 public sealed record PortalApplicationDocumentMetadataInput(
     string DocumentType,
@@ -846,7 +1045,13 @@ public sealed record PortalApplicationDocumentMetadataInput(
     string StorageProvider,
     string StorageKey,
     string? StorageContainer,
-    string ContentHashSha256);
+    string ContentHashSha256,
+    string ExtractionStatus,
+    string? ExtractedText,
+    string? ExtractedTextHashSha256,
+    string? ParserVersion,
+    DateTimeOffset? ExtractedAt,
+    string? ExtractionError);
 
 public sealed record PortalApplicationDocumentUploadContext(
     Guid JobApplicationId,
@@ -877,7 +1082,19 @@ public sealed record AddManualCandidateInput(
     string? UniversityName,
     string? DegreeName,
     int? GraduationYear,
-    string? InvitationMessage);
+    string? InvitationMessage,
+    ParsedCandidateCvEvidenceInput? ParsedCvEvidence = null);
+
+public sealed record ParsedCandidateCvEvidenceInput(
+    string FileName,
+    string? ContentType,
+    long SizeBytes,
+    string ContentHashSha256,
+    string ExtractedText,
+    string? Summary,
+    Guid? AgentRunId,
+    string? Model,
+    DateTimeOffset? ParsedAtUtc);
 
 public sealed record AddManualCandidateResult(
     Guid CandidateId,
@@ -889,6 +1106,10 @@ public sealed record AddManualCandidateResult(
     bool InvitationQueued);
 
 public sealed record ParseCandidateCvResult(
+    string FileName,
+    string ContentType,
+    long SizeBytes,
+    string ContentHashSha256,
     Guid AgentRunId,
     string Model,
     DateTimeOffset GeneratedAtUtc,
@@ -914,7 +1135,10 @@ public sealed record ScheduleCandidateInterviewInput(
     Guid? InterviewerUserId,
     DateTimeOffset StartsAtUtc,
     string? MeetingLink,
-    string? LocationText);
+    string? LocationText,
+    string? CalendarProvider = null,
+    string? CalendarEventId = null,
+    string? CalendarEventHtmlLink = null);
 
 public sealed record ScheduleCandidateInterviewResult(
     Guid InterviewId,
@@ -925,7 +1149,45 @@ public sealed record ScheduleCandidateInterviewResult(
     string RoundName,
     DateTimeOffset StartsAtUtc,
     int DurationMinutes,
-    string Status);
+    string Status,
+    string? MeetingLink = null,
+    string? CalendarProvider = null,
+    string? CalendarEventId = null,
+    string? CalendarEventHtmlLink = null);
+
+public sealed record ScheduleCandidateInterviewRepositoryResult(
+    ScheduleCandidateInterviewResult Result,
+    IReadOnlyList<OperationsNotificationDispatch> NotificationDispatches);
+
+public enum OperationsScheduleCandidateInterviewValidationStatus
+{
+    Ready,
+    NotFound,
+    PriorRoundsPending,
+    RoundAlreadyScheduled,
+    MissingInterviewer
+}
+
+public sealed record OperationsScheduleCandidateInterviewValidation(
+    OperationsScheduleCandidateInterviewValidationStatus Status);
+
+public sealed record OperationsInterviewScheduleContext(
+    string CompanyName,
+    string RequestCode,
+    string JobTitle,
+    string CandidateName,
+    string CandidateEmail,
+    Guid InterviewerUserId,
+    string InterviewerName,
+    string InterviewerEmail,
+    Guid HiringManagerUserId,
+    string HiringManagerName,
+    string HiringManagerEmail,
+    string RecruiterName,
+    string RecruiterEmail,
+    string RoundName,
+    int DurationMinutes,
+    string TimeZoneId);
 
 public sealed record OperationsInterviewTaskList(IReadOnlyList<OperationsInterviewTask> Items);
 
@@ -943,6 +1205,8 @@ public sealed record OperationsInterviewTask(
     string RoundName,
     string InterviewerName,
     Guid InterviewerUserId,
+    string InterviewerAccountStatus,
+    bool InterviewerIsDeleted,
     string ScheduledByName,
     DateTimeOffset StartsAt,
     int DurationMinutes,
@@ -1000,6 +1264,8 @@ public sealed record HiringReviewCandidateSummary(
     string? CurrentDesignation,
     string? CurrentCompany,
     decimal? ExperienceYears,
+    decimal? ExpectedSalaryAmount,
+    string? ExpectedSalaryCurrency,
     int? NoticePeriodDays);
 
 public sealed record HiringReviewJobSummary(
@@ -1010,13 +1276,19 @@ public sealed record HiringReviewJobSummary(
     string Client,
     string Department,
     string Location,
+    decimal? ExperienceMinYears,
+    decimal? ExperienceMaxYears,
     int RequiredPositions,
     int FulfilledPositions,
     string RequestStatus,
     string ApplicationStatus,
+    DateTimeOffset? FinalOutcomeRecordedAt,
+    string? FinalOutcomeReason,
     string SourceLabel,
     string? SourceDetail,
-    string? RecruiterNotes);
+    string? RecruiterNotes,
+    string? RequestDescription,
+    string? JobPostDescription);
 
 public sealed record HiringReviewInterviewDetail(
     Guid InterviewId,
@@ -1063,11 +1335,37 @@ public sealed record OfferPresentationMeetingDetails(
     string Status,
     DateTimeOffset CreatedAt);
 
+public sealed record HiringReviewDecisionMetric(
+    string Key,
+    string Label,
+    string Value,
+    decimal? Score,
+    string? Unit,
+    string Tone,
+    string Icon,
+    string? Detail);
+
+public sealed record HiringReviewDecisionContextItem(
+    string Key,
+    string Label,
+    string Value,
+    string Icon,
+    string Tone);
+
+public sealed record HiringReviewDecisionBriefInsight(
+    string AgentKey,
+    string AgentName,
+    string Summary,
+    IReadOnlyList<HiringReviewDecisionMetric> Metrics,
+    IReadOnlyList<HiringReviewDecisionContextItem> Context,
+    IReadOnlyList<string> Signals);
+
 public sealed record HiringReviewDetail(
     HiringReviewCandidateSummary Candidate,
     HiringReviewJobSummary Job,
     IReadOnlyList<HiringReviewInterviewDetail> Interviews,
     string DecisionBrief,
+    HiringReviewDecisionBriefInsight DecisionBriefInsight,
     OfferLetterDetails? OfferLetter,
     IReadOnlyList<OfferPresentationMeetingDetails> PresentationMeetings);
 
@@ -1104,6 +1402,21 @@ public sealed record HiringOutcomeResult(
     int RequiredPositions);
 
 public sealed record CloseJobRequestInput(string Reason);
+
+public sealed record ReportingManagerOption(
+    Guid EmployeeId,
+    string DisplayName,
+    string Email,
+    string? Designation,
+    string Department,
+    string Location,
+    decimal? ExperienceYears,
+    bool IsDepartmentMatch);
+
+public sealed record ReportingManagerOptionList(
+    IReadOnlyList<ReportingManagerOption> Items,
+    int TotalCount,
+    bool HasMore);
 
 public sealed record OperationsEmployeeReferral(
     Guid ReferralId,

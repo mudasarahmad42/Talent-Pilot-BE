@@ -10,6 +10,10 @@ public interface IAdminNotificationsService
 
     Task<Result<AdminNotificationTemplatesResponse>> ListTemplatesAsync(AdminNotificationTemplatesQuery query, CancellationToken cancellationToken);
 
+    Task<Result<AdminNotificationOutboxResponse>> ListOutboxAsync(AdminNotificationOutboxQuery query, CancellationToken cancellationToken);
+
+    Task<Result<AdminNotificationOutboxItem>> RetryOutboxEmailAsync(Guid outboxId, CancellationToken cancellationToken);
+
     Task<Result<NotificationTemplateSummary>> UpdateTemplateAsync(Guid templateId, UpdateNotificationTemplateInput input, CancellationToken cancellationToken);
 
     Task<Result<SendTestNotificationEmailResponse>> SendTestEmailAsync(SendTestNotificationEmailInput input, CancellationToken cancellationToken);
@@ -29,6 +33,12 @@ public interface IAdminNotificationsRepository
 
     Task<AdminNotificationTemplatesResponse> ListTemplatesAsync(Guid tenantId, AdminNotificationTemplatesQuery query, CancellationToken cancellationToken);
 
+    Task<AdminNotificationOutboxResponse> ListOutboxAsync(Guid tenantId, AdminNotificationOutboxQuery query, CancellationToken cancellationToken);
+
+    Task<AdminNotificationOutboxItem?> GetOutboxItemAsync(Guid tenantId, Guid outboxId, CancellationToken cancellationToken);
+
+    Task<AdminNotificationOutboxItem?> RequeueOutboxEmailAsync(Guid tenantId, Guid outboxId, CancellationToken cancellationToken);
+
     Task<NotificationTemplateSummary?> GetTemplateAsync(Guid tenantId, Guid templateId, CancellationToken cancellationToken);
 
     Task UpdateTemplateAsync(Guid tenantId, Guid actorUserId, Guid templateId, UpdateNotificationTemplateInput input, string metadataJson, CancellationToken cancellationToken);
@@ -45,7 +55,17 @@ public interface INotificationEmailSender
     Task<Result<NotificationEmailSendResult>> SendAsync(NotificationEmailMessage message, CancellationToken cancellationToken);
 }
 
+public interface INotificationEmailProviderSettingsResolver
+{
+    Task<NotificationEmailProviderSettings> GetAsync(Guid tenantId, CancellationToken cancellationToken);
+}
+
 public interface INotificationOutboxProcessor
 {
     Task<int> ProcessPendingAsync(int batchSize, CancellationToken cancellationToken);
+}
+
+public interface INotificationWorkerStatusStore
+{
+    Task RecordHeartbeatAsync(NotificationWorkerHeartbeat heartbeat, CancellationToken cancellationToken);
 }

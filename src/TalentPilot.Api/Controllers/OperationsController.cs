@@ -45,6 +45,12 @@ public sealed class OperationsController : ApiControllerBase
         return FromResult(await _operationsService.GetPmoDashboardAsync(query, cancellationToken));
     }
 
+    [HttpGet("hiring-manager/dashboard")]
+    public async Task<ActionResult<HiringManagerDashboard>> HiringManagerDashboard(CancellationToken cancellationToken)
+    {
+        return FromResult(await _operationsService.GetHiringManagerDashboardAsync(cancellationToken));
+    }
+
     [HttpGet("job-requests/intake-options")]
     public async Task<ActionResult<OperationsJobRequestIntakeOptions>> IntakeOptions(CancellationToken cancellationToken)
     {
@@ -89,6 +95,29 @@ public sealed class OperationsController : ApiControllerBase
         return FromResult(await _operationsService.GetHistoricalApplicationAsync(jobApplicationId, cancellationToken));
     }
 
+    [HttpGet("recruitment/applications/{jobApplicationId:guid}/documents/{applicationDocumentId:guid}/download")]
+    public async Task<IActionResult> DownloadRecruiterApplicationDocument(
+        Guid jobApplicationId,
+        Guid applicationDocumentId,
+        CancellationToken cancellationToken)
+    {
+        var result = await _operationsService.DownloadRecruiterApplicationDocumentAsync(
+            jobApplicationId,
+            applicationDocumentId,
+            cancellationToken);
+
+        if (result.Failed)
+        {
+            return FromResult(result).Result ?? BadRequest(new
+            {
+                error = result.Error.Code,
+                message = result.Error.Message
+            });
+        }
+
+        return File(result.Value.Content, result.Value.ContentType, result.Value.FileName);
+    }
+
     [HttpGet("recruitment/candidates/{candidateId:guid}/profile")]
     public async Task<ActionResult<OperationsCandidateProfile>> CandidateProfile(
         Guid candidateId,
@@ -117,6 +146,16 @@ public sealed class OperationsController : ApiControllerBase
         CancellationToken cancellationToken)
     {
         return FromResult(await _operationsService.GetPortalJobPostAsync(jobPostId, cancellationToken));
+    }
+
+    [AllowAnonymous]
+    [HttpGet("portal/invitations/{candidateInvitationId:guid}")]
+    public async Task<ActionResult<PortalInvitationContext>> PortalInvitation(
+        Guid candidateInvitationId,
+        [FromQuery] string token,
+        CancellationToken cancellationToken)
+    {
+        return FromResult(await _operationsService.GetPortalInvitationAsync(candidateInvitationId, token, cancellationToken));
     }
 
     [HttpPost("portal/job-posts/{jobPostId:guid}/applications")]
@@ -160,6 +199,20 @@ public sealed class OperationsController : ApiControllerBase
     public async Task<ActionResult<PortalMyApplications>> PortalMyApplications(CancellationToken cancellationToken)
     {
         return FromResult(await _operationsService.GetPortalMyApplicationsAsync(cancellationToken));
+    }
+
+    [HttpGet("portal/profile")]
+    public async Task<ActionResult<PortalCandidateProfile>> PortalProfile(CancellationToken cancellationToken)
+    {
+        return FromResult(await _operationsService.GetPortalCandidateProfileAsync(cancellationToken));
+    }
+
+    [HttpPut("portal/profile")]
+    public async Task<ActionResult<PortalCandidateProfile>> UpdatePortalProfile(
+        UpdatePortalCandidateProfileInput input,
+        CancellationToken cancellationToken)
+    {
+        return FromResult(await _operationsService.UpdatePortalCandidateProfileAsync(input, cancellationToken));
     }
 
     [HttpPost("job-requests")]
@@ -300,6 +353,22 @@ public sealed class OperationsController : ApiControllerBase
         CancellationToken cancellationToken)
     {
         return FromResult(await _operationsService.GetHiringReviewAsync(jobApplicationId, cancellationToken));
+    }
+
+    [HttpGet("job-requests/{jobRequestId:guid}/reporting-manager-options")]
+    public async Task<ActionResult<ReportingManagerOptionList>> ReportingManagerOptions(
+        Guid jobRequestId,
+        [FromQuery] string? search,
+        [FromQuery] int skip,
+        [FromQuery] int take,
+        CancellationToken cancellationToken)
+    {
+        return FromResult(await _operationsService.SearchReportingManagerOptionsAsync(
+            jobRequestId,
+            search,
+            skip,
+            take,
+            cancellationToken));
     }
 
     [HttpPost("job-applications/{jobApplicationId:guid}/offer-letter")]

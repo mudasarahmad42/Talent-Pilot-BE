@@ -64,7 +64,7 @@ Important boundary rules:
 
 - Tenant configuration
   - `Tenants`, `TenantRecruitmentSettings`, `TenantAiSettings`, `TenantAccessPolicies`
-  - Stores tenant identity, status, timezone, currency, career page settings, branding logo, permission policy, and runtime model values.
+  - Stores tenant identity, status, timezone, currency, career page settings, notification email provider, branding logo, permission policy, and runtime model values.
 - Identity and authorization
   - `AppUsers`, `UserCredentials`, `RefreshTokens`, `Roles`, `Permissions`, `RolePermissions`, `UserRoles`
   - Builds auth profile, role display, role priority, and effective permission ids. `Permissions` are application-owned; tenant roles and role mappings are tenant-owned except the platform `System Administrator` role.
@@ -79,7 +79,7 @@ Important boundary rules:
   - Tracks the resource need, required positions, internal referrals, external-candidate joins, and fulfillment.
 - Candidate sourcing and application
   - `CandidateSourceLabels`, `Candidates`, `CandidateSkills`, `CandidateProspects`, `CandidateProspectJobRequests`, `CandidateInvitations`, `JobApplications`, `JobApplicationStatusHistory`
-  - Keeps sourced prospects, registered candidates, job-specific applications, invite tokens, re-apply history, and hired-candidate-to-employee traceability.
+  - Keeps sourced prospects, registered candidates, job-specific applications, invite token hashes (`CandidateInvitations.TokenHash`), re-apply history, and hired-candidate-to-employee traceability.
 - Hiring pipeline and interviews
   - `InterviewTemplates`, `InterviewTemplateRounds`, `JobRequestInterviewRounds`, `Interviews`, `InterviewFeedback`
   - Stores fixed job-post pipeline templates, required interview assignments, feedback, and audited skipped-interview reasons.
@@ -90,8 +90,8 @@ Important boundary rules:
   - `WorkflowDefinitions`, `WorkflowStages`, `WorkflowTransitions`, `WorkflowRoutingRules`, `JobRequestIntakeRoutingRules`, `WorkflowAssignments`, `WorkflowHistory`
   - Controls operational handoffs such as Presales to PMO, PMO to Recruiter, and Hiring Manager routing. `JobRequestIntakeRoutingRules` is tenant-owned department-to-user/group configuration for Presales-created Job Requests; backend action keys remain code-owned.
 - Notifications and audit
-  - `NotificationEvents`, `NotificationTemplates`, `NotificationRecipients`, `NotificationOutbox`, `AuditLogs`
-  - Stores durable notification records, email template text, SignalR/email outbox rows, and audit history.
+  - `NotificationEvents`, `NotificationTemplates`, `NotificationRecipients`, `NotificationOutbox`, `NotificationWorkerStatus`, `AuditLogs`
+  - Stores durable notification records, email template text, SignalR/email outbox rows, worker heartbeat status, and audit history.
 - AI, vector search, and external tool usage
   - `AiAgentDefinitions`, `AiAgentRuns`, `AiRecommendationLogs`, `VectorEmbeddings`, `ExternalToolDailyUsage`
   - Stores advisory AI execution traces, recommendation explanations, model metadata, source hashes, 768-dimensional embeddings, and durable daily request counts for paid external tools such as Tavily web research.
@@ -104,13 +104,14 @@ Important boundary rules:
 - Tenant timezone is stored as an IANA id, for example `Asia/Karachi`.
 - Tenant currency is stored as an ISO 4217 code, for example `PKR`.
 - Tenant status is `Active` or `Inactive`.
+- Tenant notification email provider is stored on `TenantRecruitmentSettings.NotificationEmailProvider` and is constrained to `Resend` or `MicrosoftGraph`.
 - Tenant logo payloads are stored in `TenantRecruitmentSettings` as binary content with file name and content type metadata.
 - User list displays highest-priority role from `Roles.Priority`; full assignments remain in `UserRoles`.
 - Permission conflict behavior is stored in tenant access policies.
 - Bulk role assignment writes role rows plus `RoleAssignmentBatches` for auditability.
 - Candidate invite tokens store hashes only, never raw tokens.
 - Re-apply checks use final decision timestamp plus configured cooldown.
-- Notification delivery is code-owned. Schema stores events, recipients, templates, and outbox work.
+- Notification delivery is code-owned. Schema stores events, recipients, templates, outbox work, and worker heartbeat diagnostics.
 - Vector embeddings must always be tenant-filtered and model/dimension-aware.
 - Paid external AI tools must reserve usage in `ExternalToolDailyUsage` before calling providers so daily caps survive API restarts.
 

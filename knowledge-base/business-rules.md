@@ -17,9 +17,12 @@ Canonical business source of truth: [../../../TALENT_PILOT_SOURCE_OF_TRUTH.md](.
   - candidates who cleared similar interviews but were on hold or not offered
   - candidates who cleared some similar interview stages but failed later stages
   - new manual sourcing and Talent Pilot job posting
+- Talent Rediscovery warm-history signals can surface candidates for recruiter review, but zero direct required-skill coverage must remain low-fit and low priority. Historical outcome, interview pass history, and vector similarity must not promote an unrelated candidate above candidates with current required-skill evidence.
 - Candidate and application are separate.
 - Candidate must register/log in before applying.
+- Candidate profile editing belongs to the candidate portal. Email is identity-owned/read-only; profile saves create/update Candidate fields, primary education, current work history, and skills, then best-effort index a `CandidateProfile` vector without blocking the save.
 - Candidate applications use Hiring Pipeline stages, not generic workflow types.
+- Application document records store provider/container/path/checksum metadata. MVP files use the local Talent Pilot server file-system provider, but this is backend storage metadata so Azure Blob or another provider can replace it later. Candidate-facing UI should not display provider names or storage migration notes.
 - Recruiter starts from an interview template and can customize interview rounds per job post.
 - Interviewers receive interview tasks tied to candidate application and round; the main Job Request baton does not move to every interviewer.
 - After an interviewer submits feedback, the candidate application returns to Recruiter review. Recruiter decides whether to schedule/forward the next round, hold/reject when allowed, or move the application to Hiring Manager Review after all rounds are complete or skipped.
@@ -47,7 +50,8 @@ Flow Types are code-owned and seeded. Tenant Admin can configure templates/decis
 
 - Job Description Drafter: generates editable Job Request description text from controlled intake fields only. Human review is required before save, and saved descriptions are embedded for future semantic agents.
 - Requirement Parser
-- CV Parser
+- CV Parser: manual sourcing DOCX parsing prefills editable candidate fields, then stores the parsed CV summary/text as hidden Job Application document evidence and embedding context when the recruiter invites the candidate. Do not surface the parser summary in the form; future cover-letter context should reuse the same application evidence path.
+- Candidate Profile Indexing: candidate-owned profile saves generate Candidate/Profile embedding context for rediscovery and ranking. Embedding/vector failures must be swallowed so candidate profile updates still succeed.
 - Bench Matching: ranks active internal employees for PMO Review after claim; PMO remains the decision maker.
 - Job Post Generator
 - Talent Rediscovery: ranks previous warm candidates for claimed Recruiter Sourcing work using candidate history, outcomes, interview feedback, skills, and vectors. It does not use web search, contact candidates, or move workflow stages.

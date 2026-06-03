@@ -12,6 +12,7 @@ using TalentPilot.Application.Admin.TenantProfiles;
 using TalentPilot.Application.Admin.Users;
 using TalentPilot.Application.Admin.Workflows;
 using TalentPilot.Application.Auth;
+using TalentPilot.Application.Calendar;
 using TalentPilot.Application.Notifications;
 using TalentPilot.Common.Time;
 using TalentPilot.Domain.Access;
@@ -36,8 +37,14 @@ public sealed class InMemoryTalentPilotRepository :
     IAdminWorkflowsRepository,
     IAdminHiringPipelinesRepository,
     IRealtimeNotificationRepository,
-    INotificationOutboxProcessor
+    INotificationEmailProviderSettingsResolver,
+    INotificationOutboxProcessor,
+    INotificationWorkerStatusStore,
+    IGoogleCalendarConnectionRepository
 {
+    private const int NotificationWorkerPollIntervalSeconds = 30;
+    private const int NotificationWorkerStaleAfterSeconds = 90;
+
     private static readonly Guid TenantId = Guid.Parse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa");
     private static readonly Guid SystemActorId = Guid.Parse("00000000-0000-0000-0000-000000000001");
     private static readonly Guid WorkflowDefinitionId = Guid.Parse("99999999-aaaa-bbbb-cccc-000000000001");
@@ -87,12 +94,17 @@ public sealed class InMemoryTalentPilotRepository :
     private readonly List<IntakeRoutingRuleState> _intakeRoutingRules = [];
     private readonly List<PermissionCatalogItem> _permissions = [];
     private readonly List<RefreshTokenRecord> _refreshTokens = [];
+    private readonly List<GoogleCalendarOAuthState> _googleCalendarOAuthStates = [];
+    private readonly List<GoogleCalendarConnection> _googleCalendarConnections = [];
     private readonly List<NotificationEventState> _notificationEvents = [];
     private readonly List<NotificationTemplateState> _notificationTemplates = [];
     private readonly List<NotificationRecipientState> _notificationRecipients = [];
     private readonly List<AiAgentDefinitionState> _aiAgents = [];
     private readonly List<OutboxState> _outbox = [];
     private readonly List<AuditLogState> _auditLogs = [];
+    private NotificationWorkerHeartbeat? _notificationWorkerHeartbeat;
+    private DateTimeOffset? _notificationWorkerLastHeartbeatUtc;
+    private DateTimeOffset? _notificationWorkerLastProcessedAtUtc;
 
     private readonly TenantAiSettingsState _aiSettings = new()
     {
@@ -124,12 +136,18 @@ public sealed class InMemoryTalentPilotRepository :
             DefaultCurrency = "PKR",
             Status = TenantStatus.Active,
             CareerDisplayName = "TKXEL Careers",
+            CompanyAddress = "75-C/II, Gulberg III",
+            CompanyCity = "Lahore",
+            CompanyCountry = "Pakistan",
+            OfficialEmail = "hr@tkxel.com",
+            OfficialPhone = "+92 42 111 859 351",
             PrimaryColor = "#0A66C2",
             CandidateLoginRequired = true,
             CandidateCvFormat = "DOCX",
             PublicJobsEnabled = true,
             InviteExpiryDays = 7,
             ReapplyCooldownDays = 90,
+            NotificationEmailProvider = NotificationEmailProviders.Resend,
             SetupComplete = true,
             UpdatedAtUtc = _clock.UtcNow
         };
@@ -803,6 +821,115 @@ public sealed class InMemoryTalentPilotRepository :
         return Task.CompletedTask;
     }
 
+    public Task StoreOAuthStateAsync(GoogleCalendarOAuthState state, CancellationToken cancellationToken)
+    {
+        lock (_gate)
+        {
+            _googleCalendarOAuthStates.RemoveAll(item => item.StateHash == state.StateHash);
+            _googleCalendarOAuthStates.Add(state);
+        }
+
+        return Task.CompletedTask;
+    }
+
+    public Task<GoogleCalendarOAuthState?> ConsumeOAuthStateAsync(
+        string stateHash,
+        DateTimeOffset consumedAtUtc,
+        CancellationToken cancellationToken)
+    {
+        lock (_gate)
+        {
+            var state = _googleCalendarOAuthStates.FirstOrDefault(item =>
+                item.StateHash == stateHash &&
+                item.ConsumedAtUtc is null &&
+                item.ExpiresAtUtc > consumedAtUtc);
+            if (state is null)
+            {
+                return Task.FromResult<GoogleCalendarOAuthState?>(null);
+            }
+
+            var consumed = state with { ConsumedAtUtc = consumedAtUtc };
+            _googleCalendarOAuthStates.Remove(state);
+            _googleCalendarOAuthStates.Add(consumed);
+            return Task.FromResult<GoogleCalendarOAuthState?>(consumed);
+        }
+    }
+
+    public Task<GoogleCalendarConnection?> GetConnectionAsync(
+        Guid tenantId,
+        string provider,
+        CancellationToken cancellationToken)
+    {
+        lock (_gate)
+        {
+            return Task.FromResult(_googleCalendarConnections.FirstOrDefault(connection =>
+                connection.TenantId == tenantId &&
+                string.Equals(connection.Provider, provider, StringComparison.OrdinalIgnoreCase) &&
+                connection.Status == "Connected"));
+        }
+    }
+
+    public Task SaveConnectionAsync(
+        SaveGoogleCalendarConnectionInput input,
+        CancellationToken cancellationToken)
+    {
+        lock (_gate)
+        {
+            var existing = _googleCalendarConnections.FirstOrDefault(connection =>
+                connection.TenantId == input.TenantId &&
+                string.Equals(connection.Provider, input.Provider, StringComparison.OrdinalIgnoreCase));
+
+            if (existing is not null)
+            {
+                _googleCalendarConnections.Remove(existing);
+            }
+
+            _googleCalendarConnections.Add(new GoogleCalendarConnection(
+                input.TenantId,
+                input.OrganizerUserId,
+                input.OrganizerEmail,
+                input.Provider,
+                input.RefreshTokenCiphertext ?? existing?.RefreshTokenCiphertext,
+                input.AccessTokenCiphertext,
+                input.AccessTokenExpiresAtUtc,
+                input.Scope,
+                "Connected",
+                input.ConnectedAtUtc,
+                input.UpdatedAtUtc));
+        }
+
+        return Task.CompletedTask;
+    }
+
+    public Task UpdateAccessTokenAsync(
+        Guid tenantId,
+        string provider,
+        string? accessTokenCiphertext,
+        DateTimeOffset? accessTokenExpiresAtUtc,
+        DateTimeOffset updatedAtUtc,
+        CancellationToken cancellationToken)
+    {
+        lock (_gate)
+        {
+            var existing = _googleCalendarConnections.FirstOrDefault(connection =>
+                connection.TenantId == tenantId &&
+                string.Equals(connection.Provider, provider, StringComparison.OrdinalIgnoreCase) &&
+                connection.Status == "Connected");
+            if (existing is not null)
+            {
+                _googleCalendarConnections.Remove(existing);
+                _googleCalendarConnections.Add(existing with
+                {
+                    AccessTokenCiphertext = accessTokenCiphertext,
+                    AccessTokenExpiresAtUtc = accessTokenExpiresAtUtc,
+                    UpdatedAtUtc = updatedAtUtc
+                });
+            }
+        }
+
+        return Task.CompletedTask;
+    }
+
     public Task<TenantProfileSettings?> GetAsync(
         Guid tenantId,
         string configuredLlmModel,
@@ -826,12 +953,18 @@ public sealed class InMemoryTalentPilotRepository :
                 _tenant.DefaultCurrency,
                 _tenant.Status,
                 _tenant.CareerDisplayName,
+                _tenant.CompanyAddress,
+                _tenant.CompanyCity,
+                _tenant.CompanyCountry,
+                _tenant.OfficialEmail,
+                _tenant.OfficialPhone,
                 _tenant.PrimaryColor,
                 _tenant.CandidateLoginRequired,
                 _tenant.CandidateCvFormat,
                 _tenant.PublicJobsEnabled,
                 _tenant.InviteExpiryDays,
                 _tenant.ReapplyCooldownDays,
+                _tenant.NotificationEmailProvider,
                 _users.Count(user => user.TenantId == tenantId && user.AccountStatus == "Active"),
                 _roles.Count(role => role.TenantId == tenantId && role.Status == "Active"),
                 _tenant.SetupComplete,
@@ -877,12 +1010,18 @@ public sealed class InMemoryTalentPilotRepository :
             _tenant.DefaultCurrency = input.DefaultCurrency.Trim();
             _tenant.Status = input.Status;
             _tenant.CareerDisplayName = input.CareerDisplayName.Trim();
+            _tenant.CompanyAddress = NullIfBlank(input.CompanyAddress);
+            _tenant.CompanyCity = NullIfBlank(input.CompanyCity);
+            _tenant.CompanyCountry = NullIfBlank(input.CompanyCountry);
+            _tenant.OfficialEmail = NullIfBlank(input.OfficialEmail);
+            _tenant.OfficialPhone = NullIfBlank(input.OfficialPhone);
             _tenant.PrimaryColor = input.PrimaryColor.Trim();
             _tenant.CandidateLoginRequired = input.CandidateLoginRequired;
             _tenant.CandidateCvFormat = input.CandidateCvFormat.Trim().ToUpperInvariant();
             _tenant.PublicJobsEnabled = input.PublicJobsEnabled;
             _tenant.InviteExpiryDays = input.InviteExpiryDays;
             _tenant.ReapplyCooldownDays = input.ReapplyCooldownDays;
+            _tenant.NotificationEmailProvider = NotificationEmailProviders.NormalizeOrDefault(input.NotificationEmailProvider);
             _tenant.LogoFileName = string.IsNullOrWhiteSpace(input.LogoContentBase64) ? null : input.LogoFileName?.Trim();
             _tenant.LogoContentType = string.IsNullOrWhiteSpace(input.LogoContentBase64) ? null : input.LogoContentType?.Trim();
             _tenant.LogoContentBase64 = string.IsNullOrWhiteSpace(input.LogoContentBase64) ? null : input.LogoContentBase64;
@@ -892,6 +1031,18 @@ public sealed class InMemoryTalentPilotRepository :
         }
 
         return Task.CompletedTask;
+    }
+
+    public Task<NotificationEmailProviderSettings> GetAsync(Guid tenantId, CancellationToken cancellationToken)
+    {
+        lock (_gate)
+        {
+            var provider = _tenant.TenantId == tenantId
+                ? _tenant.NotificationEmailProvider
+                : NotificationEmailProviders.Resend;
+
+            return Task.FromResult(new NotificationEmailProviderSettings(NotificationEmailProviders.NormalizeOrDefault(provider)));
+        }
     }
 
     public Task<AdminUsersResponse> ListAsync(Guid tenantId, AdminUsersQuery query, CancellationToken cancellationToken)
@@ -1730,6 +1881,7 @@ public sealed class InMemoryTalentPilotRepository :
                 _notificationEvents.Count(item => item.TenantId == tenantId && item.Status == "Active"),
                 _notificationTemplates.Count(item => item.TenantId == tenantId && item.Status == "Active"),
                 _outbox.Count(item => item.TenantId == tenantId && item.Status == "Pending"),
+                _outbox.Count(item => item.TenantId == tenantId && item.Status == "Sent"),
                 _outbox.Count(item => item.TenantId == tenantId && item.Status == "Failed"));
 
             return Task.FromResult(new AdminNotificationEventsResponse(summary, items, query.Page, query.PageSize, materialized.Count));
@@ -1790,9 +1942,81 @@ public sealed class InMemoryTalentPilotRepository :
                 _notificationEvents.Count(item => item.TenantId == tenantId && item.Status == "Active"),
                 _notificationTemplates.Count(item => item.TenantId == tenantId && item.Status == "Active"),
                 _outbox.Count(item => item.TenantId == tenantId && item.Status == "Pending"),
+                _outbox.Count(item => item.TenantId == tenantId && item.Status == "Sent"),
                 _outbox.Count(item => item.TenantId == tenantId && item.Status == "Failed"));
 
             return Task.FromResult(new AdminNotificationTemplatesResponse(summary, items, query.Page, query.PageSize, materialized.Count));
+        }
+    }
+
+    public Task<AdminNotificationOutboxResponse> ListOutboxAsync(
+        Guid tenantId,
+        AdminNotificationOutboxQuery query,
+        CancellationToken cancellationToken)
+    {
+        lock (_gate)
+        {
+            var rows = _outbox.Where(item => item.TenantId == tenantId);
+            if (!string.IsNullOrWhiteSpace(query.Status))
+            {
+                rows = rows.Where(item => string.Equals(item.Status, query.Status, StringComparison.OrdinalIgnoreCase));
+            }
+
+            if (!string.IsNullOrWhiteSpace(query.Search))
+            {
+                var search = query.Search.Trim();
+                rows = rows.Where(item =>
+                    item.EventCode.Contains(search, StringComparison.OrdinalIgnoreCase) ||
+                    item.Status.Contains(search, StringComparison.OrdinalIgnoreCase));
+            }
+
+            var materialized = rows
+                .OrderByDescending(item => item.CreatedAtUtc)
+                .ToArray();
+
+            var items = materialized
+                .Skip((query.Page - 1) * query.PageSize)
+                .Take(query.PageSize)
+                .Select(ToNotificationOutboxItem)
+                .ToArray();
+
+            var workerStatus = BuildNotificationWorkerStatus(tenantId);
+            return Task.FromResult(new AdminNotificationOutboxResponse(workerStatus, items, query.Page, query.PageSize, materialized.Length));
+        }
+    }
+
+    public Task<AdminNotificationOutboxItem?> GetOutboxItemAsync(
+        Guid tenantId,
+        Guid outboxId,
+        CancellationToken cancellationToken)
+    {
+        lock (_gate)
+        {
+            var row = _outbox.FirstOrDefault(item => item.TenantId == tenantId && item.OutboxId == outboxId);
+            return Task.FromResult(row is null ? null : ToNotificationOutboxItem(row));
+        }
+    }
+
+    public Task<AdminNotificationOutboxItem?> RequeueOutboxEmailAsync(
+        Guid tenantId,
+        Guid outboxId,
+        CancellationToken cancellationToken)
+    {
+        lock (_gate)
+        {
+            var row = _outbox.FirstOrDefault(item =>
+                item.TenantId == tenantId &&
+                item.OutboxId == outboxId &&
+                string.Equals(item.Status, "Failed", StringComparison.OrdinalIgnoreCase));
+            if (row is null)
+            {
+                return Task.FromResult<AdminNotificationOutboxItem?>(null);
+            }
+
+            row.Status = "Pending";
+            row.ProcessedAtUtc = null;
+            row.LastError = null;
+            return Task.FromResult<AdminNotificationOutboxItem?>(ToNotificationOutboxItem(row));
         }
     }
 
@@ -1938,12 +2162,103 @@ public sealed class InMemoryTalentPilotRepository :
 
             foreach (var item in pending)
             {
-                item.Status = "Delivered";
+                item.Status = "Sent";
+                item.AttemptCount++;
                 item.ProcessedAtUtc = _clock.UtcNow;
             }
 
             return Task.FromResult(pending.Length);
         }
+    }
+
+    public Task RecordHeartbeatAsync(NotificationWorkerHeartbeat heartbeat, CancellationToken cancellationToken)
+    {
+        lock (_gate)
+        {
+            _notificationWorkerHeartbeat = heartbeat;
+            _notificationWorkerLastHeartbeatUtc = _clock.UtcNow;
+            if (heartbeat.LastProcessedCount > 0)
+            {
+                _notificationWorkerLastProcessedAtUtc = _notificationWorkerLastHeartbeatUtc;
+            }
+        }
+
+        return Task.CompletedTask;
+    }
+
+    private AdminNotificationWorkerStatus BuildNotificationWorkerStatus(Guid tenantId)
+    {
+        var pendingDueCount = _outbox.Count(item => item.TenantId == tenantId && item.Status == "Pending");
+        var processingCount = _outbox.Count(item => item.TenantId == tenantId && item.Status == "Processing");
+
+        string state;
+        string label;
+        string message;
+        var ageSeconds = _notificationWorkerLastHeartbeatUtc.HasValue
+            ? (int)Math.Max(0, (_clock.UtcNow - _notificationWorkerLastHeartbeatUtc.Value).TotalSeconds)
+            : (int?)null;
+
+        if (_notificationWorkerHeartbeat is null || !_notificationWorkerLastHeartbeatUtc.HasValue)
+        {
+            state = "Offline";
+            label = "Not reporting";
+            message = pendingDueCount > 0
+                ? "No worker heartbeat has been recorded. Due emails will stay pending until TalentPilot.Worker is started."
+                : "No worker heartbeat has been recorded. Start TalentPilot.Worker before expecting queued email delivery.";
+        }
+        else if (ageSeconds.GetValueOrDefault(int.MaxValue) > NotificationWorkerStaleAfterSeconds)
+        {
+            var heartbeatAgeSeconds = ageSeconds.GetValueOrDefault();
+            state = "Offline";
+            label = "Stale heartbeat";
+            message = $"Last worker heartbeat was {FormatNotificationWorkerAge(heartbeatAgeSeconds)} ago. Pending emails will stay queued until TalentPilot.Worker is running again.";
+        }
+        else if (!string.IsNullOrWhiteSpace(_notificationWorkerHeartbeat.LastError))
+        {
+            state = "Error";
+            label = "Running with error";
+            message = $"The worker heartbeat is current, but the latest loop reported an error: {_notificationWorkerHeartbeat.LastError}";
+        }
+        else
+        {
+            state = "Running";
+            label = "Running";
+            message = pendingDueCount > 0
+                ? $"The worker heartbeat is current. {pendingDueCount} due email(s) are waiting for the next {NotificationWorkerPollIntervalSeconds}-second polling cycle."
+                : "The worker heartbeat is current and there are no due pending emails.";
+        }
+
+        return new AdminNotificationWorkerStatus(
+            state,
+            label,
+            message,
+            _notificationWorkerLastHeartbeatUtc,
+            _notificationWorkerHeartbeat?.StartedAtUtc,
+            _notificationWorkerLastProcessedAtUtc,
+            _notificationWorkerHeartbeat?.LastProcessedCount,
+            _notificationWorkerHeartbeat?.HostName,
+            _notificationWorkerHeartbeat?.ProcessId,
+            _notificationWorkerHeartbeat?.LastError,
+            NotificationWorkerPollIntervalSeconds,
+            NotificationWorkerStaleAfterSeconds,
+            pendingDueCount,
+            processingCount);
+    }
+
+    private static string FormatNotificationWorkerAge(int seconds)
+    {
+        if (seconds < 60)
+        {
+            return $"{Math.Max(0, seconds)} second(s)";
+        }
+
+        var minutes = seconds / 60;
+        if (minutes < 60)
+        {
+            return $"{minutes} minute(s)";
+        }
+
+        return $"{minutes / 60} hour(s)";
     }
 
     public Task<AdminAuditLogListResponse> ListAsync(Guid tenantId, AdminAuditLogQuery query, CancellationToken cancellationToken)
@@ -2895,6 +3210,30 @@ public sealed class InMemoryTalentPilotRepository :
             template.UpdatedByUserId);
     }
 
+    private static AdminNotificationOutboxItem ToNotificationOutboxItem(OutboxState item)
+    {
+        return new AdminNotificationOutboxItem(
+            item.OutboxId,
+            item.EventCode,
+            item.EventCode,
+            "Application-composed email",
+            "Talent Pilot workflow",
+            null,
+            null,
+            "Email",
+            item.Status,
+            item.AttemptCount,
+            item.CreatedAtUtc,
+            item.CreatedAtUtc,
+            item.ProcessedAtUtc ?? item.CreatedAtUtc,
+            item.ProcessedAtUtc,
+            item.LastError,
+            item.EventCode,
+            string.Empty,
+            null,
+            null);
+    }
+
     private UserState? FindUser(Guid tenantId, Guid userId)
     {
         return _users.FirstOrDefault(user => user.TenantId == tenantId && user.UserId == userId);
@@ -2969,6 +3308,11 @@ public sealed class InMemoryTalentPilotRepository :
         return code.PadRight(2, 'X');
     }
 
+    private static string? NullIfBlank(string? value)
+    {
+        return string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+    }
+
     private sealed class TenantState
     {
         public Guid TenantId { get; init; }
@@ -2980,12 +3324,18 @@ public sealed class InMemoryTalentPilotRepository :
         public string DefaultCurrency { get; set; } = string.Empty;
         public string Status { get; set; } = string.Empty;
         public string CareerDisplayName { get; set; } = string.Empty;
+        public string? CompanyAddress { get; set; }
+        public string? CompanyCity { get; set; }
+        public string? CompanyCountry { get; set; }
+        public string? OfficialEmail { get; set; }
+        public string? OfficialPhone { get; set; }
         public string PrimaryColor { get; set; } = string.Empty;
         public bool CandidateLoginRequired { get; set; }
         public string CandidateCvFormat { get; set; } = string.Empty;
         public bool PublicJobsEnabled { get; set; }
         public int InviteExpiryDays { get; set; }
         public int ReapplyCooldownDays { get; set; }
+        public string NotificationEmailProvider { get; set; } = NotificationEmailProviders.Resend;
         public string? LogoFileName { get; set; }
         public string? LogoContentType { get; set; }
         public string? LogoContentBase64 { get; set; }
@@ -3220,6 +3570,8 @@ public sealed class InMemoryTalentPilotRepository :
         public Guid TenantId { get; }
         public string EventCode { get; }
         public string Status { get; set; }
+        public int AttemptCount { get; set; }
+        public string? LastError { get; set; }
         public DateTimeOffset CreatedAtUtc { get; }
         public DateTimeOffset? ProcessedAtUtc { get; set; }
     }

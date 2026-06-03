@@ -2,6 +2,8 @@ namespace TalentPilot.Application.Operations;
 
 public static class InterviewFeedbackPolicy
 {
+    public const string ActiveAccountStatus = "Active";
+
     private static readonly IReadOnlyDictionary<string, string> RecommendationMap =
         new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
         {
@@ -15,6 +17,27 @@ public static class InterviewFeedbackPolicy
             ["no hire"] = "Reject",
             ["fail"] = "Reject"
         };
+
+    public static bool CanSubmit(
+        Guid actorUserId,
+        bool isTenantAdmin,
+        Guid interviewerUserId,
+        string? interviewerAccountStatus,
+        bool interviewerIsDeleted)
+    {
+        if (actorUserId == interviewerUserId)
+        {
+            return true;
+        }
+
+        return isTenantAdmin && IsInactiveInterviewer(interviewerAccountStatus, interviewerIsDeleted);
+    }
+
+    public static bool IsInactiveInterviewer(string? interviewerAccountStatus, bool interviewerIsDeleted)
+    {
+        return interviewerIsDeleted ||
+            !string.Equals(interviewerAccountStatus, ActiveAccountStatus, StringComparison.OrdinalIgnoreCase);
+    }
 
     public static InterviewFeedbackValidation Validate(SubmitInterviewFeedbackInput input)
     {

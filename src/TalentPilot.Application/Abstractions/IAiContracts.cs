@@ -11,6 +11,24 @@ public sealed record AiRuntimeSettingsSnapshot(
     string VectorStore,
     string OllamaBaseUrl);
 
+public sealed record SemanticSimilarityHealth(
+    bool IsAvailable,
+    string Status,
+    string Message,
+    string Provider,
+    string EmbeddingModel,
+    int EmbeddingDimensions,
+    string VectorStore,
+    string OllamaBaseUrl);
+
+public sealed record AiModelHealth(
+    bool IsAvailable,
+    string Status,
+    string Message,
+    string Provider,
+    string LlmModel,
+    string OllamaBaseUrl);
+
 public sealed record AiAgentRunStart(
     Guid TenantId,
     string AgentId,
@@ -69,9 +87,19 @@ public interface IAiModelProvider
     Task<string> GenerateAsync(AiPromptRequest request, CancellationToken cancellationToken);
 }
 
+public interface IAiModelHealthChecker
+{
+    Task<AiModelHealth> CheckAsync(CancellationToken cancellationToken);
+}
+
 public interface IEmbeddingProvider
 {
     Task<float[]> GenerateEmbeddingAsync(string text, CancellationToken cancellationToken);
+}
+
+public interface ISemanticSimilarityHealthChecker
+{
+    Task<SemanticSimilarityHealth> CheckAsync(CancellationToken cancellationToken);
 }
 
 public interface IVectorStore

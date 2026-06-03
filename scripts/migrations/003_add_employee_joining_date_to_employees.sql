@@ -41,6 +41,7 @@ WHERE TenantId = @TenantId
 IF EXISTS (SELECT 1 FROM dbo.AppUsers WHERE TenantId = @TenantId AND UserId = @PresalesUserId)
    AND EXISTS (SELECT 1 FROM dbo.Departments WHERE TenantId = @TenantId AND DepartmentId = @PresalesDepartmentId)
    AND EXISTS (SELECT 1 FROM dbo.Locations WHERE TenantId = @TenantId AND LocationId = @KarachiLocationId)
+   AND NOT EXISTS (SELECT 1 FROM dbo.Employees WHERE EmployeeId = 'dddddddd-dddd-dddd-dddd-dddddddddd07')
    AND NOT EXISTS (SELECT 1 FROM dbo.Employees WHERE TenantId = @TenantId AND Email = N'presales@tkxel.com')
 BEGIN
     INSERT INTO dbo.Employees
@@ -88,6 +89,7 @@ END;
 IF EXISTS (SELECT 1 FROM dbo.AppUsers WHERE TenantId = @TenantId AND UserId = @RecruiterUserId)
    AND EXISTS (SELECT 1 FROM dbo.Departments WHERE TenantId = @TenantId AND DepartmentId = @RecruitmentDepartmentId)
    AND EXISTS (SELECT 1 FROM dbo.Locations WHERE TenantId = @TenantId AND LocationId = @LahoreLocationId)
+   AND NOT EXISTS (SELECT 1 FROM dbo.Employees WHERE EmployeeId = 'dddddddd-dddd-dddd-dddd-dddddddddd08')
    AND NOT EXISTS (SELECT 1 FROM dbo.Employees WHERE TenantId = @TenantId AND Email = N'recruiter@tkxel.com')
 BEGIN
     INSERT INTO dbo.Employees

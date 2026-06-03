@@ -64,14 +64,20 @@ public sealed class TalentRediscoveryAgent : ITalentRediscoveryAgent
         CancellationToken cancellationToken)
     {
         var settings = await _settingsResolver.GetCurrentAsync(cancellationToken);
+        var rankingContext = context with
+        {
+            Candidates = context.Candidates
+                .Where(IsRediscoverableCandidate)
+                .ToArray()
+        };
         var generatedAt = DateTimeOffset.UtcNow;
-        var inputHash = AiTextHasher.HashText(BuildRunInputText(context));
+        var inputHash = AiTextHasher.HashText(BuildRunInputText(rankingContext));
         var runId = await _runLogger.StartAsync(
             new AiAgentRunStart(
                 tenantId,
                 AgentId,
                 "JobRequest",
-                context.JobRequest.Id,
+                rankingContext.JobRequest.Id,
                 settings.LlmModel,
                 settings.EmbeddingModel,
                 inputHash,
@@ -79,21 +85,21 @@ public sealed class TalentRediscoveryAgent : ITalentRediscoveryAgent
                 {
                     ["purpose"] = "talent-rediscovery",
                     ["humanDecisionRequired"] = "true",
-                    ["candidateCount"] = context.Candidates.Count.ToString(),
-                    ["requirementSource"] = context.RequirementSource
+                    ["candidateCount"] = rankingContext.Candidates.Count.ToString(),
+                    ["requirementSource"] = rankingContext.RequirementSource
                 }),
             cancellationToken);
 
         try
         {
-            var vectorResult = await TryBuildVectorScoresAsync(tenantId, settings, context, cancellationToken);
-            var scored = context.Candidates
-                .Select(candidate => ScoreCandidate(context, candidate, vectorResult.Scores))
+            var vectorResult = await TryBuildVectorScoresAsync(tenantId, settings, rankingContext, cancellationToken);
+            var scored = rankingContext.Candidates
+                .Select(candidate => ScoreCandidate(rankingContext, candidate, vectorResult.Scores))
                 .OrderByDescending(item => item.Score)
                 .ThenBy(item => item.Candidate.DisplayName, StringComparer.OrdinalIgnoreCase)
                 .ToArray();
 
-            var explanations = await TryGenerateExplanationsAsync(context, scored, settings.LlmModel, cancellationToken);
+            var explanations = await TryGenerateExplanationsAsync(rankingContext, scored, settings.LlmModel, cancellationToken);
             var ranked = scored
                 .Select((item, index) => ToRankedCandidate(item, index + 1, explanations))
                 .ToArray();
@@ -101,7 +107,7 @@ public sealed class TalentRediscoveryAgent : ITalentRediscoveryAgent
             await _runLogger.SucceedAsync(
                 tenantId,
                 runId,
-                $"Ranked {ranked.Length} warm candidate(s) for {context.JobRequest.Code}.",
+                $"Ranked {ranked.Length} warm candidate(s) for {rankingContext.JobRequest.Code}.",
                 new Dictionary<string, string>
                 {
                     ["model"] = settings.LlmModel,
@@ -120,6 +126,13 @@ public sealed class TalentRediscoveryAgent : ITalentRediscoveryAgent
         }
     }
 
+    private static bool IsRediscoverableCandidate(OperationsRediscoveryCandidate candidate)
+    {
+        return !candidate.ApplicationEvidence.Any(application =>
+            string.Equals(application.Status, "Joined", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(application.Status, "Hired", StringComparison.OrdinalIgnoreCase));
+    }
+
     private async Task<VectorScoreResult> TryBuildVectorScoresAsync(
         Guid tenantId,
         AiRuntimeSettingsSnapshot settings,
@@ -132,6 +145,8 @@ public sealed class TalentRediscoveryAgent : ITalentRediscoveryAgent
             {
                 var candidateText = BuildCandidateProfileText(candidate);
                 var sourceHash = AiTextHasher.HashText(candidateText);
+                await UpsertApplicationEvidenceVectorsAsync(tenantId, settings, candidate, cancellationToken);
+
                 var existingHash = await _vectorStore.GetActiveSourceTextHashAsync(
                     tenantId,
                     "Candidate",
@@ -212,7 +227,55 @@ public sealed class TalentRediscoveryAgent : ITalentRediscoveryAgent
         }
         catch (Exception ex)
         {
-            return new VectorScoreResult(new Dictionary<Guid, decimal>(), $"Unavailable: {ex.Message}");
+            return new VectorScoreResult(new Dictionary<Guid, decimal>(), SemanticSimilarityDiagnostics.Unavailable(ex, settings));
+        }
+    }
+
+    private async Task UpsertApplicationEvidenceVectorsAsync(
+        Guid tenantId,
+        AiRuntimeSettingsSnapshot settings,
+        OperationsRediscoveryCandidate candidate,
+        CancellationToken cancellationToken)
+    {
+        foreach (var application in candidate.ApplicationEvidence)
+        {
+            if (!ApplicationHasPersistedEvidence(application))
+            {
+                continue;
+            }
+
+            var profileText = BuildApplicationEvidenceProfileText(candidate, application);
+            var sourceHash = AiTextHasher.HashText(profileText);
+            var existingHash = await _vectorStore.GetActiveSourceTextHashAsync(
+                tenantId,
+                "JobApplication",
+                application.JobApplicationId,
+                "JobApplicationEvidenceProfile",
+                settings.EmbeddingModel,
+                cancellationToken);
+
+            if (string.Equals(existingHash, sourceHash, StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            var embedding = await _embeddingProvider.GenerateEmbeddingAsync(profileText, cancellationToken);
+            if (embedding.Length != settings.EmbeddingDimensions)
+            {
+                continue;
+            }
+
+            await _vectorStore.UpsertAsync(
+                new VectorRecord(
+                    tenantId,
+                    "JobApplication",
+                    application.JobApplicationId,
+                    "JobApplicationEvidenceProfile",
+                    sourceHash,
+                    settings.EmbeddingModel,
+                    settings.EmbeddingDimensions,
+                    embedding),
+                cancellationToken);
         }
     }
 
@@ -276,13 +339,22 @@ public sealed class TalentRediscoveryAgent : ITalentRediscoveryAgent
             candidate.NoticePeriodDays,
             context.ExperienceMinYears,
             context.ExperienceMaxYears);
-        var priorityBoost = ScoreWarmCandidatePriority(context, candidate);
-        var score = (skillCoverage * 25m) +
+        var priorityBoost = ScoreWarmCandidatePriority(context, candidate, skillCoverage);
+        var score = (skillCoverage * 35m) +
                     (vectorSimilarity * 20m) +
-                    (historicalOutcomeFit * 25m) +
+                    (historicalOutcomeFit * 15m) +
                     (similarRoleFit * 15m) +
                     (experienceAvailabilityFit * 10m) +
                     priorityBoost;
+        var hasPersistedEvidence = CandidateHasPersistedEvidence(candidate);
+        if (skillCoverage == 0m)
+        {
+            score = Math.Min(score, hasPersistedEvidence && vectorSimilarity >= 0.72m ? 39m : 35m);
+        }
+        else if (skillCoverage < 0.25m && (!hasPersistedEvidence || vectorSimilarity < 0.72m))
+        {
+            score = Math.Min(score, 50m);
+        }
 
         return new ScoredCandidate(
             candidate,
@@ -369,8 +441,14 @@ public sealed class TalentRediscoveryAgent : ITalentRediscoveryAgent
 
     private static decimal ScoreWarmCandidatePriority(
         OperationsTalentRediscoveryContext context,
-        OperationsRediscoveryCandidate candidate)
+        OperationsRediscoveryCandidate candidate,
+        decimal skillCoverage)
     {
+        if (skillCoverage < 0.25m)
+        {
+            return 0m;
+        }
+
         var similarApplicationIds = candidate.ApplicationEvidence
             .Where(application => IsSimilarApplication(context, application))
             .Select(application => application.JobApplicationId)
@@ -393,12 +471,12 @@ public sealed class TalentRediscoveryAgent : ITalentRediscoveryAgent
             completedInterviewCount > 0 &&
             completedInterviewCount == passedInterviewCount)
         {
-            return 10m;
+            return 5m;
         }
 
         if (completedInterviewCount > 0 && passedInterviewCount >= Math.Ceiling(completedInterviewCount * 0.5m))
         {
-            return 7m;
+            return 3.5m;
         }
 
         if (candidate.ApplicationEvidence.Any(application =>
@@ -406,7 +484,7 @@ public sealed class TalentRediscoveryAgent : ITalentRediscoveryAgent
                 IsNonFitTerminalStatus(application.Status, application.FinalDecisionReason)) &&
             passedInterviewCount > 0)
         {
-            return 4m;
+            return 2m;
         }
 
         return 0m;
@@ -432,12 +510,6 @@ public sealed class TalentRediscoveryAgent : ITalentRediscoveryAgent
         {
             return ScoreApplicationSimilarity(requirementText, context, application);
         }).DefaultIfEmpty(0.25m).Max();
-
-        if (candidate.ApplicationEvidence.Any(application =>
-                string.Equals(application.Department, context.JobRequest.Department, StringComparison.OrdinalIgnoreCase)))
-        {
-            best = Math.Max(best, 0.65m);
-        }
 
         return best;
     }
@@ -474,13 +546,18 @@ public sealed class TalentRediscoveryAgent : ITalentRediscoveryAgent
         }
 
         var overlap = historyTokens.Count(token => requirementText.Contains(token));
-        var score = Clamp((decimal)overlap / Math.Max(requirementText.Count, 1), 0.15m, 1m);
+        var score = (decimal)overlap / Math.Max(requirementText.Count, 1);
         if (string.Equals(application.Department, context.JobRequest.Department, StringComparison.OrdinalIgnoreCase))
         {
-            score = Math.Max(score, 0.65m);
+            score += 0.05m;
         }
 
-        return score;
+        if (string.Equals(application.Client, context.JobRequest.Client, StringComparison.OrdinalIgnoreCase))
+        {
+            score += 0.05m;
+        }
+
+        return Clamp(score, 0.1m, 1m);
     }
 
     private static bool IsPassedInterview(OperationsCandidateInterviewEvidence interview)
@@ -600,7 +677,7 @@ public sealed class TalentRediscoveryAgent : ITalentRediscoveryAgent
 
         if (scored.SimilarRoleFit >= 0.65m)
         {
-            strengths.Add("Previously applied to a similar role or department.");
+            strengths.Add("Previously applied to a similar role.");
         }
 
         return strengths.Count == 0 ? ["Has previous tenant application history for recruiter review."] : strengths;
@@ -609,6 +686,11 @@ public sealed class TalentRediscoveryAgent : ITalentRediscoveryAgent
     private static IReadOnlyList<string> BuildGaps(ScoredCandidate scored)
     {
         var gaps = new List<string>();
+        if (scored.SkillCoverage == 0m)
+        {
+            gaps.Add("Direct skill coverage is 0%, so this candidate should remain low priority unless a recruiter manually verifies role relevance.");
+        }
+
         if (scored.Candidate.MissingSkills.Count > 0)
         {
             gaps.AddRange(scored.Candidate.MissingSkills.Select(skill => $"Missing requested skill evidence: {skill}."));
@@ -636,8 +718,11 @@ public sealed class TalentRediscoveryAgent : ITalentRediscoveryAgent
         var history = lastApplication is null
             ? "No application history summary is available."
             : $"Most recent relevant application was {lastApplication.RequestCode} ({lastApplication.JobTitle}) with status {lastApplication.Status}.";
+        var capWarning = scored.SkillCoverage == 0m
+            ? " Direct skill coverage is 0%, so the score is intentionally capped at low fit even when warm-history or semantic signals exist."
+            : string.Empty;
 
-        return $"{candidate.DisplayName} is ranked for recruiter rediscovery because their profile has a skill coverage score of {FormatPercent(scored.SkillCoverage)}, vector similarity score of {FormatPercent(scored.VectorSimilarity)}, historical outcome score of {FormatPercent(scored.HistoricalOutcomeFit)}, similar-role score of {FormatPercent(scored.SimilarRoleFit)}, and experience/availability score of {FormatPercent(scored.ExperienceAvailabilityFit)}. {history} Recruiter should validate the listed gaps before contacting the candidate.";
+        return $"{candidate.DisplayName} is ranked for recruiter rediscovery because their profile has a skill coverage score of {FormatPercent(scored.SkillCoverage)}, vector similarity score of {FormatPercent(scored.VectorSimilarity)}, historical outcome score of {FormatPercent(scored.HistoricalOutcomeFit)}, similar-role score of {FormatPercent(scored.SimilarRoleFit)}, and experience/availability score of {FormatPercent(scored.ExperienceAvailabilityFit)}.{capWarning} {history} Recruiter should validate the listed gaps before contacting the candidate.";
     }
 
     private static string BuildRunInputText(OperationsTalentRediscoveryContext context)
@@ -676,7 +761,7 @@ public sealed class TalentRediscoveryAgent : ITalentRediscoveryAgent
         var applicationText = candidate.ApplicationEvidence.Count == 0
             ? "No previous applications"
             : string.Join("; ", candidate.ApplicationEvidence.Select(application =>
-                $"{application.RequestCode} {application.JobTitle} {application.Department} {application.Status} {application.FinalDecisionReason}"));
+                $"{application.RequestCode} {application.JobTitle} {application.Department} {application.Status} {application.FinalDecisionReason} cover letter {SafeField(TrimText(application.CoverLetterText, 500))} documents {BuildDocumentProfileText(application.DocumentEvidence)}"));
         var interviewText = candidate.InterviewEvidence.Count == 0
             ? "No interview feedback"
             : string.Join("; ", candidate.InterviewEvidence.Select(interview =>
@@ -693,6 +778,50 @@ public sealed class TalentRediscoveryAgent : ITalentRediscoveryAgent
             $"Applications: {applicationText}",
             $"Interviews: {interviewText}"
         });
+    }
+
+    private static bool CandidateHasPersistedEvidence(OperationsRediscoveryCandidate candidate)
+    {
+        return candidate.ApplicationEvidence.Any(application =>
+            ApplicationHasPersistedEvidence(application));
+    }
+
+    private static bool ApplicationHasPersistedEvidence(OperationsCandidateApplicationEvidence application)
+    {
+        return !string.IsNullOrWhiteSpace(application.CoverLetterText) ||
+            (application.DocumentEvidence?.Any(document => document.HasExtractedText && !string.IsNullOrWhiteSpace(document.ExtractedText)) ?? false);
+    }
+
+    private static string BuildApplicationEvidenceProfileText(
+        OperationsRediscoveryCandidate candidate,
+        OperationsCandidateApplicationEvidence application)
+    {
+        return string.Join('\n', new[]
+        {
+            $"Candidate: {candidate.DisplayName}",
+            $"Designation: {SafeField(candidate.CurrentDesignation)}",
+            $"Candidate skills: {string.Join(", ", candidate.Skills)}",
+            $"Application: {application.RequestCode} {application.DisplayJobTitle ?? application.JobTitle}",
+            $"Application status: {application.Status}",
+            $"Source: {application.SourceLabel}",
+            $"Department: {application.Department}",
+            $"Location: {application.Location}",
+            $"Interview pass summary: {application.InterviewPassSummary ?? "Not recorded"}",
+            $"Final reason: {SafeField(application.FinalDecisionReason)}",
+            $"Cover letter: {SafeField(TrimText(application.CoverLetterText, 3000))}",
+            $"Documents: {BuildDocumentProfileText(application.DocumentEvidence)}"
+        });
+    }
+
+    private static string BuildDocumentProfileText(IReadOnlyList<OperationsApplicantDocumentEvidence>? documents)
+    {
+        if (documents is null || documents.Count == 0)
+        {
+            return "No documents";
+        }
+
+        return string.Join(" | ", documents.Take(3).Select(document =>
+            $"{document.DocumentType} {document.FileName} extraction {document.ExtractionStatus} text {SafeField(TrimText(document.ExtractedText, 1000))}"));
     }
 
     private static string BuildExplanationPrompt(
@@ -817,6 +946,17 @@ public sealed class TalentRediscoveryAgent : ITalentRediscoveryAgent
     private static string SafeField(string? value)
     {
         return string.IsNullOrWhiteSpace(value) ? "Not provided" : value.Trim();
+    }
+
+    private static string TrimText(string? value, int maxLength)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return string.Empty;
+        }
+
+        var normalized = value.Trim();
+        return normalized.Length <= maxLength ? normalized : normalized[..maxLength];
     }
 
     private sealed record ScoredCandidate(

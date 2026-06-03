@@ -35,6 +35,15 @@ Files are sorted by name inside each folder. Use numeric prefixes such as `001_`
 - `migrations/021_add_hod_role_and_demo_user.sql` adds the tenant-scoped HOD / Department Head role, Engineering HOD demo user, and final-round HOD defaults for existing databases.
 - `migrations/022_harden_demo_authentication.sql` updates demo user UPNs and seeds BCrypt password hashes so demo cards use the normal login endpoint.
 - `migrations/023_add_job_application_documents.sql` adds application document metadata backed by a swappable storage provider. MVP stores files on the API server filesystem.
+- `migrations/024_add_applicant_ranking_cover_letter.sql` adds cover-letter support to current job applications and registers the Applicant Ranking AI agent.
+- `migrations/025_fix_offer_declined_seed_interviews.sql` repairs demo Talent Rediscovery data so `OfferDeclined` evidence only appears after all configured interviews are cleared.
+- `migrations/026_application_document_extraction_evidence.sql` adds persisted document text extraction metadata for application CV/cover-letter evidence and demo extracted text backfill.
+- `migrations/027_interview_google_calendar_metadata.sql` adds Google Calendar event metadata columns to scheduled interviews.
+- `migrations/028_notification_worker_status.sql` adds durable notification worker heartbeat status for Admin Center outbox diagnostics.
+- `migrations/029_add_notification_email_provider_setting.sql` adds the tenant-level notification email provider setting for Resend or Microsoft Graph delivery.
+- `migrations/030_google_calendar_oauth_connections.sql` adds tables for future organizer-scoped Google Calendar OAuth connections.
+- `migrations/031_normalize_demo_seed_email_domains.sql` replaces old demo `@talentpilot.test` seed email addresses with the Microsoft tenant test domain.
+- `migrations/032_add_interview_participants.sql` stores meeting attendees for scheduled interview events and backfills existing interviews.
 - `seed/001_seed_initial_data.sql` seeds the TKXEL demo tenant, system roles, permissions, routing groups, notification events/templates, AI agent definitions, and demo users.
 - `stored-procedures/001_user_procedures.sql` creates simple auth/admin user helper procedures.
 

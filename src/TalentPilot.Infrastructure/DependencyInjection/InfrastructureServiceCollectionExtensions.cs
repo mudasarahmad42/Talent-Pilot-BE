@@ -15,12 +15,14 @@ using TalentPilot.Application.Admin.TenantProfiles;
 using TalentPilot.Application.Admin.Users;
 using TalentPilot.Application.Admin.Workflows;
 using TalentPilot.Application.Auth;
+using TalentPilot.Application.Calendar;
 using TalentPilot.Application.Documents;
 using TalentPilot.Application.Notifications;
 using TalentPilot.Application.Operations;
 using TalentPilot.Infrastructure.Ai;
 using TalentPilot.Common.Time;
 using TalentPilot.Infrastructure.Auth;
+using TalentPilot.Infrastructure.Calendar;
 using TalentPilot.Infrastructure.Documents;
 using TalentPilot.Infrastructure.Notifications;
 using TalentPilot.Infrastructure.Persistence;
@@ -59,13 +61,19 @@ public static class InfrastructureServiceCollectionExtensions
             StorageContainer = configuration["ApplicationDocuments:StorageContainer"] ?? "application-documents"
         }));
         services.AddSingleton<IApplicationDocumentStorage, LocalApplicationDocumentStorage>();
+        services.AddSingleton<IOptions<GoogleCalendarOptions>>(Options.Create(BuildGoogleCalendarOptions(configuration)));
+        services.AddSingleton<IGoogleCalendarTokenProtector, GoogleCalendarTokenProtector>();
+        services.AddScoped<IGoogleCalendarService, GoogleCalendarMeetingService>();
+        services.AddScoped<ICalendarMeetingService, GoogleCalendarMeetingService>();
         services.AddSingleton<ISqlConnectionFactory, SqlConnectionFactory>();
         services.AddScoped<IAiRuntimeSettingsResolver, DapperAiRuntimeSettingsResolver>();
         services.AddSingleton<IAiAgentRunLogger, DapperAiAgentRunLogger>();
         services.AddSingleton<IVectorStore, DapperVectorStore>();
         services.AddSingleton<HttpClient>();
         services.AddScoped<IAiModelProvider, OllamaAiModelProvider>();
+        services.AddScoped<IAiModelHealthChecker, OllamaAiModelHealthChecker>();
         services.AddScoped<IEmbeddingProvider, OllamaEmbeddingProvider>();
+        services.AddScoped<ISemanticSimilarityHealthChecker, SemanticSimilarityHealthChecker>();
         services.AddSingleton<IOptions<GoogleCustomSearchOptions>>(Options.Create(BuildGoogleCustomSearchOptions(configuration)));
         services.AddSingleton<IOptions<TavilySearchOptions>>(Options.Create(BuildTavilySearchOptions(configuration)));
         services.AddSingleton<IWebResearchProvider>(provider =>
@@ -78,16 +86,7 @@ public static class InfrastructureServiceCollectionExtensions
 
             return ActivatorUtilities.CreateInstance<TavilySearchWebResearchProvider>(provider);
         });
-        var resendOptions = new ResendEmailOptions
-        {
-            ApiKey = configuration["Resend:ApiKey"]
-                ?? Environment.GetEnvironmentVariable("RESEND_APITOKEN")
-                ?? Environment.GetEnvironmentVariable("RESEND_API_KEY")
-                ?? string.Empty,
-            FromEmail = configuration["Resend:FromEmail"] ?? "onboarding@resend.dev"
-        };
-        services.AddSingleton<IOptions<ResendEmailOptions>>(Options.Create(resendOptions));
-        services.AddSingleton<INotificationEmailSender, ResendNotificationEmailSender>();
+        services.AddNotificationEmailSenderServices(configuration);
 
         services.AddSingleton<IPasswordVerifier, BCryptPasswordVerifier>();
         services.AddSingleton<ITokenGenerator, SecureTokenGenerator>();
@@ -121,8 +120,11 @@ public static class InfrastructureServiceCollectionExtensions
             services.AddSingleton<IAdminWorkflowsRepository>(provider => provider.GetRequiredService<DapperAdminCenterRepository>());
             services.AddSingleton<IAdminHiringPipelinesRepository>(provider => provider.GetRequiredService<DapperAdminCenterRepository>());
             services.AddSingleton<IRealtimeNotificationRepository>(provider => provider.GetRequiredService<DapperAdminCenterRepository>());
+            services.AddSingleton<INotificationEmailProviderSettingsResolver, DapperNotificationEmailProviderSettingsResolver>();
             services.AddSingleton<INotificationOutboxProcessor, DapperNotificationOutboxProcessor>();
+            services.AddSingleton<INotificationWorkerStatusStore, DapperNotificationWorkerStatusStore>();
             services.AddSingleton<IWebResearchQuotaStore, DapperWebResearchQuotaStore>();
+            services.AddSingleton<IGoogleCalendarConnectionRepository, DapperGoogleCalendarConnectionRepository>();
         }
         else
         {
@@ -141,9 +143,25 @@ public static class InfrastructureServiceCollectionExtensions
             services.AddSingleton<IAdminWorkflowsRepository>(provider => provider.GetRequiredService<InMemoryTalentPilotRepository>());
             services.AddSingleton<IAdminHiringPipelinesRepository>(provider => provider.GetRequiredService<InMemoryTalentPilotRepository>());
             services.AddSingleton<IRealtimeNotificationRepository>(provider => provider.GetRequiredService<InMemoryTalentPilotRepository>());
+            services.AddSingleton<INotificationEmailProviderSettingsResolver>(provider => provider.GetRequiredService<InMemoryTalentPilotRepository>());
             services.AddSingleton<INotificationOutboxProcessor>(provider => provider.GetRequiredService<InMemoryTalentPilotRepository>());
+            services.AddSingleton<INotificationWorkerStatusStore>(provider => provider.GetRequiredService<InMemoryTalentPilotRepository>());
             services.AddSingleton<IWebResearchQuotaStore, InMemoryWebResearchQuotaStore>();
+            services.AddSingleton<IGoogleCalendarConnectionRepository>(provider => provider.GetRequiredService<InMemoryTalentPilotRepository>());
         }
+
+        return services;
+    }
+
+    public static IServiceCollection AddNotificationEmailSenderServices(
+        this IServiceCollection services,
+        IConfiguration configuration)
+    {
+        services.AddSingleton<IOptions<ResendEmailOptions>>(Options.Create(BuildResendEmailOptions(configuration)));
+        services.AddSingleton<IOptions<MicrosoftGraphEmailOptions>>(Options.Create(BuildMicrosoftGraphEmailOptions(configuration)));
+        services.AddSingleton<INotificationEmailProviderSender, ResendNotificationEmailSender>();
+        services.AddSingleton<INotificationEmailProviderSender, MicrosoftGraphNotificationEmailSender>();
+        services.AddSingleton<INotificationEmailSender, ConfiguredNotificationEmailSender>();
 
         return services;
     }
@@ -171,6 +189,46 @@ public static class InfrastructureServiceCollectionExtensions
         };
     }
 
+    private static GoogleCalendarOptions BuildGoogleCalendarOptions(IConfiguration configuration)
+    {
+        return new GoogleCalendarOptions
+        {
+            Enabled = bool.TryParse(configuration["GoogleCalendar:Enabled"], out var enabled) && enabled,
+            ApplicationName = configuration["GoogleCalendar:ApplicationName"] ?? "Talent Pilot",
+            CalendarId = configuration["GoogleCalendar:CalendarId"] ?? "primary",
+            DefaultTimeZoneId = configuration["GoogleCalendar:DefaultTimeZoneId"]
+                ?? configuration["GoogleCalendar:TimeZone"]
+                ?? "UTC",
+            CreateGoogleMeetLink = !bool.TryParse(configuration["GoogleCalendar:CreateGoogleMeetLink"], out var createMeetLink)
+                || createMeetLink,
+            ClientId = FirstConfigured(
+                configuration["GoogleCalendar:ClientId"],
+                Environment.GetEnvironmentVariable("GOOGLE_CALENDAR_CLIENT_ID")),
+            ClientSecret = FirstConfigured(
+                configuration["GoogleCalendar:ClientSecret"],
+                Environment.GetEnvironmentVariable("GOOGLE_CALENDAR_CLIENT_SECRET")),
+            RedirectUri = FirstConfigured(
+                configuration["GoogleCalendar:RedirectUri"],
+                Environment.GetEnvironmentVariable("GOOGLE_CALENDAR_REDIRECT_URI")),
+            Scope = FirstConfigured(
+                configuration["GoogleCalendar:Scope"],
+                Environment.GetEnvironmentVariable("GOOGLE_CALENDAR_SCOPE"),
+                "https://www.googleapis.com/auth/calendar.events"),
+            FrontendSuccessRedirectUrl = FirstConfigured(
+                configuration["GoogleCalendar:FrontendSuccessRedirectUrl"],
+                Environment.GetEnvironmentVariable("GOOGLE_CALENDAR_FRONTEND_SUCCESS_URL"),
+                "/settings/integrations/google-calendar/success"),
+            FrontendErrorRedirectUrl = FirstConfigured(
+                configuration["GoogleCalendar:FrontendErrorRedirectUrl"],
+                Environment.GetEnvironmentVariable("GOOGLE_CALENDAR_FRONTEND_ERROR_URL"),
+                "/settings/integrations/google-calendar/error"),
+            TokenProtectionKey = FirstConfigured(
+                configuration["GoogleCalendar:TokenProtectionKey"],
+                Environment.GetEnvironmentVariable("GOOGLE_CALENDAR_TOKEN_PROTECTION_KEY"),
+                configuration["Jwt:SigningKey"])
+        };
+    }
+
     private static TavilySearchOptions BuildTavilySearchOptions(IConfiguration configuration)
     {
         return new TavilySearchOptions
@@ -189,6 +247,47 @@ public static class InfrastructureServiceCollectionExtensions
                 : 20,
             SearchDepth = NormalizeTavilySearchDepth(configuration["TavilySearch:SearchDepth"] ?? "basic")
         };
+    }
+
+    private static ResendEmailOptions BuildResendEmailOptions(IConfiguration configuration)
+    {
+        return new ResendEmailOptions
+        {
+            ApiKey = configuration["Resend:ApiKey"]
+                ?? Environment.GetEnvironmentVariable("RESEND_APITOKEN")
+                ?? Environment.GetEnvironmentVariable("RESEND_API_KEY")
+                ?? string.Empty,
+            FromEmail = configuration["Resend:FromEmail"] ?? "onboarding@resend.dev"
+        };
+    }
+
+    private static MicrosoftGraphEmailOptions BuildMicrosoftGraphEmailOptions(IConfiguration configuration)
+    {
+        return new MicrosoftGraphEmailOptions
+        {
+            TenantId = FirstConfigured(
+                configuration["MicrosoftGraphEmail:TenantId"],
+                Environment.GetEnvironmentVariable("MICROSOFT_GRAPH_TENANT_ID"),
+                Environment.GetEnvironmentVariable("AZURE_TENANT_ID")),
+            ClientId = FirstConfigured(
+                configuration["MicrosoftGraphEmail:ClientId"],
+                Environment.GetEnvironmentVariable("MICROSOFT_GRAPH_CLIENT_ID"),
+                Environment.GetEnvironmentVariable("AZURE_CLIENT_ID")),
+            ClientSecret = FirstConfigured(
+                configuration["MicrosoftGraphEmail:ClientSecret"],
+                Environment.GetEnvironmentVariable("MICROSOFT_GRAPH_CLIENT_SECRET"),
+                Environment.GetEnvironmentVariable("AZURE_CLIENT_SECRET")),
+            FromEmail = FirstConfigured(
+                configuration["MicrosoftGraphEmail:FromEmail"],
+                Environment.GetEnvironmentVariable("MICROSOFT_GRAPH_FROM_EMAIL")),
+            SaveToSentItems = !bool.TryParse(configuration["MicrosoftGraphEmail:SaveToSentItems"], out var saveToSentItems)
+                || saveToSentItems
+        };
+    }
+
+    private static string FirstConfigured(params string?[] values)
+    {
+        return values.FirstOrDefault(value => !string.IsNullOrWhiteSpace(value)) ?? string.Empty;
     }
 
     private static string NormalizeTavilySearchDepth(string searchDepth)

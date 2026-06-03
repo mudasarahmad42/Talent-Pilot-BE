@@ -68,12 +68,17 @@ WHEN NOT MATCHED THEN
 
 MERGE dbo.TenantRecruitmentSettings AS target
 USING (VALUES
-    (@TenantId, N'TKXEL Careers', N'#2563EB', CAST(1 AS BIT), N'DOCX', CAST(1 AS BIT), 7, 90)
-) AS source (TenantId, CareerDisplayName, PrimaryColorHex, CandidateLoginRequired, CandidateCvFormat, PublicJobsEnabled, InviteExpiryDays, ReapplyCooldownDays)
+    (@TenantId, N'TKXEL Careers', N'75-C/II, Gulberg III', N'Lahore', N'Pakistan', N'hr@tkxel.com', N'+92 42 111 859 351', N'#2563EB', CAST(1 AS BIT), N'DOCX', CAST(1 AS BIT), 7, 90, N'Resend')
+) AS source (TenantId, CareerDisplayName, CompanyAddress, CompanyCity, CompanyCountry, OfficialEmail, OfficialPhone, PrimaryColorHex, CandidateLoginRequired, CandidateCvFormat, PublicJobsEnabled, InviteExpiryDays, ReapplyCooldownDays, NotificationEmailProvider)
 ON target.TenantId = source.TenantId
 WHEN MATCHED THEN
     UPDATE SET
         CareerDisplayName = source.CareerDisplayName,
+        CompanyAddress = source.CompanyAddress,
+        CompanyCity = source.CompanyCity,
+        CompanyCountry = source.CompanyCountry,
+        OfficialEmail = source.OfficialEmail,
+        OfficialPhone = source.OfficialPhone,
         PrimaryColorHex = source.PrimaryColorHex,
         CandidateLoginRequired = source.CandidateLoginRequired,
         CandidateCvFormat = source.CandidateCvFormat,
@@ -82,8 +87,8 @@ WHEN MATCHED THEN
         ReapplyCooldownDays = source.ReapplyCooldownDays,
         UpdatedAtUtc = @Now
 WHEN NOT MATCHED THEN
-    INSERT (TenantId, CareerDisplayName, PrimaryColorHex, CandidateLoginRequired, CandidateCvFormat, PublicJobsEnabled, InviteExpiryDays, ReapplyCooldownDays, CreatedAtUtc, UpdatedAtUtc)
-    VALUES (source.TenantId, source.CareerDisplayName, source.PrimaryColorHex, source.CandidateLoginRequired, source.CandidateCvFormat, source.PublicJobsEnabled, source.InviteExpiryDays, source.ReapplyCooldownDays, @Now, @Now);
+    INSERT (TenantId, CareerDisplayName, CompanyAddress, CompanyCity, CompanyCountry, OfficialEmail, OfficialPhone, PrimaryColorHex, CandidateLoginRequired, CandidateCvFormat, PublicJobsEnabled, InviteExpiryDays, ReapplyCooldownDays, NotificationEmailProvider, CreatedAtUtc, UpdatedAtUtc)
+    VALUES (source.TenantId, source.CareerDisplayName, source.CompanyAddress, source.CompanyCity, source.CompanyCountry, source.OfficialEmail, source.OfficialPhone, source.PrimaryColorHex, source.CandidateLoginRequired, source.CandidateCvFormat, source.PublicJobsEnabled, source.InviteExpiryDays, source.ReapplyCooldownDays, source.NotificationEmailProvider, @Now, @Now);
 
 MERGE dbo.Roles AS target
 USING (VALUES

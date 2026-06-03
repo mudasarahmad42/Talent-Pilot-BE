@@ -43,14 +43,18 @@ Keep this file aligned when controllers or frontend contracts change.
 - `GET /api/admin/access-policies/permission-resolution`
 - `PUT /api/admin/access-policies/permission-resolution`
 - `GET /api/admin/notifications/events`
-  - Returns the system notification event catalog. Event codes are code-owned and not tenant-authored.
+  - Returns the system notification event catalog and summary counts including pending, sent, and permanently failed outbox emails. Event codes are code-owned and not tenant-authored.
 - `GET /api/admin/notifications/events/{eventId}`
 - `PATCH /api/admin/notifications/events/{eventId}/status`
 - `GET /api/admin/notifications/templates`
-    - Supports `search`, `page`, and `pageSize`; returns summary counts plus paged editable template rows.
+    - Supports `search`, `page`, and `pageSize`; returns summary counts including active events, editable templates, pending outbox emails, sent outbox emails, and permanently failed outbox emails plus paged editable template rows.
+- `GET /api/admin/notifications/outbox`
+    - Supports `search`, `status`, `page`, and `pageSize`; returns notification worker heartbeat status plus recent tenant-scoped email outbox rows with subject, body, event/template labels, recipient, status, attempts, timestamps, linked entity, and last delivery error.
 - `PUT /api/admin/notifications/templates/{templateId}`
 - `POST /api/admin/notifications/test-email`
-    - Tenant Admin only. Sends a standalone Resend delivery-check email to a test recipient and records audit history.
+    - Tenant Admin only. Sends a standalone delivery-check email through the tenant-configured provider and records audit history.
+- `GET /api/admin/notifications/email-senders`
+    - Tenant Admin only. Returns non-secret sender metadata for supported email providers: provider code, display label, configured From address, and sender-configured flag. Does not expose API keys, Graph tenant/client ids, or client secrets.
 - `POST /api/admin/notifications/test-realtime`
     - Tenant Admin only. Broadcasts a SignalR test notification to connected clients in the current tenant and records audit history.
 - `GET /api/admin/workflows/configuration`
@@ -115,9 +119,9 @@ Keep this file aligned when controllers or frontend contracts change.
 - `POST /api/talent-pilot/job-posts/{jobPostId}/close`
   - Marks a draft/published Job Post as `Closed` without closing the parent Job Request.
 - `POST /api/talent-pilot/job-posts/{jobPostId}/manual-candidates`
-  - Recruiter/Tenant Admin adds or reuses a manually sourced candidate for a published Job Post. Creates an invited `JobApplications` row linked to the Job Post and Job Request, stores source/education/work-history metadata, and queues the invitation email.
+  - Recruiter/Tenant Admin adds or reuses a manually sourced candidate for a published Job Post. Creates an invited `JobApplications` row linked to the Job Post and Job Request, stores source/education/work-history metadata, creates a per-recipient `CandidateInvitations` row, and queues the invitation email. When an `invitationMessage` is supplied, it is used as the invitation paragraph and the backend rewrites the concrete candidate portal job detail link into a tracked `inviteId` + `token` URL. When `parsedCvEvidence` is supplied from `cv-parse`, the backend stores the hidden CV summary/text in `JobApplicationDocuments` as extracted `CV` evidence and upserts a `JobApplicationEvidenceProfile` vector for downstream candidate context and ranking.
 - `POST /api/talent-pilot/candidates/cv-parse`
-  - Recruiter/Tenant Admin uploads a DOCX resume for the code-owned `cv-parser` agent. The endpoint extracts candidate contact/profile/education/experience/skill evidence and returns it for recruiter review; it does not create candidates, applications, or workflow movement by itself.
+  - Recruiter/Tenant Admin uploads a DOCX resume for the code-owned `cv-parser` agent. The endpoint extracts candidate contact/profile/education/experience/skill evidence and returns editable prefill fields plus file/hash/parser metadata for recruiter review; it does not create candidates, applications, or workflow movement by itself. The parser summary is hidden context evidence, not visible form copy.
 - `POST /api/talent-pilot/job-applications/{jobApplicationId}/screening-decision`
   - Recruiter/Tenant Admin moves a job-post application to screening, hold, or rejected.
 - `POST /api/talent-pilot/job-applications/{jobApplicationId}/interviews`
@@ -146,18 +150,23 @@ Keep this file aligned when controllers or frontend contracts change.
   - Anonymous candidate-safe list of published Job Posts only.
 - `GET /api/talent-pilot/portal/job-posts/{jobPostId}`
   - Anonymous candidate-safe detail for a single published Job Post.
+- `GET /api/talent-pilot/portal/invitations/{candidateInvitationId}?token={token}`
+  - Anonymous candidate-safe resolver for tracked invitation links. Validates the id/token pair against `CandidateInvitations.TokenHash` and returns job/invitation status metadata without exposing candidate profile details.
 - `POST /api/talent-pilot/portal/job-posts/{jobPostId}/applications`
-  - Candidate-authenticated apply endpoint. Creates or returns the active application for the signed-in Candidate and stores source/snapshot/status-history metadata.
+  - Candidate-authenticated apply endpoint. Creates or returns the active application for the signed-in Candidate and stores source/snapshot/status-history metadata. Optional `candidateInvitationId` + `invitationToken` credentials consume a matching invitation and convert existing `Invited` applications to `Applied`.
 - `GET /api/talent-pilot/portal/my-applications`
   - Candidate-authenticated application history/status list scoped to the signed-in Candidate.
+- `GET /api/talent-pilot/portal/profile`
+  - Candidate-authenticated profile endpoint. Returns an existing Candidate profile or a shell from the signed-in user name/email, plus active skill options for the profile form.
+- `PUT /api/talent-pilot/portal/profile`
+  - Candidate-authenticated create/update endpoint for display name, phone, LinkedIn URL, current title/company, experience, notice period, expected salary, primary education, current work history, and selected skills. Email remains identity-owned/read-only. Successful saves best-effort upsert a `Candidate` / `CandidateProfile` vector; embedding failures do not fail the save.
 - `PATCH /api/talent-pilot/notifications/{notificationId}/read`
 - `PATCH /api/talent-pilot/notifications/read-all`
 
 ## Planned API Groups
 
 - Candidate Experience:
-  - candidate profile editing
-  - CV/document upload
+  - cover-letter evidence/context support
   - candidate-facing interview schedule
 - Recruiter:
   - richer candidate prospect CRM beyond job-post invited applications

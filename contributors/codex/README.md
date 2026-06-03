@@ -1,5 +1,77 @@
 # Codex Contributor Log
 
+## 2026-06-03 - Branch: mudasar-ahmad
+
+- Commit summary: pending strict sequential interview scheduling validation.
+- Purpose: validate candidate interview scheduling before calendar creation and return explicit prior-round, duplicate-round, and missing-interviewer errors for direct API callers.
+- Files touched: `src/TalentPilot.Application/Operations/OperationsDtos.cs`, `src/TalentPilot.Application/Operations/OperationsInterfaces.cs`, `src/TalentPilot.Application/Operations/OperationsService.cs`, `src/TalentPilot.Infrastructure/Persistence/Repositories/DapperOperationsRepository.cs`, contributor log.
+- Endpoints changed: `POST /api/talent-pilot/job-applications/{jobApplicationId}/interviews` can now return `candidate_interview.prior_rounds_pending`, `candidate_interview.round_already_scheduled`, or `candidate_interview.interviewer_required` before any calendar meeting is created.
+- Schema changed: no.
+- Seed/stored procedures changed: no.
+- Tests run: `dotnet test "tests\TalentPilot.Tests\TalentPilot.Tests.csproj"` passed with 75 tests.
+- Known risks: the backend remains strict; no admin override for out-of-sequence scheduling.
+- AI assistance: Codex implemented and reviewed the changes.
+
+## 2026-06-03 - Branch: mudasar-ahmad
+
+- Commit summary: pending interview feedback recruiter notification delivery.
+- Purpose: after assigned interview feedback is submitted, queue a richer recruiter email with an application review CTA and return an internal realtime dispatch so SignalR notifies the recruiter to review feedback and schedule the next interview.
+- Files touched: `src/TalentPilot.Api/appsettings.Development.json`, `src/TalentPilot.Application/Operations/InterviewScheduleEmailComposer.cs`, `src/TalentPilot.Application/Operations/OperationsDtos.cs`, `src/TalentPilot.Application/Operations/OperationsInterfaces.cs`, `src/TalentPilot.Application/Operations/OperationsService.cs`, `src/TalentPilot.Infrastructure/Persistence/Repositories/DapperOperationsRepository.cs`, contributor log.
+- Endpoints changed: `POST /api/talent-pilot/interviews/{interviewId}/feedback` now queues recruiter email and publishes realtime notification dispatches after successful submission; notification snapshot DTOs now include optional metadata.
+- Schema changed: no.
+- Seed/stored procedures changed: no.
+- Tests run: `dotnet test` passed with 69 tests.
+- Known risks: the recruiter CTA uses `Frontend:BaseUrl` with a localhost fallback and links to the sourcing applications tab; the query `applicationId` is carried for context but the screen does not yet auto-focus that row.
+- AI assistance: Codex implemented and reviewed the changes.
+
+## 2026-06-03 - Branch: mudasar-ahmad
+
+- Commit summary: pending historical interview denominator fix.
+- Purpose: make historical application interview summaries use the configured interview round count for the linked job post, so partially scheduled applications show `0/3 passed` instead of `0/1 passed` when the job has three active rounds.
+- Files touched: `src/TalentPilot.Infrastructure/Persistence/Repositories/DapperOperationsRepository.cs`, contributor log.
+- Endpoints changed: response semantics updated for `GET /api/talent-pilot/recruitment/applications/{jobApplicationId}/history`.
+- Schema changed: no.
+- Seed/stored procedures changed: no.
+- Tests run: `dotnet test` passed with 69 tests.
+- Known risks: older applications without a linked job post fall back to counting request-level interview rounds.
+- AI assistance: Codex implemented and reviewed the changes.
+
+## 2026-06-03 - Branch: mudasar-ahmad
+
+- Commit summary: pending notification sender metadata endpoint.
+- Purpose: expose admin-only, non-secret email sender metadata from the same Resend/Microsoft Graph options used by the email senders so the Integrations screen can show the actual configured sender mailbox without exposing credentials.
+- Files touched: `src/TalentPilot.Api/Controllers/Admin/NotificationsController.cs`, `src/TalentPilot.Application/Admin/Notifications/AdminNotificationDtos.cs`, `knowledge-base/api-surface.md`, contributor log.
+- Endpoints changed: added `GET /api/admin/notifications/email-senders`.
+- Schema changed: no.
+- Seed/stored procedures changed: no.
+- Tests run: `dotnet test` passed with 69 tests.
+- Known risks: the API and worker processes should run with matching email provider configuration so the displayed sender matches worker delivery behavior.
+- AI assistance: Codex implemented and reviewed the changes.
+
+## 2026-06-02 - Branch: mudasar-ahmad
+
+- Commit summary: pending tracked candidate invitation links.
+- Purpose: create per-recipient candidate invitation links with `CandidateInvitationId` plus raw token, validate them through a public portal resolver, and mark invitations used when candidates submit applications.
+- Files touched: `src/TalentPilot.Api/Controllers/OperationsController.cs`, `src/TalentPilot.Application/Operations/OperationsDtos.cs`, `src/TalentPilot.Application/Operations/OperationsInterfaces.cs`, `src/TalentPilot.Application/Operations/OperationsService.cs`, `src/TalentPilot.Infrastructure/Persistence/Repositories/DapperOperationsRepository.cs`, knowledge-base docs, contributor log.
+- Endpoints changed: added `GET /api/talent-pilot/portal/invitations/{candidateInvitationId}?token={token}`; extended portal application input with optional `candidateInvitationId` and `invitationToken`.
+- Schema changed: no; reuses existing `CandidateInvitations` columns.
+- Seed/stored procedures changed: no.
+- Tests run: `dotnet test` passed with 63 tests.
+- Known risks: backend can only build absolute tracked email links when the recruiter/frontend-provided invitation message includes an absolute candidate portal job URL as the base.
+- AI assistance: Codex implemented and reviewed the changes.
+
+## 2026-06-02 - Branch: mudasar-ahmad
+
+- Commit summary: pending candidate invitation HTML email payloads.
+- Purpose: send candidate invitation emails with a plain text fallback plus HTML body containing a clickable apply CTA and optional portal hero image.
+- Files touched: `src/TalentPilot.Infrastructure/Persistence/Repositories/DapperOperationsRepository.cs`, `knowledge-base/notifications.md`, contributor log.
+- Endpoints changed: no.
+- Schema changed: no.
+- Seed/stored procedures changed: no.
+- Tests run: `dotnet test` passed with 63 tests.
+- Known risks: the email hero image uses the candidate portal URL origin and requires that public frontend asset to be reachable by the recipient email client.
+- AI assistance: Codex implemented and reviewed the changes.
+
 ## 2026-05-22 - Branch: mudasar-ahmad
 
 - Commit summary: pending backend generic Excel export service and audit log export endpoint.

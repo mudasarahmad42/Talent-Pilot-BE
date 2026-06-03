@@ -5,7 +5,7 @@ using TalentPilot.Common.Results;
 
 namespace TalentPilot.Infrastructure.Notifications;
 
-public sealed class ResendNotificationEmailSender : INotificationEmailSender
+internal sealed class ResendNotificationEmailSender : INotificationEmailProviderSender
 {
     private readonly ResendEmailOptions _options;
 
@@ -13,6 +13,8 @@ public sealed class ResendNotificationEmailSender : INotificationEmailSender
     {
         _options = options.Value;
     }
+
+    public string Provider => NotificationEmailProviders.Resend;
 
     public async Task<Result<NotificationEmailSendResult>> SendAsync(
         NotificationEmailMessage message,
@@ -46,7 +48,7 @@ public sealed class ResendNotificationEmailSender : INotificationEmailSender
         {
             var messageId = await resend.EmailSendAsync(email, cancellationToken);
             return Result<NotificationEmailSendResult>.Success(new NotificationEmailSendResult(
-                "Resend",
+                NotificationEmailProviders.Resend,
                 messageId?.ToString() ?? string.Empty,
                 DateTimeOffset.UtcNow));
         }
@@ -66,7 +68,7 @@ public sealed class ResendNotificationEmailSender : INotificationEmailSender
     {
         var detail = exception.Message.Trim();
         return string.IsNullOrWhiteSpace(detail)
-            ? "Resend rejected the test email. Check the sender address, recipient, and API key."
-            : $"Resend rejected the test email: {detail}";
+            ? "Resend rejected the email. Check the sender address, recipient, and API key."
+            : $"Resend rejected the email: {detail}";
     }
 }

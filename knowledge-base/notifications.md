@@ -13,6 +13,7 @@ This note is the implementation reference for Admin Center notification configur
 - Test email role gate: `TenantAdmin`
 - Event identity: backend code-owned constants in `TalentPilot.Domain.Notifications.NotificationEventCodes`.
 - Delivery ownership: backend code owns recipient resolution, email/SignalR enqueueing, retry behavior, and audit history.
+- Email delivery worker: `TalentPilot.Worker`. The API enqueues email rows; the worker sends them.
 
 Admins can manage editable email copy. They do not create notification events, rename event codes, configure arbitrary transports, retry policy, workflow behavior, or per-row delivery rules from the UI.
 
@@ -25,6 +26,7 @@ Admins can manage editable email copy. They do not create notification events, r
 - Email notification
   - Uses a `NotificationTemplates` row linked to a `NotificationEvents` row.
   - Must be enqueued through `NotificationOutbox` with `Channel = Email`.
+  - Payloads store a plain text `body` fallback and may store `htmlBody` for provider-rendered email. Candidate invitation payloads include a clickable apply CTA when the recruiter-provided message contains an absolute candidate portal URL.
   - Admins may edit subject and body only.
 - SignalR delivery work
   - Must use `NotificationOutbox` with `Channel = SignalR`.
@@ -52,6 +54,12 @@ Admins can manage editable email copy. They do not create notification events, r
 - `NotificationOutbox`
   - Durable background work queue for delivery.
   - Stores event/template/user/email/channel/payload plus `Pending`, `Processing`, `Sent`, or `Failed` status.
+  - Admin Center notification summaries expose pending, sent, and permanently failed email outbox counts.
+  - Admin Center outbox details expose recent email subject/body, recipient, status, attempts, timestamps, linked entity, and last error. Sender/actor is shown as the Talent Pilot workflow because the current outbox schema does not store a dedicated sender user column on every row.
+- `NotificationWorkerStatus`
+  - Durable heartbeat row written by `TalentPilot.Worker`.
+  - Stores worker name, host/process identity, started timestamp, last heartbeat, last processed batch timestamp/count, and latest loop error.
+  - Admin Center uses this status to explain whether pending emails are waiting because the worker is offline/stale, migration/heartbeat setup is missing, the worker reported an error, or the next polling cycle has not run yet.
 
 ## Seeded Event Catalog
 
@@ -88,11 +96,13 @@ These events are seeded per tenant in `scripts/seed/001_seed_initial_data.sql`.
 
 - Tenant Admins can send a test email from the Admin Notifications screen.
 - The UI posts only the recipient email to `POST /api/admin/notifications/test-email`.
-- The backend sends a standalone Resend delivery-check message. It does not use or render notification templates.
-- Resend configuration is environment-owned:
+- The backend sends a standalone delivery-check message through the tenant's configured Admin Center email provider. It does not use or render notification templates.
+- Provider configuration is environment-owned:
+  - `TenantRecruitmentSettings.NotificationEmailProvider` stores `Resend` or `MicrosoftGraph` per tenant and defaults to `Resend`.
   - `Resend:ApiKey` from ASP.NET user-secrets, environment variables, or deployment secrets.
   - `Resend:FromEmail` from appsettings or deployment configuration. Production must use a verified Resend sender/domain.
-- The API key must never be committed to appsettings, frontend code, seed scripts, or documentation.
+  - `MicrosoftGraphEmail:TenantId`, `MicrosoftGraphEmail:ClientId`, `MicrosoftGraphEmail:ClientSecret`, and `MicrosoftGraphEmail:FromEmail` from ASP.NET user-secrets, environment variables, or deployment secrets. The Graph app registration needs application `Mail.Send` permission, and `FromEmail` must be a mailbox/user principal the app can send as.
+- Provider secrets must never be committed to appsettings, frontend code, seed scripts, or documentation.
 - Successful sends write `NotificationTestEmailSent` audit history as a `NotificationTestEmail` action.
 
 ## Realtime Notifications
@@ -109,18 +119,22 @@ These events are seeded per tenant in `scripts/seed/001_seed_initial_data.sql`.
 - Tenant Admins can send a SignalR test notification from the Admin Notifications screen through `POST /api/admin/notifications/test-realtime`.
 - The test endpoint broadcasts to connected clients in the current tenant and writes `NotificationRealtimeTestSent` audit history.
 - Production workflow code should publish realtime messages immediately after committing the database notification/outbox transaction.
+- Interview scheduling publishes realtime notifications for participants with app user accounts after the interview/calendar transaction commits: candidate, interviewer, and hiring manager. Candidate notifications link to the candidate application status route; interviewer notifications link to the feedback workbench; hiring-manager notifications link back to the recruiter sourcing application.
 
 ## Admin Screen Behavior
 
 The Admin Center notifications page should be backed by database APIs only.
 
+- The page separates email delivery/template management from realtime SignalR diagnostics with Email Notifications and Realtime Notifications tabs.
 - Email templates are the primary configurable list.
 - Template list supports search and pagination through `GET /api/admin/notifications/templates`.
 - Summary counts come from the database:
   - active event count
   - editable template count
   - pending outbox count
+  - sent outbox count
   - failed outbox count
+- Outbox details include `workerStatus`, which is backed by `NotificationWorkerStatus`. If the heartbeat is missing or stale, due pending emails will not be sent until `TalentPilot.Worker` is running with the same `ConnectionStrings:TalentPilot` value as the API.
 - Template edit screens must save through `PUT /api/admin/notifications/templates/{templateId}`.
 - Tenant Admin test email sends must use `POST /api/admin/notifications/test-email`.
 - Tenant Admin realtime test sends must use `POST /api/admin/notifications/test-realtime`.
@@ -135,9 +149,11 @@ The Admin Center notifications page should be backed by database APIs only.
 - Event codes are code-owned constants and mirrored into seeded `NotificationEvents` rows.
 - Runtime notification read/read-all APIs are implemented for `NotificationRecipients`.
 - A Dapper-backed outbox processor claims due `Pending` email rows, calls `INotificationEmailSender`, then marks rows `Sent` or `Failed` with attempt count, processed timestamp, and last error.
-- Admin test email delivery and workflow email delivery are implemented through Resend.
+- `TalentPilot.Worker` runs the outbox processor every 30 seconds and writes a heartbeat after each loop. If the worker process is not running, queued email rows remain `Pending`.
+- Admin test email delivery and workflow email delivery are implemented through the tenant-configured provider: Resend or Microsoft Graph.
 - SignalR hub/client delivery is implemented behind `IRealtimeNotificationPublisher`.
 - In local Resend testing, unverified recipient domains may fail provider delivery; failed rows stay in `NotificationOutbox` for diagnostics.
+- Candidate invitation emails use the direct candidate portal job detail URL supplied by the frontend as the base URL. The backend now creates a per-recipient `CandidateInvitations` row, stores only the SHA-256 `TokenHash`, and rewrites the email link to include `?source=invite&inviteId={CandidateInvitationId}&token={rawToken}`. Candidate portal pages can resolve that id/token pair, and application submission marks the matching invitation `Used`.
 
 ## Adding A New Notification
 

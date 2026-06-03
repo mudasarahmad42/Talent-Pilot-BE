@@ -226,7 +226,14 @@ dotnet run --project src/TalentPilot.Worker
 
 The worker processes SQL-backed outbox records locally. Keep this simple for MVP; do not introduce paid queues unless explicitly approved.
 
-Configure the worker with the same `ConnectionStrings:TalentPilot` value as the API. Workflow email delivery also needs `Resend:ApiKey` and optionally `Resend:FromEmail` from user-secrets or deployment secrets. Pending rows are marked `Sent` after provider delivery succeeds, or `Failed` with `LastError` when the provider rejects the message.
+Configure the worker with the same `ConnectionStrings:TalentPilot` value as the API. Workflow email delivery uses the tenant's Admin Center email provider setting and requires matching provider secrets on both the API and worker:
+
+- Resend: `Resend:ApiKey` and optionally `Resend:FromEmail`.
+- Microsoft Graph: `MicrosoftGraphEmail:TenantId`, `MicrosoftGraphEmail:ClientId`, `MicrosoftGraphEmail:ClientSecret`, and `MicrosoftGraphEmail:FromEmail`.
+
+Keep provider secrets in user-secrets, environment variables, or deployment secrets. Pending rows are marked `Sent` after provider delivery succeeds, or `Failed` with `LastError` when the provider rejects the message.
+
+The worker writes a `NotificationWorkerStatus` heartbeat after each loop. Admin Center > Notifications uses that heartbeat to show whether email delivery is running, stale/offline, or reporting an error.
 
 ## Test
 

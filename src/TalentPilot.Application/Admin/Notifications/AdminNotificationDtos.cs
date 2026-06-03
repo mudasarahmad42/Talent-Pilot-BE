@@ -4,6 +4,8 @@ public sealed record AdminNotificationEventsQuery(string? Search, int Page, int 
 
 public sealed record AdminNotificationTemplatesQuery(string? Search, int Page, int PageSize);
 
+public sealed record AdminNotificationOutboxQuery(string? Search, string? Status, int Page, int PageSize);
+
 public sealed record AdminNotificationEventsResponse(
     AdminNotificationEventsSummary Summary,
     IReadOnlyList<AdminNotificationEventListItem> Items,
@@ -15,6 +17,7 @@ public sealed record AdminNotificationEventsSummary(
     int ActiveEventCount,
     int EditableTemplateCount,
     int PendingOutboxCount,
+    int SentOutboxCount,
     int FailedOutboxCount);
 
 public sealed record AdminNotificationTemplatesResponse(
@@ -23,6 +26,50 @@ public sealed record AdminNotificationTemplatesResponse(
     int Page,
     int PageSize,
     int TotalCount);
+
+public sealed record AdminNotificationOutboxResponse(
+    AdminNotificationWorkerStatus WorkerStatus,
+    IReadOnlyList<AdminNotificationOutboxItem> Items,
+    int Page,
+    int PageSize,
+    int TotalCount);
+
+public sealed record AdminNotificationWorkerStatus(
+    string State,
+    string Label,
+    string Message,
+    DateTimeOffset? LastHeartbeatUtc,
+    DateTimeOffset? StartedAtUtc,
+    DateTimeOffset? LastProcessedAtUtc,
+    int? LastProcessedCount,
+    string? HostName,
+    int? ProcessId,
+    string? LastError,
+    int PollIntervalSeconds,
+    int StaleAfterSeconds,
+    int PendingDueCount,
+    int ProcessingCount);
+
+public sealed record AdminNotificationOutboxItem(
+    Guid OutboxId,
+    string EventCode,
+    string EventName,
+    string TemplateName,
+    string SenderDisplayName,
+    string? RecipientDisplayName,
+    string? RecipientEmail,
+    string Channel,
+    string Status,
+    int AttemptCount,
+    DateTimeOffset AvailableAtUtc,
+    DateTimeOffset CreatedAtUtc,
+    DateTimeOffset UpdatedAtUtc,
+    DateTimeOffset? ProcessedAtUtc,
+    string? LastError,
+    string Subject,
+    string Body,
+    string? EntityType,
+    string? EntityId);
 
 public sealed record AdminNotificationEventListItem(
     Guid EventId,
@@ -66,6 +113,15 @@ public sealed record SendTestNotificationEmailResponse(
     string MessageId,
     DateTimeOffset SubmittedAtUtc);
 
+public sealed record NotificationEmailSenderConfigurationResponse(
+    IReadOnlyList<NotificationEmailSenderProviderConfiguration> Providers);
+
+public sealed record NotificationEmailSenderProviderConfiguration(
+    string Provider,
+    string ProviderLabel,
+    string? SenderEmail,
+    bool SenderConfigured);
+
 public sealed record SendTestRealtimeNotificationResponse(
     Guid NotificationId,
     string Title,
@@ -77,6 +133,16 @@ public sealed record RealtimeNotificationConnectionStatusResponse(
     int ConnectedClientCount,
     DateTimeOffset CheckedAtUtc);
 
-public sealed record NotificationEmailMessage(string ToEmail, string Subject, string TextBody, string HtmlBody);
+public sealed record NotificationEmailProviderSettings(string Provider);
+
+public sealed record NotificationEmailMessage(Guid TenantId, string ToEmail, string Subject, string TextBody, string HtmlBody);
 
 public sealed record NotificationEmailSendResult(string Provider, string MessageId, DateTimeOffset SubmittedAtUtc);
+
+public sealed record NotificationWorkerHeartbeat(
+    string WorkerName,
+    string HostName,
+    int ProcessId,
+    DateTimeOffset StartedAtUtc,
+    int LastProcessedCount,
+    string? LastError);

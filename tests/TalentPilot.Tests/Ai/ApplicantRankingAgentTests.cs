@@ -1,5 +1,3 @@
-using System.IO.Compression;
-using System.Text;
 using TalentPilot.Application.Abstractions;
 using TalentPilot.Application.Ai;
 using TalentPilot.Application.Operations;
@@ -36,8 +34,7 @@ public sealed class ApplicantRankingAgentTests
             new StaticEmbeddingProvider(),
             vectorStore,
             new StaticRuntimeSettingsResolver(),
-            logger,
-            new StaticApplicationDocumentStorage());
+            logger);
 
         var result = await agent.RankAsync(TenantId, CreateContext(), CancellationToken.None);
 
@@ -60,8 +57,29 @@ public sealed class ApplicantRankingAgentTests
             record.SourceType == "ApplicantRankingRequirementProfile");
         Assert.Equal(2, vectorStore.UpsertedRecords.Count(record =>
             record.EntityType == "JobApplication" &&
-            record.SourceType == "JobApplicationProfile"));
+            record.SourceType == "JobApplicationEvidenceProfile"));
         Assert.DoesNotContain(vectorStore.UpsertedRecords, record => record.EntityType == "Employee");
+    }
+
+    [Fact]
+    public async Task RankAsync_WhenEmbeddingServiceIsUnavailable_RecordsActionableSemanticStatus()
+    {
+        var modelProvider = new CapturingModelProvider("[]");
+        var logger = new CapturingRunLogger();
+        var agent = new ApplicantRankingAgent(
+            modelProvider,
+            new ThrowingEmbeddingProvider(new InvalidOperationException("No connection could be made because the target machine actively refused it. (localhost:11434)")),
+            new CapturingVectorStore(new Dictionary<Guid, decimal>()),
+            new StaticRuntimeSettingsResolver(),
+            logger);
+
+        var result = await agent.RankAsync(TenantId, CreateContext(), CancellationToken.None);
+
+        Assert.Equal(2, result.Matches.Count);
+        Assert.True(logger.Succeeded);
+        Assert.Contains("Ollama embedding service is not reachable", logger.Metadata["semanticSimilarityStatus"]);
+        Assert.Contains("nomic-embed-text", logger.Metadata["semanticSimilarityStatus"]);
+        Assert.DoesNotContain("actively refused", logger.Metadata["semanticSimilarityStatus"], StringComparison.OrdinalIgnoreCase);
     }
 
     private static OperationsApplicantRankingContext CreateContext()
@@ -134,7 +152,14 @@ public sealed class ApplicantRankingAgentTests
                             "resume.docx",
                             null,
                             "hash-1",
-                            DateTimeOffset.UtcNow.AddDays(-1))
+                            DateTimeOffset.UtcNow.AddDays(-1),
+                            "Extracted",
+                            true,
+                            "React Azure delivery and portal engineering experience.",
+                            "text-hash-1",
+                            "docx-wordprocessingml-v1",
+                            DateTimeOffset.UtcNow.AddDays(-1),
+                            null)
                     ]),
                 CreateApplication(
                     WeakApplicationId,
@@ -205,6 +230,21 @@ public sealed class ApplicantRankingAgentTests
         {
             var value = text.Contains("Ayesha", StringComparison.OrdinalIgnoreCase) ? 0.9f : 0.2f;
             return Task.FromResult(Enumerable.Repeat(value, 768).ToArray());
+        }
+    }
+
+    private sealed class ThrowingEmbeddingProvider : IEmbeddingProvider
+    {
+        private readonly Exception _exception;
+
+        public ThrowingEmbeddingProvider(Exception exception)
+        {
+            _exception = exception;
+        }
+
+        public Task<float[]> GenerateEmbeddingAsync(string text, CancellationToken cancellationToken)
+        {
+            throw _exception;
         }
     }
 
@@ -294,40 +334,4 @@ public sealed class ApplicantRankingAgentTests
         }
     }
 
-    private sealed class StaticApplicationDocumentStorage : IApplicationDocumentStorage
-    {
-        public Task<StoredApplicationDocument> SaveAsync(
-            StoreApplicationDocumentRequest request,
-            CancellationToken cancellationToken)
-        {
-            throw new NotSupportedException();
-        }
-
-        public Task<byte[]?> ReadAsync(
-            string storageProvider,
-            string storageKey,
-            string? storageContainer,
-            CancellationToken cancellationToken)
-        {
-            return Task.FromResult<byte[]?>(CreateDocxBytes("React Azure delivery and portal engineering experience."));
-        }
-    }
-
-    private static byte[] CreateDocxBytes(string text)
-    {
-        using var stream = new MemoryStream();
-        using (var archive = new ZipArchive(stream, ZipArchiveMode.Create, leaveOpen: true))
-        {
-            var entry = archive.CreateEntry("word/document.xml");
-            using var writer = new StreamWriter(entry.Open(), Encoding.UTF8);
-            writer.Write($"""
-                <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-                <w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
-                  <w:body><w:p><w:r><w:t>{text}</w:t></w:r></w:p></w:body>
-                </w:document>
-                """);
-        }
-
-        return stream.ToArray();
-    }
 }

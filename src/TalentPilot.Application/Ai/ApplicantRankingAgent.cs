@@ -1,8 +1,6 @@
-using System.IO.Compression;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
-using System.Xml.Linq;
 using TalentPilot.Application.Abstractions;
 using TalentPilot.Application.Operations;
 
@@ -48,22 +46,19 @@ public sealed class ApplicantRankingAgent : IApplicantRankingAgent
     private readonly IVectorStore _vectorStore;
     private readonly IAiRuntimeSettingsResolver _settingsResolver;
     private readonly IAiAgentRunLogger _runLogger;
-    private readonly IApplicationDocumentStorage _documentStorage;
 
     public ApplicantRankingAgent(
         IAiModelProvider modelProvider,
         IEmbeddingProvider embeddingProvider,
         IVectorStore vectorStore,
         IAiRuntimeSettingsResolver settingsResolver,
-        IAiAgentRunLogger runLogger,
-        IApplicationDocumentStorage documentStorage)
+        IAiAgentRunLogger runLogger)
     {
         _modelProvider = modelProvider;
         _embeddingProvider = embeddingProvider;
         _vectorStore = vectorStore;
         _settingsResolver = settingsResolver;
         _runLogger = runLogger;
-        _documentStorage = documentStorage;
     }
 
     public async Task<ApplicantRankingRankResult> RankAsync(
@@ -73,7 +68,7 @@ public sealed class ApplicantRankingAgent : IApplicantRankingAgent
     {
         var settings = await _settingsResolver.GetCurrentAsync(cancellationToken);
         var generatedAt = DateTimeOffset.UtcNow;
-        var documentTexts = await TryReadDocumentTextsAsync(context.Applications, cancellationToken);
+        var documentTexts = CollectPersistedDocumentTexts(context.Applications);
         var inputHash = AiTextHasher.HashText(BuildRunInputText(context, documentTexts));
         var runId = await _runLogger.StartAsync(
             new AiAgentRunStart(
@@ -146,7 +141,7 @@ public sealed class ApplicantRankingAgent : IApplicantRankingAgent
                     tenantId,
                     "JobApplication",
                     application.JobApplicationId,
-                    "JobApplicationProfile",
+                    "JobApplicationEvidenceProfile",
                     settings.EmbeddingModel,
                     cancellationToken);
 
@@ -160,7 +155,7 @@ public sealed class ApplicantRankingAgent : IApplicantRankingAgent
                                 tenantId,
                                 "JobApplication",
                                 application.JobApplicationId,
-                                "JobApplicationProfile",
+                                "JobApplicationEvidenceProfile",
                                 sourceHash,
                                 settings.EmbeddingModel,
                                 settings.EmbeddingDimensions,
@@ -215,45 +210,23 @@ public sealed class ApplicantRankingAgent : IApplicantRankingAgent
         }
         catch (Exception ex)
         {
-            return new VectorScoreResult(new Dictionary<Guid, decimal>(), $"Unavailable: {ex.Message}");
+            return new VectorScoreResult(new Dictionary<Guid, decimal>(), SemanticSimilarityDiagnostics.Unavailable(ex, settings));
         }
     }
 
-    private async Task<IReadOnlyDictionary<Guid, string>> TryReadDocumentTextsAsync(
-        IReadOnlyList<OperationsApplicantRankingApplication> applications,
-        CancellationToken cancellationToken)
+    private static IReadOnlyDictionary<Guid, string> CollectPersistedDocumentTexts(
+        IReadOnlyList<OperationsApplicantRankingApplication> applications)
     {
         var results = new Dictionary<Guid, string>();
         foreach (var application in applications)
         {
-            var parts = new List<string>();
-            foreach (var document in application.DocumentEvidence.Take(3))
-            {
-                try
-                {
-                    var bytes = await _documentStorage.ReadAsync(
-                        document.StorageProvider,
-                        document.StorageKey,
-                        document.StorageContainer,
-                        cancellationToken);
-                    if (bytes is null || bytes.Length == 0)
-                    {
-                        continue;
-                    }
+            var parts = application.DocumentEvidence
+                .Where(document => document.HasExtractedText && !string.IsNullOrWhiteSpace(document.ExtractedText))
+                .Take(3)
+                .Select(document => $"{document.DocumentType} {document.FileName}: {TrimText(document.ExtractedText, 4000)}")
+                .ToArray();
 
-                    var text = TryExtractDocumentText(document.FileName, bytes);
-                    if (!string.IsNullOrWhiteSpace(text))
-                    {
-                        parts.Add($"{document.DocumentType} {document.FileName}: {TrimText(text, 4000)}");
-                    }
-                }
-                catch
-                {
-                    // Applicant ranking stays usable when a stored document cannot be read.
-                }
-            }
-
-            if (parts.Count > 0)
+            if (parts.Length > 0)
             {
                 results[application.JobApplicationId] = string.Join('\n', parts);
             }
@@ -436,7 +409,8 @@ public sealed class ApplicantRankingAgent : IApplicantRankingAgent
             score += 0.2m;
         }
 
-        if (documentTexts.ContainsKey(application.JobApplicationId))
+        if (application.DocumentEvidence.Any(document => document.HasExtractedText) ||
+            documentTexts.ContainsKey(application.JobApplicationId))
         {
             score += 0.2m;
         }
@@ -584,7 +558,16 @@ public sealed class ApplicantRankingAgent : IApplicantRankingAgent
         }
 
         evidence.AddRange(application.DocumentEvidence.Select(document =>
-            $"{document.DocumentType}: {document.FileName} ({FormatBytes(document.SizeBytes)})."));
+        {
+            var status = document.ExtractionStatus switch
+            {
+                "Extracted" => "text parsed for semantic ranking",
+                "Failed" => $"text extraction failed{(string.IsNullOrWhiteSpace(document.ExtractionError) ? string.Empty : $": {document.ExtractionError}")}",
+                "Unsupported" => "text extraction unsupported",
+                _ => "text extraction pending"
+            };
+            return $"{document.DocumentType}: {document.FileName} ({FormatBytes(document.SizeBytes)}), {status}.";
+        }));
 
         return evidence.Count == 0 ? ["No CV, cover letter, or uploaded document evidence was available."] : evidence;
     }
@@ -667,7 +650,7 @@ public sealed class ApplicantRankingAgent : IApplicantRankingAgent
             $"Application status: {application.ApplicationStatus}",
             $"Source: {application.SourceLabel} {application.SourceDetail}",
             $"Cover letter: {SafeField(TrimText(application.CoverLetterText, 2000))}",
-            $"Documents: {string.Join("; ", application.DocumentEvidence.Select(document => $"{document.DocumentType} {document.FileName} {document.ContentType}"))}",
+            $"Documents: {string.Join("; ", application.DocumentEvidence.Select(document => $"{document.DocumentType} {document.FileName} {document.ContentType} extraction {document.ExtractionStatus}"))}",
             $"Document text: {SafeField(TrimText(documentText, 5000))}",
             $"Application snapshot: {SafeField(TrimText(application.ApplicationSnapshotJson, 2000))}",
             $"Historical applications: {history}",
@@ -733,31 +716,6 @@ public sealed class ApplicantRankingAgent : IApplicantRankingAgent
         {
             // Best-effort logging only.
         }
-    }
-
-    private static string? TryExtractDocumentText(string fileName, byte[] content)
-    {
-        if (!fileName.EndsWith(".docx", StringComparison.OrdinalIgnoreCase))
-        {
-            return null;
-        }
-
-        using var stream = new MemoryStream(content);
-        using var archive = new ZipArchive(stream, ZipArchiveMode.Read);
-        var entry = archive.GetEntry("word/document.xml");
-        if (entry is null)
-        {
-            return null;
-        }
-
-        using var reader = new StreamReader(entry.Open(), Encoding.UTF8);
-        var xml = XDocument.Parse(reader.ReadToEnd());
-        XNamespace w = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
-        var paragraphs = xml.Descendants(w + "p")
-            .Select(paragraph => string.Concat(paragraph.Descendants(w + "t").Select(text => text.Value)).Trim())
-            .Where(line => !string.IsNullOrWhiteSpace(line));
-
-        return string.Join('\n', paragraphs);
     }
 
     private static decimal Clamp(decimal value, decimal min, decimal max)

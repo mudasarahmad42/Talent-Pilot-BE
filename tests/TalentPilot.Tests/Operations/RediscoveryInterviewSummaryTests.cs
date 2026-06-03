@@ -45,6 +45,16 @@ public sealed class RediscoveryInterviewSummaryTests
         Assert.Equal("0/3 passed", summary.DisplayText);
     }
 
+    [Fact]
+    public void Build_UsesConfiguredRoundCountWhenNoInterviewsAreScheduled()
+    {
+        var summary = RediscoveryInterviewSummary.Build([], configuredTotal: 3);
+
+        Assert.Equal(0, summary.Passed);
+        Assert.Equal(3, summary.Total);
+        Assert.Equal("0/3 passed", summary.DisplayText);
+    }
+
     private static OperationsCandidateInterviewEvidence CreateInterview(
         string status,
         string? recommendation,

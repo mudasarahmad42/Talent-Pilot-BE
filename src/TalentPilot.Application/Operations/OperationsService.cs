@@ -1,5 +1,7 @@
+using System.Security.Cryptography;
 using TalentPilot.Application.Abstractions;
 using TalentPilot.Application.Ai;
+using TalentPilot.Application.Calendar;
 using TalentPilot.Application.Notifications;
 using TalentPilot.Common.Results;
 using TalentPilot.Domain.Access;
@@ -21,6 +23,8 @@ public sealed class OperationsService : IOperationsService
     private readonly IAiRuntimeSettingsResolver _aiRuntimeSettingsResolver;
     private readonly IAiAgentRunLogger _aiRunLogger;
     private readonly IApplicationDocumentStorage _applicationDocumentStorage;
+    private readonly IApplicationDocumentTextExtractor _documentTextExtractor;
+    private readonly ICalendarMeetingService _calendarMeetingService;
 
     public OperationsService(
         IOperationsRepository repository,
@@ -35,7 +39,9 @@ public sealed class OperationsService : IOperationsService
         IVectorStore vectorStore,
         IAiRuntimeSettingsResolver aiRuntimeSettingsResolver,
         IAiAgentRunLogger aiRunLogger,
-        IApplicationDocumentStorage applicationDocumentStorage)
+        IApplicationDocumentStorage applicationDocumentStorage,
+        IApplicationDocumentTextExtractor documentTextExtractor,
+        ICalendarMeetingService calendarMeetingService)
     {
         _repository = repository;
         _currentUser = currentUser;
@@ -50,6 +56,8 @@ public sealed class OperationsService : IOperationsService
         _aiRuntimeSettingsResolver = aiRuntimeSettingsResolver;
         _aiRunLogger = aiRunLogger;
         _applicationDocumentStorage = applicationDocumentStorage;
+        _documentTextExtractor = documentTextExtractor;
+        _calendarMeetingService = calendarMeetingService;
     }
 
     public async Task<Result<OperationsSnapshot>> GetSnapshotAsync(CancellationToken cancellationToken)
@@ -120,6 +128,24 @@ public sealed class OperationsService : IOperationsService
             query with { FromUtc = fromUtc, ToUtc = toUtc },
             cancellationToken);
         return Result<PmoDashboard>.Success(dashboard);
+    }
+
+    public async Task<Result<HiringManagerDashboard>> GetHiringManagerDashboardAsync(CancellationToken cancellationToken)
+    {
+        var roleCodes = await _repository.GetActorRoleCodesAsync(_currentUser.TenantId, _currentUser.UserId, cancellationToken);
+        if (!CanUseHiringManagerReview(roleCodes))
+        {
+            return Result<HiringManagerDashboard>.Failure(
+                "hiring_manager_dashboard.forbidden",
+                "Only Hiring Manager or Tenant Admin users can view Hiring Manager dashboard analytics.");
+        }
+
+        var dashboard = await _repository.GetHiringManagerDashboardAsync(
+            _currentUser.TenantId,
+            _currentUser.UserId,
+            roleCodes.Contains(AccessConstants.TenantAdminRoleCode, StringComparer.OrdinalIgnoreCase),
+            cancellationToken);
+        return Result<HiringManagerDashboard>.Success(dashboard);
     }
 
     public async Task<Result<OperationsJobRequestIntakeOptions>> GetIntakeOptionsAsync(CancellationToken cancellationToken)
@@ -223,6 +249,51 @@ public sealed class OperationsService : IOperationsService
             : Result<OperationsHistoricalApplicationDetail>.Success(detail);
     }
 
+    public async Task<Result<OperationsApplicationDocumentDownload>> DownloadRecruiterApplicationDocumentAsync(
+        Guid jobApplicationId,
+        Guid applicationDocumentId,
+        CancellationToken cancellationToken)
+    {
+        var roleCodes = await _repository.GetActorRoleCodesAsync(_currentUser.TenantId, _currentUser.UserId, cancellationToken);
+        if (!CanUseRecruiterSourcing(roleCodes))
+        {
+            return Result<OperationsApplicationDocumentDownload>.Failure(
+                "application_document.forbidden",
+                "Only Recruiter or Tenant Admin users can download application documents.");
+        }
+
+        var document = await _repository.GetRecruiterApplicationDocumentAsync(
+            _currentUser.TenantId,
+            jobApplicationId,
+            applicationDocumentId,
+            cancellationToken);
+        if (document is null)
+        {
+            return Result<OperationsApplicationDocumentDownload>.Failure(
+                "application_document.not_found",
+                "Application document was not found.");
+        }
+
+        var content = await _applicationDocumentStorage.ReadAsync(
+            document.StorageProvider,
+            document.StorageKey,
+            document.StorageContainer,
+            cancellationToken);
+        if (content is null || content.Length == 0)
+        {
+            return Result<OperationsApplicationDocumentDownload>.Failure(
+                "application_document.unavailable",
+                "Application document file is not available in storage.");
+        }
+
+        return Result<OperationsApplicationDocumentDownload>.Success(new OperationsApplicationDocumentDownload(
+            document.ApplicationDocumentId,
+            jobApplicationId,
+            SanitizeDownloadFileName(document.FileName, document.DocumentType),
+            string.IsNullOrWhiteSpace(document.ContentType) ? "application/octet-stream" : document.ContentType,
+            content));
+    }
+
     public async Task<Result<OperationsCandidateProfile>> GetCandidateProfileAsync(
         Guid candidateId,
         CancellationToken cancellationToken)
@@ -277,6 +348,30 @@ public sealed class OperationsService : IOperationsService
             : Result<PortalJobPostDetail>.Success(post);
     }
 
+    public async Task<Result<PortalInvitationContext>> GetPortalInvitationAsync(
+        Guid candidateInvitationId,
+        string token,
+        CancellationToken cancellationToken)
+    {
+        if (candidateInvitationId == Guid.Empty || string.IsNullOrWhiteSpace(token))
+        {
+            return Result<PortalInvitationContext>.Failure(
+                "portal_invitation.invalid",
+                "Invitation link is missing its tracking details.");
+        }
+
+        var invitation = await _repository.GetPortalInvitationAsync(
+            candidateInvitationId,
+            token.Trim(),
+            cancellationToken);
+
+        return invitation is null
+            ? Result<PortalInvitationContext>.Failure(
+                "portal_invitation.not_found",
+                "Invitation link was not found or is no longer valid.")
+            : Result<PortalInvitationContext>.Success(invitation);
+    }
+
     public async Task<Result<PortalJobApplicationResult>> ApplyToPortalJobPostAsync(
         Guid jobPostId,
         PortalApplyToJobPostInput input,
@@ -302,6 +397,36 @@ public sealed class OperationsService : IOperationsService
             return Result<PortalJobApplicationResult>.Failure(
                 "portal_application.notice_invalid",
                 "Notice period cannot be negative.");
+        }
+
+        if (input.InterviewAvailabilityStartDate.HasValue != input.InterviewAvailabilityEndDate.HasValue)
+        {
+            return Result<PortalJobApplicationResult>.Failure(
+                "portal_application.interview_availability_incomplete",
+                "Choose both interview availability dates.");
+        }
+
+        if (input.InterviewAvailabilityStartDate.HasValue &&
+            input.InterviewAvailabilityEndDate.HasValue &&
+            input.InterviewAvailabilityEndDate.Value < input.InterviewAvailabilityStartDate.Value)
+        {
+            return Result<PortalJobApplicationResult>.Failure(
+                "portal_application.interview_availability_invalid",
+                "Interview availability end date must be on or after the start date.");
+        }
+
+        if (input.CandidateInvitationId.HasValue != !string.IsNullOrWhiteSpace(input.InvitationToken))
+        {
+            return Result<PortalJobApplicationResult>.Failure(
+                "portal_application.invitation_incomplete",
+                "Invitation id and token must be submitted together.");
+        }
+
+        if (input.CandidateInvitationId == Guid.Empty)
+        {
+            return Result<PortalJobApplicationResult>.Failure(
+                "portal_application.invitation_invalid",
+                "Invitation id is invalid.");
         }
 
         var result = await _repository.ApplyToPortalJobPostAsync(
@@ -367,6 +492,7 @@ public sealed class OperationsService : IOperationsService
                 "Application was not found for the current candidate.");
         }
 
+        var extraction = _documentTextExtractor.Extract(fileName, content);
         var storedDocument = await _applicationDocumentStorage.SaveAsync(
             new StoreApplicationDocumentRequest(
                 _currentUser.TenantId,
@@ -388,8 +514,25 @@ public sealed class OperationsService : IOperationsService
                 storedDocument.StorageProvider,
                 storedDocument.StorageKey,
                 storedDocument.StorageContainer,
-                storedDocument.ContentHashSha256),
+                storedDocument.ContentHashSha256,
+                extraction.Status,
+                extraction.ExtractedText,
+                extraction.ExtractedTextHashSha256,
+                extraction.ParserVersion,
+                extraction.ExtractedAtUtc,
+                extraction.Error),
             cancellationToken);
+
+        if (document is not null)
+        {
+            await TryUpsertApplicationEvidenceVectorAsync(
+                _currentUser.TenantId,
+                jobApplicationId,
+                document.DocumentType,
+                document.FileName,
+                extraction,
+                cancellationToken);
+        }
 
         return document is null
             ? Result<PortalUploadApplicationDocumentResult>.Failure(
@@ -413,6 +556,274 @@ public sealed class OperationsService : IOperationsService
             _currentUser.UserId,
             cancellationToken);
         return Result<PortalMyApplications>.Success(applications);
+    }
+
+    public async Task<Result<PortalCandidateProfile>> GetPortalCandidateProfileAsync(CancellationToken cancellationToken)
+    {
+        var roleCodes = await _repository.GetActorRoleCodesAsync(_currentUser.TenantId, _currentUser.UserId, cancellationToken);
+        if (!CanUseCandidatePortal(roleCodes))
+        {
+            return Result<PortalCandidateProfile>.Failure(
+                "portal_profile.forbidden",
+                "Log in with a candidate account to manage your candidate profile.");
+        }
+
+        var profile = await _repository.GetPortalCandidateProfileAsync(
+            _currentUser.TenantId,
+            _currentUser.UserId,
+            cancellationToken);
+        return profile is null
+            ? Result<PortalCandidateProfile>.Failure(
+                "portal_profile.not_found",
+                "Candidate profile identity was not found.")
+            : Result<PortalCandidateProfile>.Success(profile);
+    }
+
+    public async Task<Result<PortalCandidateProfile>> UpdatePortalCandidateProfileAsync(
+        UpdatePortalCandidateProfileInput input,
+        CancellationToken cancellationToken)
+    {
+        var roleCodes = await _repository.GetActorRoleCodesAsync(_currentUser.TenantId, _currentUser.UserId, cancellationToken);
+        if (!CanUseCandidatePortal(roleCodes))
+        {
+            return Result<PortalCandidateProfile>.Failure(
+                "portal_profile.forbidden",
+                "Log in with a candidate account to manage your candidate profile.");
+        }
+
+        var validation = ValidatePortalCandidateProfileInput(input);
+        if (validation is not null)
+        {
+            return Result<PortalCandidateProfile>.Failure(validation.Value.Code, validation.Value.Message);
+        }
+
+        var normalized = NormalizePortalCandidateProfileInput(input);
+        var profile = await _repository.UpdatePortalCandidateProfileAsync(
+            _currentUser.TenantId,
+            _currentUser.UserId,
+            normalized,
+            cancellationToken);
+        if (profile is null)
+        {
+            return Result<PortalCandidateProfile>.Failure(
+                "portal_profile.not_saved",
+                "Candidate profile could not be saved.");
+        }
+
+        await TryUpsertCandidateProfileVectorAsync(_currentUser.TenantId, profile, cancellationToken);
+        return Result<PortalCandidateProfile>.Success(profile);
+    }
+
+    private async Task TryUpsertApplicationEvidenceVectorAsync(
+        Guid tenantId,
+        Guid jobApplicationId,
+        string documentType,
+        string fileName,
+        ApplicationDocumentTextExtractionResult extraction,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(extraction.ExtractedText))
+        {
+            return;
+        }
+
+        try
+        {
+            var settings = await _aiRuntimeSettingsResolver.GetCurrentAsync(cancellationToken);
+            var profileText = string.Join('\n', new[]
+            {
+                $"ApplicationId: {jobApplicationId}",
+                $"Evidence source: {documentType}",
+                $"Document: {fileName}",
+                $"Parser: {extraction.ParserVersion}",
+                $"Extracted text: {extraction.ExtractedText}"
+            });
+            var sourceHash = AiTextHasher.HashText(profileText);
+            var existingHash = await _vectorStore.GetActiveSourceTextHashAsync(
+                tenantId,
+                "JobApplication",
+                jobApplicationId,
+                "JobApplicationEvidenceProfile",
+                settings.EmbeddingModel,
+                cancellationToken);
+            if (string.Equals(existingHash, sourceHash, StringComparison.Ordinal))
+            {
+                return;
+            }
+
+            var embedding = await _embeddingProvider.GenerateEmbeddingAsync(profileText, cancellationToken);
+            if (embedding.Length != settings.EmbeddingDimensions)
+            {
+                return;
+            }
+
+            await _vectorStore.UpsertAsync(
+                new VectorRecord(
+                    tenantId,
+                    "JobApplication",
+                    jobApplicationId,
+                    "JobApplicationEvidenceProfile",
+                    sourceHash,
+                    settings.EmbeddingModel,
+                    settings.EmbeddingDimensions,
+                    embedding),
+                cancellationToken);
+        }
+        catch
+        {
+            // Document upload should not fail just because semantic indexing is temporarily unavailable.
+        }
+    }
+
+    private async Task TryUpsertManualCandidateCvEvidenceVectorAsync(
+        Guid tenantId,
+        Guid jobApplicationId,
+        ParsedCandidateCvEvidenceInput? evidence,
+        CancellationToken cancellationToken)
+    {
+        if (evidence is null || string.IsNullOrWhiteSpace(evidence.ExtractedText))
+        {
+            return;
+        }
+
+        var evidenceText = BuildParsedCvEvidenceText(evidence);
+        if (string.IsNullOrWhiteSpace(evidenceText))
+        {
+            return;
+        }
+
+        await TryUpsertApplicationEvidenceVectorAsync(
+            tenantId,
+            jobApplicationId,
+            "CV",
+            evidence.FileName,
+            new ApplicationDocumentTextExtractionResult(
+                "Extracted",
+                evidenceText,
+                AiTextHasher.HashText(evidenceText),
+                BuildCvParserVersion(evidence.Model),
+                evidence.ParsedAtUtc ?? DateTimeOffset.UtcNow,
+                null),
+            cancellationToken);
+    }
+
+    private async Task TryUpsertCandidateProfileVectorAsync(
+        Guid tenantId,
+        PortalCandidateProfile profile,
+        CancellationToken cancellationToken)
+    {
+        if (!profile.CandidateId.HasValue)
+        {
+            return;
+        }
+
+        var profileText = BuildCandidateProfileVectorText(profile);
+        if (string.IsNullOrWhiteSpace(profileText))
+        {
+            return;
+        }
+
+        try
+        {
+            var settings = await _aiRuntimeSettingsResolver.GetCurrentAsync(cancellationToken);
+            var sourceHash = AiTextHasher.HashText(profileText);
+            var existingHash = await _vectorStore.GetActiveSourceTextHashAsync(
+                tenantId,
+                "Candidate",
+                profile.CandidateId.Value,
+                "CandidateProfile",
+                settings.EmbeddingModel,
+                cancellationToken);
+            if (string.Equals(existingHash, sourceHash, StringComparison.Ordinal))
+            {
+                return;
+            }
+
+            var embedding = await _embeddingProvider.GenerateEmbeddingAsync(profileText, cancellationToken);
+            if (embedding.Length != settings.EmbeddingDimensions)
+            {
+                return;
+            }
+
+            await _vectorStore.UpsertAsync(
+                new VectorRecord(
+                    tenantId,
+                    "Candidate",
+                    profile.CandidateId.Value,
+                    "CandidateProfile",
+                    sourceHash,
+                    settings.EmbeddingModel,
+                    settings.EmbeddingDimensions,
+                    embedding),
+                cancellationToken);
+        }
+        catch
+        {
+            // Candidate profile saves must not fail because profile semantic indexing is temporarily unavailable.
+        }
+    }
+
+    private static string BuildCandidateProfileVectorText(PortalCandidateProfile profile)
+    {
+        var lines = new List<string>
+        {
+            $"CandidateId: {profile.CandidateId}",
+            $"Name: {profile.DisplayName}",
+            $"Email: {profile.Email}"
+        };
+
+        AddProfileLine(lines, "Phone", profile.Phone);
+        AddProfileLine(lines, "LinkedIn", profile.LinkedInUrl);
+        AddProfileLine(lines, "Current title", profile.CurrentDesignation);
+        AddProfileLine(lines, "Current company", profile.CurrentCompany);
+        AddProfileLine(lines, "Experience years", profile.ExperienceYears?.ToString("0.#"));
+        AddProfileLine(lines, "Notice period days", profile.NoticePeriodDays?.ToString());
+        AddProfileLine(lines, "Expected salary", FormatSalary(profile.ExpectedSalaryAmount, profile.ExpectedSalaryCurrency));
+
+        if (profile.PrimaryEducation is not null)
+        {
+            AddProfileLine(lines, "Primary institute", profile.PrimaryEducation.UniversityName);
+            AddProfileLine(lines, "Degree", profile.PrimaryEducation.DegreeName);
+            AddProfileLine(lines, "Graduation year", profile.PrimaryEducation.GraduationYear?.ToString());
+        }
+
+        if (profile.CurrentWorkHistory is not null)
+        {
+            AddProfileLine(lines, "Current work company", profile.CurrentWorkHistory.CompanyName);
+            AddProfileLine(lines, "Current work title", profile.CurrentWorkHistory.Title);
+        }
+
+        if (profile.Skills.Count > 0)
+        {
+            lines.Add("Skills:");
+            foreach (var skill in profile.Skills.OrderByDescending(skill => skill.IsPrimary).ThenBy(skill => skill.SkillName))
+            {
+                var years = skill.YearsExperience.HasValue ? $" ({skill.YearsExperience:0.#} years)" : string.Empty;
+                lines.Add($"- {skill.SkillName}: {skill.SkillLevel}{years}");
+            }
+        }
+
+        return string.Join('\n', lines.Where(line => !string.IsNullOrWhiteSpace(line)));
+    }
+
+    private static void AddProfileLine(List<string> lines, string label, string? value)
+    {
+        if (!string.IsNullOrWhiteSpace(value))
+        {
+            lines.Add($"{label}: {value.Trim()}");
+        }
+    }
+
+    private static string? FormatSalary(decimal? amount, string? currency)
+    {
+        if (!amount.HasValue)
+        {
+            return null;
+        }
+
+        return string.IsNullOrWhiteSpace(currency)
+            ? amount.Value.ToString("0.##")
+            : $"{amount.Value:0.##} {currency.Trim().ToUpperInvariant()}";
     }
 
     public async Task<Result<CreateOperationsJobRequestResult>> CreateJobRequestAsync(
@@ -990,18 +1401,28 @@ public sealed class OperationsService : IOperationsService
             return Result<AddManualCandidateResult>.Failure(validationError.Value.Code, validationError.Value.Message);
         }
 
+        var normalizedInput = NormalizeManualCandidateInput(input);
         var result = await _repository.AddManualCandidateToJobPostAsync(
             _currentUser.TenantId,
             _currentUser.UserId,
             jobPostId,
-            NormalizeManualCandidateInput(input),
+            normalizedInput,
             cancellationToken);
 
-        return result is null
-            ? Result<AddManualCandidateResult>.Failure(
+        if (result is null)
+        {
+            return Result<AddManualCandidateResult>.Failure(
                 "manual_candidate.not_found",
-                "Published job post or claimed recruiter sourcing work was not found.")
-            : Result<AddManualCandidateResult>.Success(result);
+                "Published job post or claimed recruiter sourcing work was not found.");
+        }
+
+        await TryUpsertManualCandidateCvEvidenceVectorAsync(
+            _currentUser.TenantId,
+            result.JobApplicationId,
+            normalizedInput.ParsedCvEvidence,
+            cancellationToken);
+
+        return Result<AddManualCandidateResult>.Success(result);
     }
 
     public async Task<Result<ParseCandidateCvResult>> ParseCandidateCvAsync(
@@ -1041,6 +1462,10 @@ public sealed class OperationsService : IOperationsService
                 cancellationToken);
 
             return Result<ParseCandidateCvResult>.Success(new ParseCandidateCvResult(
+                fileName.Trim(),
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                content.LongLength,
+                HashBytesSha256(content),
                 parsed.AgentRunId,
                 parsed.Model,
                 parsed.GeneratedAtUtc,
@@ -1136,8 +1561,64 @@ public sealed class OperationsService : IOperationsService
         var normalized = input with
         {
             MeetingLink = string.IsNullOrWhiteSpace(input.MeetingLink) ? null : input.MeetingLink.Trim(),
-            LocationText = string.IsNullOrWhiteSpace(input.LocationText) ? null : input.LocationText.Trim()
+            LocationText = string.IsNullOrWhiteSpace(input.LocationText) ? null : input.LocationText.Trim(),
+            CalendarProvider = string.IsNullOrWhiteSpace(input.CalendarProvider) ? null : input.CalendarProvider.Trim(),
+            CalendarEventId = string.IsNullOrWhiteSpace(input.CalendarEventId) ? null : input.CalendarEventId.Trim(),
+            CalendarEventHtmlLink = string.IsNullOrWhiteSpace(input.CalendarEventHtmlLink) ? null : input.CalendarEventHtmlLink.Trim()
         };
+
+        var validation = await _repository.ValidateCandidateInterviewScheduleAsync(
+            _currentUser.TenantId,
+            _currentUser.UserId,
+            jobApplicationId,
+            normalized,
+            cancellationToken);
+        if (validation.Status != OperationsScheduleCandidateInterviewValidationStatus.Ready)
+        {
+            return ToScheduleCandidateInterviewValidationFailure(validation.Status);
+        }
+
+        if (string.IsNullOrWhiteSpace(normalized.CalendarEventId))
+        {
+            var scheduleContext = await _repository.GetInterviewScheduleContextAsync(
+                _currentUser.TenantId,
+                _currentUser.UserId,
+                jobApplicationId,
+                normalized,
+                cancellationToken);
+            if (scheduleContext is null)
+            {
+                return Result<ScheduleCandidateInterviewResult>.Failure(
+                    "candidate_interview.not_found",
+                    "Application, active round, default interviewer, or claimed recruiter sourcing work was not found.");
+            }
+
+            var calendarRequest = InterviewCalendarMeetingFactory.Build(
+                scheduleContext,
+                normalized.StartsAtUtc,
+                normalized.LocationText,
+                Guid.NewGuid().ToString("N"),
+                createOnlineMeeting: string.IsNullOrWhiteSpace(normalized.MeetingLink),
+                existingMeetingLink: normalized.MeetingLink);
+            var calendarResult = await _calendarMeetingService.CreateMeetingAsync(calendarRequest, cancellationToken);
+            if (calendarResult.Failed)
+            {
+                return Result<ScheduleCandidateInterviewResult>.Failure(
+                    calendarResult.Error.Code,
+                    calendarResult.Error.Message);
+            }
+
+            if (calendarResult.Value.Created)
+            {
+                normalized = normalized with
+                {
+                    MeetingLink = normalized.MeetingLink ?? calendarResult.Value.MeetingLink,
+                    CalendarProvider = calendarResult.Value.Provider,
+                    CalendarEventId = calendarResult.Value.EventId,
+                    CalendarEventHtmlLink = calendarResult.Value.EventHtmlLink
+                };
+            }
+        }
 
         var result = await _repository.ScheduleCandidateInterviewAsync(
             _currentUser.TenantId,
@@ -1146,11 +1627,16 @@ public sealed class OperationsService : IOperationsService
             normalized,
             cancellationToken);
 
-        return result is null
-            ? Result<ScheduleCandidateInterviewResult>.Failure(
+        if (result is null)
+        {
+            return Result<ScheduleCandidateInterviewResult>.Failure(
                 "candidate_interview.not_found",
-                "Application, active round, default interviewer, or claimed recruiter sourcing work was not found.")
-            : Result<ScheduleCandidateInterviewResult>.Success(result);
+                "Application, active round, default interviewer, or claimed recruiter sourcing work was not found.");
+        }
+
+        await PublishNotificationsAsync(result.NotificationDispatches, cancellationToken);
+
+        return Result<ScheduleCandidateInterviewResult>.Success(result.Result);
     }
 
     public async Task<Result<OperationsInterviewTaskList>> GetMyInterviewTasksAsync(CancellationToken cancellationToken)
@@ -1201,11 +1687,16 @@ public sealed class OperationsService : IOperationsService
             validation.NormalizedInput,
             cancellationToken);
 
-        return result is null
-            ? Result<SubmitInterviewFeedbackResult>.Failure(
+        if (!result.Succeeded || result.Result is null)
+        {
+            return Result<SubmitInterviewFeedbackResult>.Failure(
                 "interview_feedback.not_found",
-                "Interview was not found, is not assigned to you, or is already completed.")
-            : Result<SubmitInterviewFeedbackResult>.Success(result);
+                "Interview was not found, is not assigned to you, is assigned to an active interviewer, or is already completed.");
+        }
+
+        await PublishNotificationsAsync(result.NotificationDispatches, cancellationToken);
+
+        return Result<SubmitInterviewFeedbackResult>.Success(result.Result);
     }
 
     public async Task<Result<ForwardToHiringManagerResult>> ForwardToHiringManagerAsync(
@@ -1276,6 +1767,38 @@ public sealed class OperationsService : IOperationsService
         return detail is null
             ? Result<HiringReviewDetail>.Failure("hiring_review.not_found", "Hiring Manager Review was not found.")
             : Result<HiringReviewDetail>.Success(detail);
+    }
+
+    public async Task<Result<ReportingManagerOptionList>> SearchReportingManagerOptionsAsync(
+        Guid jobRequestId,
+        string? search,
+        int skip,
+        int take,
+        CancellationToken cancellationToken)
+    {
+        var roleCodes = await _repository.GetActorRoleCodesAsync(_currentUser.TenantId, _currentUser.UserId, cancellationToken);
+        if (!CanUseHiringManagerReview(roleCodes))
+        {
+            return Result<ReportingManagerOptionList>.Failure(
+                "reporting_manager_options.forbidden",
+                "Only Hiring Manager or Tenant Admin users can search reporting managers.");
+        }
+
+        var normalizedSkip = Math.Max(0, skip);
+        var normalizedTake = Math.Clamp(take <= 0 ? 20 : take, 1, 50);
+        var options = await _repository.SearchReportingManagerOptionsAsync(
+            _currentUser.TenantId,
+            _currentUser.UserId,
+            roleCodes.Contains(AccessConstants.TenantAdminRoleCode),
+            jobRequestId,
+            string.IsNullOrWhiteSpace(search) ? null : search.Trim(),
+            normalizedSkip,
+            normalizedTake,
+            cancellationToken);
+
+        return options is null
+            ? Result<ReportingManagerOptionList>.Failure("reporting_manager_options.not_found", "Job Request was not found.")
+            : Result<ReportingManagerOptionList>.Success(options);
     }
 
     public async Task<Result<OfferLetterDetails>> GenerateOfferLetterAsync(
@@ -1654,6 +2177,24 @@ public sealed class OperationsService : IOperationsService
         return Result.Success();
     }
 
+    private static string SanitizeDownloadFileName(string fileName, string documentType)
+    {
+        var candidate = Path.GetFileName(fileName);
+        if (string.IsNullOrWhiteSpace(candidate))
+        {
+            var label = string.IsNullOrWhiteSpace(documentType) ? "Application document" : documentType.Trim();
+            candidate = $"{label}.docx";
+        }
+
+        var invalidCharacters = Path.GetInvalidFileNameChars().ToHashSet();
+        var sanitized = new string(candidate
+            .Where(character => !invalidCharacters.Contains(character))
+            .ToArray())
+            .Trim();
+
+        return string.IsNullOrWhiteSpace(sanitized) ? "Application document.docx" : sanitized;
+    }
+
     private static bool CanCreateJobRequests(IReadOnlySet<string> roleCodes)
     {
         return roleCodes.Contains("Presales") ||
@@ -1751,6 +2292,116 @@ public sealed class OperationsService : IOperationsService
         };
     }
 
+    private static (string Code, string Message)? ValidatePortalCandidateProfileInput(UpdatePortalCandidateProfileInput input)
+    {
+        if (string.IsNullOrWhiteSpace(input.DisplayName))
+        {
+            return ("portal_profile.name_required", "Display name is required.");
+        }
+
+        if (input.ExperienceYears.HasValue && input.ExperienceYears.Value < 0)
+        {
+            return ("portal_profile.experience_invalid", "Experience cannot be negative.");
+        }
+
+        if (input.ExpectedSalaryAmount.HasValue && input.ExpectedSalaryAmount.Value < 0)
+        {
+            return ("portal_profile.salary_invalid", "Expected salary cannot be negative.");
+        }
+
+        if (!string.IsNullOrWhiteSpace(input.ExpectedSalaryCurrency) &&
+            (input.ExpectedSalaryCurrency.Trim().Length != 3 ||
+             !input.ExpectedSalaryCurrency.Trim().All(char.IsLetter)))
+        {
+            return ("portal_profile.currency_invalid", "Expected salary currency must be a 3-letter code.");
+        }
+
+        if (input.NoticePeriodDays.HasValue && input.NoticePeriodDays.Value < 0)
+        {
+            return ("portal_profile.notice_invalid", "Notice period cannot be negative.");
+        }
+
+        if (input.PrimaryEducation?.GraduationYear is < 1950 or > 2100)
+        {
+            return ("portal_profile.graduation_year_invalid", "Graduation year must be between 1950 and 2100.");
+        }
+
+        foreach (var skill in input.Skills ?? Array.Empty<UpdatePortalCandidateProfileSkillInput>())
+        {
+            if (skill.SkillId == Guid.Empty)
+            {
+                return ("portal_profile.skill_invalid", "Selected skill is invalid.");
+            }
+
+            if (skill.YearsExperience.HasValue && skill.YearsExperience.Value < 0)
+            {
+                return ("portal_profile.skill_experience_invalid", "Skill experience cannot be negative.");
+            }
+        }
+
+        return null;
+    }
+
+    private static UpdatePortalCandidateProfileInput NormalizePortalCandidateProfileInput(UpdatePortalCandidateProfileInput input)
+    {
+        return input with
+        {
+            DisplayName = input.DisplayName.Trim(),
+            Phone = NullIfBlank(input.Phone),
+            LinkedInUrl = NullIfBlank(input.LinkedInUrl),
+            CurrentDesignation = NullIfBlank(input.CurrentDesignation),
+            CurrentCompany = NullIfBlank(input.CurrentCompany),
+            ExpectedSalaryCurrency = NullIfBlank(input.ExpectedSalaryCurrency)?.ToUpperInvariant(),
+            PrimaryEducation = NormalizePortalCandidateProfileEducation(input.PrimaryEducation),
+            CurrentWorkHistory = NormalizePortalCandidateProfileWorkHistory(input.CurrentWorkHistory),
+            Skills = (input.Skills ?? Array.Empty<UpdatePortalCandidateProfileSkillInput>())
+                .Where(skill => skill.SkillId != Guid.Empty)
+                .GroupBy(skill => skill.SkillId)
+                .Select(group => group.First())
+                .Select(skill => skill with
+                {
+                    SkillLevel = NormalizeSkillLevel(skill.SkillLevel)
+                })
+                .ToArray()
+        };
+    }
+
+    private static PortalCandidateProfileEducation? NormalizePortalCandidateProfileEducation(
+        PortalCandidateProfileEducation? education)
+    {
+        return education is null
+            ? null
+            : education with
+            {
+                UniversityName = NullIfBlank(education.UniversityName),
+                DegreeName = NullIfBlank(education.DegreeName)
+            };
+    }
+
+    private static PortalCandidateProfileWorkHistory? NormalizePortalCandidateProfileWorkHistory(
+        PortalCandidateProfileWorkHistory? workHistory)
+    {
+        return workHistory is null
+            ? null
+            : workHistory with
+            {
+                CompanyName = NullIfBlank(workHistory.CompanyName),
+                Title = NullIfBlank(workHistory.Title)
+            };
+    }
+
+    private static string NormalizeSkillLevel(string? skillLevel)
+    {
+        return string.IsNullOrWhiteSpace(skillLevel)
+            ? "Intermediate"
+            : TrimToLength(skillLevel.Trim(), 40);
+    }
+
+    private static string? NullIfBlank(string? value)
+    {
+        return string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+    }
+
     private static (string Code, string Message)? ValidateManualCandidateInput(AddManualCandidateInput input)
     {
         if (input.ExistingCandidateId is null && string.IsNullOrWhiteSpace(input.DisplayName))
@@ -1778,6 +2429,29 @@ public sealed class OperationsService : IOperationsService
             return ("manual_candidate.notice_invalid", "Notice period cannot be negative.");
         }
 
+        if (input.ParsedCvEvidence is not null)
+        {
+            if (string.IsNullOrWhiteSpace(input.ParsedCvEvidence.FileName))
+            {
+                return ("manual_candidate.cv_file_required", "Parsed CV file name is required.");
+            }
+
+            if (input.ParsedCvEvidence.SizeBytes <= 0)
+            {
+                return ("manual_candidate.cv_size_invalid", "Parsed CV size is invalid.");
+            }
+
+            if (!IsSha256(input.ParsedCvEvidence.ContentHashSha256))
+            {
+                return ("manual_candidate.cv_hash_invalid", "Parsed CV content hash is invalid.");
+            }
+
+            if (string.IsNullOrWhiteSpace(input.ParsedCvEvidence.ExtractedText))
+            {
+                return ("manual_candidate.cv_text_required", "Parsed CV text is required.");
+            }
+        }
+
         return null;
     }
 
@@ -1798,7 +2472,100 @@ public sealed class OperationsService : IOperationsService
             RecruiterNotes = string.IsNullOrWhiteSpace(input.RecruiterNotes) ? null : input.RecruiterNotes.Trim(),
             UniversityName = string.IsNullOrWhiteSpace(input.UniversityName) ? null : input.UniversityName.Trim(),
             DegreeName = string.IsNullOrWhiteSpace(input.DegreeName) ? null : input.DegreeName.Trim(),
-            InvitationMessage = string.IsNullOrWhiteSpace(input.InvitationMessage) ? null : input.InvitationMessage.Trim()
+            InvitationMessage = string.IsNullOrWhiteSpace(input.InvitationMessage) ? null : input.InvitationMessage.Trim(),
+            ParsedCvEvidence = NormalizeParsedCvEvidence(input.ParsedCvEvidence)
+        };
+    }
+
+    private static ParsedCandidateCvEvidenceInput? NormalizeParsedCvEvidence(ParsedCandidateCvEvidenceInput? evidence)
+    {
+        if (evidence is null || string.IsNullOrWhiteSpace(evidence.ExtractedText))
+        {
+            return null;
+        }
+
+        return evidence with
+        {
+            FileName = string.IsNullOrWhiteSpace(evidence.FileName) ? "Parsed CV.docx" : evidence.FileName.Trim(),
+            ContentType = string.IsNullOrWhiteSpace(evidence.ContentType)
+                ? "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                : evidence.ContentType.Trim(),
+            ContentHashSha256 = evidence.ContentHashSha256.Trim().ToLowerInvariant(),
+            ExtractedText = TrimToLength(evidence.ExtractedText.Trim(), 40_000),
+            Summary = string.IsNullOrWhiteSpace(evidence.Summary) ? null : TrimToLength(evidence.Summary.Trim(), 2_000),
+            Model = string.IsNullOrWhiteSpace(evidence.Model) ? null : evidence.Model.Trim(),
+            ParsedAtUtc = evidence.ParsedAtUtc?.ToUniversalTime()
+        };
+    }
+
+    private static string BuildParsedCvEvidenceText(ParsedCandidateCvEvidenceInput evidence)
+    {
+        var parts = new List<string>
+        {
+            $"CV file: {evidence.FileName}"
+        };
+
+        if (!string.IsNullOrWhiteSpace(evidence.Model))
+        {
+            parts.Add($"Parser model: {evidence.Model}");
+        }
+
+        if (evidence.AgentRunId.HasValue)
+        {
+            parts.Add($"Parser run: {evidence.AgentRunId.Value:D}");
+        }
+
+        if (!string.IsNullOrWhiteSpace(evidence.Summary))
+        {
+            parts.Add($"CV Parser Agent summary: {evidence.Summary}");
+        }
+
+        parts.Add($"Extracted CV text: {evidence.ExtractedText}");
+        return string.Join('\n', parts);
+    }
+
+    private static string BuildCvParserVersion(string? model)
+    {
+        return string.IsNullOrWhiteSpace(model)
+            ? "cv-parser-agent-v1"
+            : TrimToLength($"cv-parser-agent:{model.Trim()}", 64);
+    }
+
+    private static string HashBytesSha256(byte[] content)
+    {
+        return Convert.ToHexString(SHA256.HashData(content)).ToLowerInvariant();
+    }
+
+    private static bool IsSha256(string? value)
+    {
+        return value is { Length: 64 } && value.All(Uri.IsHexDigit);
+    }
+
+    private static string TrimToLength(string value, int maxLength)
+    {
+        return value.Length <= maxLength ? value : value[..maxLength];
+    }
+
+    private static Result<ScheduleCandidateInterviewResult> ToScheduleCandidateInterviewValidationFailure(
+        OperationsScheduleCandidateInterviewValidationStatus status)
+    {
+        return status switch
+        {
+            OperationsScheduleCandidateInterviewValidationStatus.PriorRoundsPending =>
+                Result<ScheduleCandidateInterviewResult>.Failure(
+                    "candidate_interview.prior_rounds_pending",
+                    "Prior interview rounds must be completed or skipped before scheduling this round."),
+            OperationsScheduleCandidateInterviewValidationStatus.RoundAlreadyScheduled =>
+                Result<ScheduleCandidateInterviewResult>.Failure(
+                    "candidate_interview.round_already_scheduled",
+                    "This interview round is already scheduled, completed, or skipped for the applicant."),
+            OperationsScheduleCandidateInterviewValidationStatus.MissingInterviewer =>
+                Result<ScheduleCandidateInterviewResult>.Failure(
+                    "candidate_interview.interviewer_required",
+                    "The selected round needs an active default interviewer before it can be scheduled."),
+            _ => Result<ScheduleCandidateInterviewResult>.Failure(
+                "candidate_interview.not_found",
+                "Application, active round, or claimed recruiter sourcing work was not found.")
         };
     }
 
@@ -1911,6 +2678,13 @@ public sealed class OperationsService : IOperationsService
     {
         foreach (var dispatch in dispatches)
         {
+            var metadata = string.IsNullOrWhiteSpace(dispatch.EventCode) || dispatch.Metadata.ContainsKey("eventCode")
+                ? dispatch.Metadata
+                : new Dictionary<string, string>(dispatch.Metadata)
+                {
+                    ["eventCode"] = dispatch.EventCode
+                };
+
             var notification = new RealtimeNotificationMessage(
                 Guid.NewGuid(),
                 _currentUser.TenantId,
@@ -1922,7 +2696,7 @@ public sealed class OperationsService : IOperationsService
                 dispatch.EntityType,
                 dispatch.EntityId.ToString("D"),
                 DateTimeOffset.UtcNow,
-                dispatch.Metadata);
+                metadata);
 
             await _notificationPublisher.PublishToUserAsync(
                 _currentUser.TenantId,

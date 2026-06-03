@@ -31,18 +31,25 @@ BEGIN
     (
         TenantId UNIQUEIDENTIFIER NOT NULL CONSTRAINT PK_TenantRecruitmentSettings PRIMARY KEY,
         CareerDisplayName NVARCHAR(200) NOT NULL,
+        CompanyAddress NVARCHAR(500) NULL,
+        CompanyCity NVARCHAR(120) NULL,
+        CompanyCountry NVARCHAR(120) NULL,
+        OfficialEmail NVARCHAR(320) NULL,
+        OfficialPhone NVARCHAR(50) NULL,
         PrimaryColorHex NVARCHAR(20) NOT NULL,
         CandidateLoginRequired BIT NOT NULL CONSTRAINT DF_TenantRecruitmentSettings_CandidateLoginRequired DEFAULT (1),
         CandidateCvFormat NVARCHAR(20) NOT NULL CONSTRAINT DF_TenantRecruitmentSettings_CandidateCvFormat DEFAULT N'DOCX',
         PublicJobsEnabled BIT NOT NULL CONSTRAINT DF_TenantRecruitmentSettings_PublicJobsEnabled DEFAULT (1),
         InviteExpiryDays INT NOT NULL CONSTRAINT DF_TenantRecruitmentSettings_InviteExpiryDays DEFAULT (7),
         ReapplyCooldownDays INT NOT NULL CONSTRAINT DF_TenantRecruitmentSettings_ReapplyCooldownDays DEFAULT (90),
+        NotificationEmailProvider NVARCHAR(40) NOT NULL CONSTRAINT DF_TenantRecruitmentSettings_NotificationEmailProvider DEFAULT N'Resend',
         CreatedAtUtc DATETIME2(3) NOT NULL CONSTRAINT DF_TenantRecruitmentSettings_CreatedAtUtc DEFAULT SYSUTCDATETIME(),
         UpdatedAtUtc DATETIME2(3) NOT NULL CONSTRAINT DF_TenantRecruitmentSettings_UpdatedAtUtc DEFAULT SYSUTCDATETIME(),
         CONSTRAINT FK_TenantRecruitmentSettings_Tenants FOREIGN KEY (TenantId) REFERENCES dbo.Tenants (TenantId),
         CONSTRAINT CK_TenantRecruitmentSettings_CandidateCvFormat CHECK (CandidateCvFormat = N'DOCX'),
         CONSTRAINT CK_TenantRecruitmentSettings_InviteExpiryDays CHECK (InviteExpiryDays BETWEEN 1 AND 30),
-        CONSTRAINT CK_TenantRecruitmentSettings_ReapplyCooldownDays CHECK (ReapplyCooldownDays BETWEEN 1 AND 365)
+        CONSTRAINT CK_TenantRecruitmentSettings_ReapplyCooldownDays CHECK (ReapplyCooldownDays BETWEEN 1 AND 365),
+        CONSTRAINT CK_TenantRecruitmentSettings_NotificationEmailProvider CHECK (NotificationEmailProvider IN (N'Resend', N'MicrosoftGraph'))
     );
 END;
 GO
