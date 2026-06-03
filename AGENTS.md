@@ -70,11 +70,13 @@ Rules:
 - Do not mix schema, seed, and stored procedure changes in the same script file.
 - Update `knowledge-base/database-schema.md` for table/relationship changes.
 
-Run the database runner after SQL changes:
+Available database runner command after SQL changes:
 
 ```powershell
 dotnet run --project src/TalentPilot.Database -- --connection "<connection-string>"
 ```
+
+Do not run this automatically after every SQL edit unless explicitly requested, needed to resolve a migration uncertainty, or required for a high-risk change. Report skipped database validation when applicable.
 
 ## Working With Frontend Agents
 
@@ -126,20 +128,20 @@ Do not change Angular files from this repo unless explicitly assigned cross-repo
 
 ## Validation
 
-Run:
+Available validation command:
 
 ```powershell
 dotnet test
 ```
 
-If SQL changed, also run the database script runner and document the connection target generically without exposing secrets.
+Do not run this automatically after every backend change. The user will run broad validation manually later unless they explicitly ask an agent to run it. Run focused or full validation only when explicitly requested, when the change is high-risk, or when needed to resolve a compile/type uncertainty. If SQL changed, the database script runner is also a manual/requested validation step unless the user asks for it.
 
 ## Finish Checklist
 
 - Branch is not `main`.
 - Branch belongs to the current contributor/session.
-- `dotnet test` passes.
-- SQL runner executed if scripts changed, or the reason it was not run is documented.
+- Validation was run if explicitly requested or needed; otherwise skipped validation is reported.
+- SQL runner executed if requested/needed for scripts changed, or skipped validation is reported.
 - API/schema docs updated.
 - Contributor log updated in `contributors/<contributor-name>/README.md`.
 - Frontend contract impact is documented for frontend agents.

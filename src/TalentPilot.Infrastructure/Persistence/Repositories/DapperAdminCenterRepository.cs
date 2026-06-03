@@ -34,6 +34,10 @@ public sealed class DapperAdminCenterRepository :
     IAdminHiringPipelinesRepository,
     IRealtimeNotificationRepository
 {
+    private const string NotificationWorkerName = "notification-outbox-email";
+    private const int NotificationWorkerPollIntervalSeconds = 30;
+    private const int NotificationWorkerStaleAfterSeconds = 90;
+
     private readonly ISqlConnectionFactory _connectionFactory;
 
     public DapperAdminCenterRepository(ISqlConnectionFactory connectionFactory)
@@ -2760,6 +2764,11 @@ public sealed class DapperAdminCenterRepository :
             SELECT COUNT(1)
             FROM dbo.NotificationOutbox
             WHERE TenantId = @TenantId
+              AND Status = N'Sent';
+
+            SELECT COUNT(1)
+            FROM dbo.NotificationOutbox
+            WHERE TenantId = @TenantId
               AND Status = N'Failed';
             """;
 
@@ -2773,6 +2782,7 @@ public sealed class DapperAdminCenterRepository :
         var activeEventCount = await grid.ReadSingleAsync<int>();
         var editableTemplateCount = await grid.ReadSingleAsync<int>();
         var pendingOutboxCount = await grid.ReadSingleAsync<int>();
+        var sentOutboxCount = await grid.ReadSingleAsync<int>();
         var failedOutboxCount = await grid.ReadSingleAsync<int>();
 
         var items = rows
@@ -2782,7 +2792,7 @@ public sealed class DapperAdminCenterRepository :
             .ToArray();
 
         return new AdminNotificationEventsResponse(
-            new AdminNotificationEventsSummary(activeEventCount, editableTemplateCount, pendingOutboxCount, failedOutboxCount),
+            new AdminNotificationEventsSummary(activeEventCount, editableTemplateCount, pendingOutboxCount, sentOutboxCount, failedOutboxCount),
             items,
             query.Page,
             query.PageSize,
@@ -2898,6 +2908,11 @@ public sealed class DapperAdminCenterRepository :
             SELECT COUNT(1)
             FROM dbo.NotificationOutbox
             WHERE TenantId = @TenantId
+              AND Status = N'Sent';
+
+            SELECT COUNT(1)
+            FROM dbo.NotificationOutbox
+            WHERE TenantId = @TenantId
               AND Status = N'Failed';
             """;
 
@@ -2914,6 +2929,7 @@ public sealed class DapperAdminCenterRepository :
         var activeEventCount = await grid.ReadSingleAsync<int>();
         var editableTemplateCount = await grid.ReadSingleAsync<int>();
         var pendingOutboxCount = await grid.ReadSingleAsync<int>();
+        var sentOutboxCount = await grid.ReadSingleAsync<int>();
         var failedOutboxCount = await grid.ReadSingleAsync<int>();
 
         var items = rows
@@ -2925,9 +2941,144 @@ public sealed class DapperAdminCenterRepository :
             activeEventCount,
             editableTemplateCount,
             pendingOutboxCount,
+            sentOutboxCount,
             failedOutboxCount);
 
         return new AdminNotificationTemplatesResponse(summary, items, query.Page, query.PageSize, totalCount);
+    }
+
+    public async Task<AdminNotificationOutboxResponse> ListOutboxAsync(
+        Guid tenantId,
+        AdminNotificationOutboxQuery query,
+        CancellationToken cancellationToken)
+    {
+        const string sql = """
+            SELECT COUNT(1)
+            FROM dbo.NotificationOutbox AS o
+            INNER JOIN dbo.NotificationEvents AS e ON e.NotificationEventId = o.NotificationEventId
+            LEFT JOIN dbo.NotificationTemplates AS t ON t.NotificationTemplateId = o.NotificationTemplateId
+            LEFT JOIN dbo.AppUsers AS recipient ON recipient.UserId = o.RecipientUserId
+            WHERE o.TenantId = @TenantId
+              AND o.Channel = N'Email'
+              AND (@Status IS NULL OR o.Status = @Status)
+              AND (
+                    @Search IS NULL
+                    OR o.RecipientEmail LIKE @SearchLike
+                    OR recipient.DisplayName LIKE @SearchLike
+                    OR e.EventCode LIKE @SearchLike
+                    OR e.Name LIKE @SearchLike
+                    OR JSON_VALUE(o.PayloadJson, '$.subject') LIKE @SearchLike
+                    OR o.PayloadJson LIKE @SearchLike
+                  );
+
+            SELECT
+                o.NotificationOutboxId AS OutboxId,
+                e.EventCode,
+                e.Name AS EventName,
+                COALESCE(t.Name, N'Application-composed email') AS TemplateName,
+                N'Talent Pilot workflow' AS SenderDisplayName,
+                recipient.DisplayName AS RecipientDisplayName,
+                COALESCE(o.RecipientEmail, recipient.Email) AS RecipientEmail,
+                o.Channel,
+                o.Status,
+                o.AttemptCount,
+                o.AvailableAtUtc,
+                o.CreatedAtUtc,
+                o.UpdatedAtUtc,
+                o.ProcessedAtUtc,
+                o.LastError,
+                COALESCE(JSON_VALUE(o.PayloadJson, '$.subject'), N'(No subject)') AS Subject,
+                COALESCE(JSON_VALUE(o.PayloadJson, '$.body'), N'') AS Body,
+                JSON_VALUE(o.PayloadJson, '$.entityType') AS EntityType,
+                JSON_VALUE(o.PayloadJson, '$.entityId') AS EntityId
+            FROM dbo.NotificationOutbox AS o
+            INNER JOIN dbo.NotificationEvents AS e ON e.NotificationEventId = o.NotificationEventId
+            LEFT JOIN dbo.NotificationTemplates AS t ON t.NotificationTemplateId = o.NotificationTemplateId
+            LEFT JOIN dbo.AppUsers AS recipient ON recipient.UserId = o.RecipientUserId
+            WHERE o.TenantId = @TenantId
+              AND o.Channel = N'Email'
+              AND (@Status IS NULL OR o.Status = @Status)
+              AND (
+                    @Search IS NULL
+                    OR o.RecipientEmail LIKE @SearchLike
+                    OR recipient.DisplayName LIKE @SearchLike
+                    OR e.EventCode LIKE @SearchLike
+                    OR e.Name LIKE @SearchLike
+                    OR JSON_VALUE(o.PayloadJson, '$.subject') LIKE @SearchLike
+                    OR o.PayloadJson LIKE @SearchLike
+                  )
+            ORDER BY o.CreatedAtUtc DESC
+            OFFSET @Offset ROWS FETCH NEXT @PageSize ROWS ONLY;
+            """;
+
+        var parameters = new
+        {
+            TenantId = tenantId,
+            Status = EmptyToNull(query.Status),
+            Search = EmptyToNull(query.Search),
+            SearchLike = Like(query.Search),
+            Offset = (Math.Max(1, query.Page) - 1) * query.PageSize,
+            query.PageSize
+        };
+
+        await using var connection = _connectionFactory.CreateConnection();
+        int totalCount;
+        AdminNotificationOutboxItem[] items;
+        using (var grid = await connection.QueryMultipleAsync(new CommandDefinition(
+            sql,
+            parameters,
+            cancellationToken: cancellationToken)))
+        {
+            totalCount = await grid.ReadSingleAsync<int>();
+            items = (await grid.ReadAsync<NotificationOutboxRow>())
+                .Select(ToNotificationOutboxItem)
+                .ToArray();
+        }
+
+        var workerStatus = await ReadNotificationWorkerStatusAsync(connection, tenantId, cancellationToken);
+        return new AdminNotificationOutboxResponse(workerStatus, items, query.Page, query.PageSize, totalCount);
+    }
+
+    public async Task<AdminNotificationOutboxItem?> GetOutboxItemAsync(
+        Guid tenantId,
+        Guid outboxId,
+        CancellationToken cancellationToken)
+    {
+        await using var connection = _connectionFactory.CreateConnection();
+        var row = await ReadNotificationOutboxRowAsync(connection, tenantId, outboxId, cancellationToken);
+        return row is null ? null : ToNotificationOutboxItem(row);
+    }
+
+    public async Task<AdminNotificationOutboxItem?> RequeueOutboxEmailAsync(
+        Guid tenantId,
+        Guid outboxId,
+        CancellationToken cancellationToken)
+    {
+        const string sql = """
+            UPDATE dbo.NotificationOutbox
+            SET Status = N'Pending',
+                AvailableAtUtc = SYSUTCDATETIME(),
+                ProcessedAtUtc = NULL,
+                LastError = NULL,
+                UpdatedAtUtc = SYSUTCDATETIME()
+            WHERE TenantId = @TenantId
+              AND NotificationOutboxId = @OutboxId
+              AND Channel = N'Email'
+              AND Status = N'Failed';
+            """;
+
+        await using var connection = _connectionFactory.CreateConnection();
+        var affectedRows = await connection.ExecuteAsync(new CommandDefinition(
+            sql,
+            new { TenantId = tenantId, OutboxId = outboxId },
+            cancellationToken: cancellationToken));
+        if (affectedRows == 0)
+        {
+            return null;
+        }
+
+        var row = await ReadNotificationOutboxRowAsync(connection, tenantId, outboxId, cancellationToken);
+        return row is null ? null : ToNotificationOutboxItem(row);
     }
 
     public async Task<NotificationTemplateSummary?> GetTemplateAsync(Guid tenantId, Guid templateId, CancellationToken cancellationToken)
@@ -3875,6 +4026,237 @@ public sealed class DapperAdminCenterRepository :
             row.UpdatedByUserId ?? Guid.Empty);
     }
 
+    private static async Task<NotificationOutboxRow?> ReadNotificationOutboxRowAsync(
+        DbConnection connection,
+        Guid tenantId,
+        Guid outboxId,
+        CancellationToken cancellationToken)
+    {
+        const string sql = """
+            SELECT
+                o.NotificationOutboxId AS OutboxId,
+                e.EventCode,
+                e.Name AS EventName,
+                COALESCE(t.Name, N'Application-composed email') AS TemplateName,
+                N'Talent Pilot workflow' AS SenderDisplayName,
+                recipient.DisplayName AS RecipientDisplayName,
+                COALESCE(o.RecipientEmail, recipient.Email) AS RecipientEmail,
+                o.Channel,
+                o.Status,
+                o.AttemptCount,
+                o.AvailableAtUtc,
+                o.CreatedAtUtc,
+                o.UpdatedAtUtc,
+                o.ProcessedAtUtc,
+                o.LastError,
+                COALESCE(JSON_VALUE(o.PayloadJson, '$.subject'), N'(No subject)') AS Subject,
+                COALESCE(JSON_VALUE(o.PayloadJson, '$.body'), N'') AS Body,
+                JSON_VALUE(o.PayloadJson, '$.entityType') AS EntityType,
+                JSON_VALUE(o.PayloadJson, '$.entityId') AS EntityId
+            FROM dbo.NotificationOutbox AS o
+            INNER JOIN dbo.NotificationEvents AS e ON e.NotificationEventId = o.NotificationEventId
+            LEFT JOIN dbo.NotificationTemplates AS t ON t.NotificationTemplateId = o.NotificationTemplateId
+            LEFT JOIN dbo.AppUsers AS recipient ON recipient.UserId = o.RecipientUserId
+            WHERE o.TenantId = @TenantId
+              AND o.NotificationOutboxId = @OutboxId
+              AND o.Channel = N'Email';
+            """;
+
+        return await connection.QuerySingleOrDefaultAsync<NotificationOutboxRow>(new CommandDefinition(
+            sql,
+            new { TenantId = tenantId, OutboxId = outboxId },
+            cancellationToken: cancellationToken));
+    }
+
+    private static AdminNotificationOutboxItem ToNotificationOutboxItem(NotificationOutboxRow row)
+    {
+        return new AdminNotificationOutboxItem(
+            row.OutboxId,
+            row.EventCode,
+            row.EventName,
+            row.TemplateName,
+            row.SenderDisplayName,
+            row.RecipientDisplayName,
+            row.RecipientEmail,
+            row.Channel,
+            row.Status,
+            row.AttemptCount,
+            Utc(row.AvailableAtUtc),
+            Utc(row.CreatedAtUtc),
+            Utc(row.UpdatedAtUtc),
+            ToUtc(row.ProcessedAtUtc),
+            row.LastError,
+            row.Subject,
+            row.Body,
+            row.EntityType,
+            row.EntityId);
+    }
+
+    private static async Task<AdminNotificationWorkerStatus> ReadNotificationWorkerStatusAsync(
+        SqlConnection connection,
+        Guid tenantId,
+        CancellationToken cancellationToken)
+    {
+        const string sql = """
+            DECLARE @PendingDueCount INT =
+            (
+                SELECT COUNT(1)
+                FROM dbo.NotificationOutbox
+                WHERE TenantId = @TenantId
+                  AND Channel = N'Email'
+                  AND Status = N'Pending'
+                  AND AvailableAtUtc <= SYSUTCDATETIME()
+            );
+
+            DECLARE @ProcessingCount INT =
+            (
+                SELECT COUNT(1)
+                FROM dbo.NotificationOutbox
+                WHERE TenantId = @TenantId
+                  AND Channel = N'Email'
+                  AND Status = N'Processing'
+            );
+
+            IF OBJECT_ID(N'dbo.NotificationWorkerStatus', N'U') IS NULL
+            BEGIN
+                SELECT
+                    CAST(0 AS bit) AS HasHeartbeatTable,
+                    CAST(NULL AS nvarchar(120)) AS WorkerName,
+                    CAST(NULL AS nvarchar(20)) AS Status,
+                    CAST(NULL AS nvarchar(200)) AS HostName,
+                    CAST(NULL AS int) AS ProcessId,
+                    CAST(NULL AS datetime2(3)) AS StartedAtUtc,
+                    CAST(NULL AS datetime2(3)) AS LastHeartbeatUtc,
+                    CAST(NULL AS datetime2(3)) AS LastProcessedAtUtc,
+                    CAST(NULL AS int) AS LastProcessedCount,
+                    CAST(NULL AS nvarchar(1000)) AS LastError,
+                    CAST(NULL AS int) AS LastHeartbeatAgeSeconds,
+                    @PendingDueCount AS PendingDueCount,
+                    @ProcessingCount AS ProcessingCount;
+                RETURN;
+            END;
+
+            IF NOT EXISTS (SELECT 1 FROM dbo.NotificationWorkerStatus WHERE WorkerName = @WorkerName)
+            BEGIN
+                SELECT
+                    CAST(1 AS bit) AS HasHeartbeatTable,
+                    CAST(NULL AS nvarchar(120)) AS WorkerName,
+                    CAST(NULL AS nvarchar(20)) AS Status,
+                    CAST(NULL AS nvarchar(200)) AS HostName,
+                    CAST(NULL AS int) AS ProcessId,
+                    CAST(NULL AS datetime2(3)) AS StartedAtUtc,
+                    CAST(NULL AS datetime2(3)) AS LastHeartbeatUtc,
+                    CAST(NULL AS datetime2(3)) AS LastProcessedAtUtc,
+                    CAST(NULL AS int) AS LastProcessedCount,
+                    CAST(NULL AS nvarchar(1000)) AS LastError,
+                    CAST(NULL AS int) AS LastHeartbeatAgeSeconds,
+                    @PendingDueCount AS PendingDueCount,
+                    @ProcessingCount AS ProcessingCount;
+                RETURN;
+            END;
+
+            SELECT TOP (1)
+                CAST(1 AS bit) AS HasHeartbeatTable,
+                WorkerName,
+                Status,
+                HostName,
+                ProcessId,
+                StartedAtUtc,
+                LastHeartbeatUtc,
+                LastProcessedAtUtc,
+                LastProcessedCount,
+                LastError,
+                DATEDIFF(SECOND, LastHeartbeatUtc, SYSUTCDATETIME()) AS LastHeartbeatAgeSeconds,
+                @PendingDueCount AS PendingDueCount,
+                @ProcessingCount AS ProcessingCount
+            FROM dbo.NotificationWorkerStatus
+            WHERE WorkerName = @WorkerName
+            ORDER BY LastHeartbeatUtc DESC;
+            """;
+
+        var row = await connection.QuerySingleAsync<NotificationWorkerStatusRow>(new CommandDefinition(
+            sql,
+            new { TenantId = tenantId, WorkerName = NotificationWorkerName },
+            cancellationToken: cancellationToken));
+
+        return ToNotificationWorkerStatus(row);
+    }
+
+    private static AdminNotificationWorkerStatus ToNotificationWorkerStatus(NotificationWorkerStatusRow row)
+    {
+        string state;
+        string label;
+        string message;
+
+        if (!row.HasHeartbeatTable)
+        {
+            state = "NotConfigured";
+            label = "Heartbeat unavailable";
+            message = "The worker heartbeat table is not present. Run database migrations, then start TalentPilot.Worker with the same database connection.";
+        }
+        else if (!row.LastHeartbeatUtc.HasValue)
+        {
+            state = "Offline";
+            label = "Not reporting";
+            message = row.PendingDueCount > 0
+                ? "No worker heartbeat has been recorded. Due emails will stay pending until TalentPilot.Worker is started."
+                : "No worker heartbeat has been recorded. Start TalentPilot.Worker before expecting queued email delivery.";
+        }
+        else if (row.LastHeartbeatAgeSeconds.GetValueOrDefault(int.MaxValue) > NotificationWorkerStaleAfterSeconds)
+        {
+            var heartbeatAgeSeconds = row.LastHeartbeatAgeSeconds.GetValueOrDefault();
+            state = "Offline";
+            label = "Stale heartbeat";
+            message = $"Last worker heartbeat was {FormatAge(heartbeatAgeSeconds)} ago. Pending emails will stay queued until TalentPilot.Worker is running again.";
+        }
+        else if (!string.IsNullOrWhiteSpace(row.LastError))
+        {
+            state = "Error";
+            label = "Running with error";
+            message = $"The worker heartbeat is current, but the latest loop reported an error: {row.LastError}";
+        }
+        else
+        {
+            state = "Running";
+            label = "Running";
+            message = row.PendingDueCount > 0
+                ? $"The worker heartbeat is current. {row.PendingDueCount} due email(s) are waiting for the next {NotificationWorkerPollIntervalSeconds}-second polling cycle."
+                : "The worker heartbeat is current and there are no due pending emails.";
+        }
+
+        return new AdminNotificationWorkerStatus(
+            state,
+            label,
+            message,
+            ToUtc(row.LastHeartbeatUtc),
+            ToUtc(row.StartedAtUtc),
+            ToUtc(row.LastProcessedAtUtc),
+            row.LastProcessedCount,
+            row.HostName,
+            row.ProcessId,
+            row.LastError,
+            NotificationWorkerPollIntervalSeconds,
+            NotificationWorkerStaleAfterSeconds,
+            row.PendingDueCount,
+            row.ProcessingCount);
+    }
+
+    private static string FormatAge(int seconds)
+    {
+        if (seconds < 60)
+        {
+            return $"{Math.Max(0, seconds)} second(s)";
+        }
+
+        var minutes = seconds / 60;
+        if (minutes < 60)
+        {
+            return $"{minutes} minute(s)";
+        }
+
+        return $"{minutes / 60} hour(s)";
+    }
+
     private static string BuildPermissionSummary(IReadOnlyCollection<PermissionMaterialized> permissions)
     {
         if (permissions.Count == 0)
@@ -4123,6 +4505,40 @@ public sealed class DapperAdminCenterRepository :
     private sealed record InterviewTemplateDetailsRoundRow(Guid InterviewTemplateRoundId, int RoundOrder, string Name, Guid? OwnerRoleId, string OwnerRoleName, Guid? OwnerUserId, string OwnerUserName, int DurationMinutes, bool IsRequired, string Status);
     private sealed record NotificationEventDetailsRow(Guid EventId, string EventCode, string Name, string Recipient, string LifecycleStatus);
     private sealed record NotificationTemplateRow(Guid TemplateId, string EventCode, string Name, string Recipient, string Subject, string Body, string AllowedVariablesJson, string LifecycleStatus, DateTime UpdatedAtUtc, Guid? UpdatedByUserId);
+    private sealed record NotificationOutboxRow(
+        Guid OutboxId,
+        string EventCode,
+        string EventName,
+        string TemplateName,
+        string SenderDisplayName,
+        string? RecipientDisplayName,
+        string? RecipientEmail,
+        string Channel,
+        string Status,
+        int AttemptCount,
+        DateTime AvailableAtUtc,
+        DateTime CreatedAtUtc,
+        DateTime UpdatedAtUtc,
+        DateTime? ProcessedAtUtc,
+        string? LastError,
+        string Subject,
+        string Body,
+        string? EntityType,
+        string? EntityId);
+    private sealed record NotificationWorkerStatusRow(
+        bool HasHeartbeatTable,
+        string? WorkerName,
+        string? Status,
+        string? HostName,
+        int? ProcessId,
+        DateTime? StartedAtUtc,
+        DateTime? LastHeartbeatUtc,
+        DateTime? LastProcessedAtUtc,
+        int? LastProcessedCount,
+        string? LastError,
+        int? LastHeartbeatAgeSeconds,
+        int PendingDueCount,
+        int ProcessingCount);
     private sealed record AuditLogListRow(Guid Id, DateTime OccurredAtUtc, string ActorDisplayName, string EventSummary, string RecordLabel, string Area);
     private sealed record AuditLogDetailsRow(Guid Id, DateTime OccurredAtUtc, Guid? ActorUserId, string ActorDisplayName, string EventType, string EntityType, Guid? EntityId, string RecordLabel, string EventSummary, string Area, string MetadataJson);
 }

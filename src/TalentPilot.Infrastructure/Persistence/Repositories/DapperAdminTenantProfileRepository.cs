@@ -1,5 +1,6 @@
 using System.Data;
 using Dapper;
+using TalentPilot.Application.Admin.Notifications;
 using TalentPilot.Application.Admin.TenantProfiles;
 
 namespace TalentPilot.Infrastructure.Persistence.Repositories;
@@ -30,12 +31,18 @@ public sealed class DapperAdminTenantProfileRepository : IAdminTenantProfileRepo
                 t.DefaultCurrencyCode AS DefaultCurrency,
                 t.Status,
                 trs.CareerDisplayName,
+                trs.CompanyAddress,
+                trs.CompanyCity,
+                trs.CompanyCountry,
+                trs.OfficialEmail,
+                trs.OfficialPhone,
                 trs.PrimaryColorHex AS PrimaryColor,
                 trs.CandidateLoginRequired,
                 trs.CandidateCvFormat,
                 trs.PublicJobsEnabled,
                 trs.InviteExpiryDays,
                 trs.ReapplyCooldownDays,
+                trs.NotificationEmailProvider,
                 trs.LogoFileName,
                 trs.LogoContentType,
                 trs.LogoContent,
@@ -84,12 +91,18 @@ public sealed class DapperAdminTenantProfileRepository : IAdminTenantProfileRepo
                 row.DefaultCurrency,
                 row.Status,
                 row.CareerDisplayName,
+                row.CompanyAddress,
+                row.CompanyCity,
+                row.CompanyCountry,
+                row.OfficialEmail,
+                row.OfficialPhone,
                 row.PrimaryColor,
                 row.CandidateLoginRequired,
                 row.CandidateCvFormat,
                 row.PublicJobsEnabled,
                 row.InviteExpiryDays,
                 row.ReapplyCooldownDays,
+                NotificationEmailProviders.NormalizeOrDefault(row.NotificationEmailProvider),
                 row.UserCount,
                 row.RoleCount,
                 row.SetupComplete,
@@ -163,12 +176,18 @@ public sealed class DapperAdminTenantProfileRepository : IAdminTenantProfileRepo
         const string updateRecruitmentSettingsSql = """
             UPDATE dbo.TenantRecruitmentSettings
             SET CareerDisplayName = @CareerDisplayName,
+                CompanyAddress = @CompanyAddress,
+                CompanyCity = @CompanyCity,
+                CompanyCountry = @CompanyCountry,
+                OfficialEmail = @OfficialEmail,
+                OfficialPhone = @OfficialPhone,
                 PrimaryColorHex = @PrimaryColor,
                 CandidateLoginRequired = @CandidateLoginRequired,
                 CandidateCvFormat = @CandidateCvFormat,
                 PublicJobsEnabled = @PublicJobsEnabled,
                 InviteExpiryDays = @InviteExpiryDays,
                 ReapplyCooldownDays = @ReapplyCooldownDays,
+                NotificationEmailProvider = @NotificationEmailProvider,
                 LogoFileName = @LogoFileName,
                 LogoContentType = @LogoContentType,
                 LogoContent = @LogoContent,
@@ -182,12 +201,18 @@ public sealed class DapperAdminTenantProfileRepository : IAdminTenantProfileRepo
             {
                 TenantId = tenantId,
                 CareerDisplayName = input.CareerDisplayName.Trim(),
+                CompanyAddress = NullIfWhiteSpace(input.CompanyAddress),
+                CompanyCity = NullIfWhiteSpace(input.CompanyCity),
+                CompanyCountry = NullIfWhiteSpace(input.CompanyCountry),
+                OfficialEmail = NullIfWhiteSpace(input.OfficialEmail),
+                OfficialPhone = NullIfWhiteSpace(input.OfficialPhone),
                 PrimaryColor = input.PrimaryColor.Trim().ToUpperInvariant(),
                 input.CandidateLoginRequired,
                 CandidateCvFormat = input.CandidateCvFormat.Trim().ToUpperInvariant(),
                 input.PublicJobsEnabled,
                 input.InviteExpiryDays,
                 input.ReapplyCooldownDays,
+                NotificationEmailProvider = NotificationEmailProviders.Normalize(input.NotificationEmailProvider),
                 LogoFileName = string.IsNullOrWhiteSpace(input.LogoContentBase64) ? null : input.LogoFileName?.Trim(),
                 LogoContentType = string.IsNullOrWhiteSpace(input.LogoContentBase64) ? null : input.LogoContentType?.Trim(),
                 LogoContent = FromBase64(input.LogoContentBase64)
@@ -257,6 +282,11 @@ public sealed class DapperAdminTenantProfileRepository : IAdminTenantProfileRepo
         return string.IsNullOrWhiteSpace(value) ? null : Convert.FromBase64String(value);
     }
 
+    private static string? NullIfWhiteSpace(string? value)
+    {
+        return string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+    }
+
     private sealed record TenantProfileSettingsRow(
         Guid TenantId,
         string DisplayName,
@@ -267,12 +297,18 @@ public sealed class DapperAdminTenantProfileRepository : IAdminTenantProfileRepo
         string DefaultCurrency,
         string Status,
         string CareerDisplayName,
+        string? CompanyAddress,
+        string? CompanyCity,
+        string? CompanyCountry,
+        string? OfficialEmail,
+        string? OfficialPhone,
         string PrimaryColor,
         bool CandidateLoginRequired,
         string CandidateCvFormat,
         bool PublicJobsEnabled,
         int InviteExpiryDays,
         int ReapplyCooldownDays,
+        string NotificationEmailProvider,
         string? LogoFileName,
         string? LogoContentType,
         byte[]? LogoContent,

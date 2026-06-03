@@ -14,6 +14,8 @@ public interface IOperationsService
         PmoDashboardQuery query,
         CancellationToken cancellationToken);
 
+    Task<Result<HiringManagerDashboard>> GetHiringManagerDashboardAsync(CancellationToken cancellationToken);
+
     Task<Result<OperationsJobRequestIntakeOptions>> GetIntakeOptionsAsync(CancellationToken cancellationToken);
 
     Task<Result<IReadOnlyList<OperationsActivityEvent>>> GetActivityAsync(Guid entityId, CancellationToken cancellationToken);
@@ -28,6 +30,11 @@ public interface IOperationsService
         Guid jobApplicationId,
         CancellationToken cancellationToken);
 
+    Task<Result<OperationsApplicationDocumentDownload>> DownloadRecruiterApplicationDocumentAsync(
+        Guid jobApplicationId,
+        Guid applicationDocumentId,
+        CancellationToken cancellationToken);
+
     Task<Result<OperationsCandidateProfile>> GetCandidateProfileAsync(
         Guid candidateId,
         CancellationToken cancellationToken);
@@ -37,6 +44,11 @@ public interface IOperationsService
     Task<Result<PortalJobPostList>> ListPortalJobPostsAsync(CancellationToken cancellationToken);
 
     Task<Result<PortalJobPostDetail>> GetPortalJobPostAsync(Guid jobPostId, CancellationToken cancellationToken);
+
+    Task<Result<PortalInvitationContext>> GetPortalInvitationAsync(
+        Guid candidateInvitationId,
+        string token,
+        CancellationToken cancellationToken);
 
     Task<Result<PortalJobApplicationResult>> ApplyToPortalJobPostAsync(
         Guid jobPostId,
@@ -49,6 +61,12 @@ public interface IOperationsService
         string fileName,
         string contentType,
         byte[] content,
+        CancellationToken cancellationToken);
+
+    Task<Result<PortalCandidateProfile>> GetPortalCandidateProfileAsync(CancellationToken cancellationToken);
+
+    Task<Result<PortalCandidateProfile>> UpdatePortalCandidateProfileAsync(
+        UpdatePortalCandidateProfileInput input,
         CancellationToken cancellationToken);
 
     Task<Result<PortalMyApplications>> GetPortalMyApplicationsAsync(CancellationToken cancellationToken);
@@ -107,6 +125,13 @@ public interface IOperationsService
 
     Task<Result<HiringReviewDetail>> GetHiringReviewAsync(
         Guid jobApplicationId,
+        CancellationToken cancellationToken);
+
+    Task<Result<ReportingManagerOptionList>> SearchReportingManagerOptionsAsync(
+        Guid jobRequestId,
+        string? search,
+        int skip,
+        int take,
         CancellationToken cancellationToken);
 
     Task<Result<OfferLetterDetails>> GenerateOfferLetterAsync(
@@ -182,6 +207,12 @@ public interface IOperationsRepository
         PmoDashboardQuery query,
         CancellationToken cancellationToken);
 
+    Task<HiringManagerDashboard> GetHiringManagerDashboardAsync(
+        Guid tenantId,
+        Guid actorUserId,
+        bool includeAllTenantReviews,
+        CancellationToken cancellationToken);
+
     Task<OperationsJobRequestIntakeOptions> GetIntakeOptionsAsync(Guid tenantId, CancellationToken cancellationToken);
 
     Task<IReadOnlySet<string>> GetActorRoleCodesAsync(Guid tenantId, Guid actorUserId, CancellationToken cancellationToken);
@@ -234,6 +265,11 @@ public interface IOperationsRepository
 
     Task<PortalJobPostDetail?> GetPortalJobPostAsync(Guid jobPostId, CancellationToken cancellationToken);
 
+    Task<PortalInvitationContext?> GetPortalInvitationAsync(
+        Guid candidateInvitationId,
+        string token,
+        CancellationToken cancellationToken);
+
     Task<PortalJobApplicationResult?> ApplyToPortalJobPostAsync(
         Guid tenantId,
         Guid actorUserId,
@@ -259,9 +295,26 @@ public interface IOperationsRepository
         IReadOnlyList<Guid> jobApplicationIds,
         CancellationToken cancellationToken);
 
+    Task<OperationsApplicantDocumentEvidence?> GetRecruiterApplicationDocumentAsync(
+        Guid tenantId,
+        Guid jobApplicationId,
+        Guid applicationDocumentId,
+        CancellationToken cancellationToken);
+
     Task<PortalMyApplications> GetPortalMyApplicationsAsync(
         Guid tenantId,
         Guid actorUserId,
+        CancellationToken cancellationToken);
+
+    Task<PortalCandidateProfile?> GetPortalCandidateProfileAsync(
+        Guid tenantId,
+        Guid actorUserId,
+        CancellationToken cancellationToken);
+
+    Task<PortalCandidateProfile?> UpdatePortalCandidateProfileAsync(
+        Guid tenantId,
+        Guid actorUserId,
+        UpdatePortalCandidateProfileInput input,
         CancellationToken cancellationToken);
 
     Task<OperationsBenchMatchingContext?> GetBenchMatchingContextAsync(
@@ -324,7 +377,21 @@ public interface IOperationsRepository
         UpdateCandidateApplicationStatusInput input,
         CancellationToken cancellationToken);
 
-    Task<ScheduleCandidateInterviewResult?> ScheduleCandidateInterviewAsync(
+    Task<ScheduleCandidateInterviewRepositoryResult?> ScheduleCandidateInterviewAsync(
+        Guid tenantId,
+        Guid actorUserId,
+        Guid jobApplicationId,
+        ScheduleCandidateInterviewInput input,
+        CancellationToken cancellationToken);
+
+    Task<OperationsScheduleCandidateInterviewValidation> ValidateCandidateInterviewScheduleAsync(
+        Guid tenantId,
+        Guid actorUserId,
+        Guid jobApplicationId,
+        ScheduleCandidateInterviewInput input,
+        CancellationToken cancellationToken);
+
+    Task<OperationsInterviewScheduleContext?> GetInterviewScheduleContextAsync(
         Guid tenantId,
         Guid actorUserId,
         Guid jobApplicationId,
@@ -337,10 +404,10 @@ public interface IOperationsRepository
         bool includeAllTenantTasks,
         CancellationToken cancellationToken);
 
-    Task<SubmitInterviewFeedbackResult?> SubmitInterviewFeedbackAsync(
+    Task<OperationsMutationRepositoryResult<SubmitInterviewFeedbackResult>> SubmitInterviewFeedbackAsync(
         Guid tenantId,
         Guid actorUserId,
-        bool canOverride,
+        bool canAdminOverrideInactiveInterviewer,
         Guid interviewId,
         SubmitInterviewFeedbackInput input,
         CancellationToken cancellationToken);
@@ -362,6 +429,16 @@ public interface IOperationsRepository
         Guid actorUserId,
         bool includeAllTenantReviews,
         Guid jobApplicationId,
+        CancellationToken cancellationToken);
+
+    Task<ReportingManagerOptionList?> SearchReportingManagerOptionsAsync(
+        Guid tenantId,
+        Guid actorUserId,
+        bool includeAllTenantReviews,
+        Guid jobRequestId,
+        string? search,
+        int skip,
+        int take,
         CancellationToken cancellationToken);
 
     Task<OfferLetterDetails?> GenerateOfferLetterAsync(

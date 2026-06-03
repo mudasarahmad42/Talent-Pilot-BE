@@ -1,7 +1,7 @@
-using System.Net;
 using System.Text.Json;
 using Dapper;
 using TalentPilot.Application.Admin.Notifications;
+using TalentPilot.Application.Notifications;
 using TalentPilot.Infrastructure.Persistence;
 
 namespace TalentPilot.Infrastructure.Notifications;
@@ -37,6 +37,7 @@ public sealed class DapperNotificationOutboxProcessor : INotificationOutboxProce
             (
                 SELECT TOP (@BatchSize)
                     NotificationOutboxId,
+                    TenantId,
                     RecipientEmail,
                     Channel,
                     PayloadJson,
@@ -54,6 +55,7 @@ public sealed class DapperNotificationOutboxProcessor : INotificationOutboxProce
                 UpdatedAtUtc = SYSUTCDATETIME()
             OUTPUT
                 inserted.NotificationOutboxId,
+                inserted.TenantId,
                 inserted.RecipientEmail,
                 inserted.Channel,
                 inserted.PayloadJson;
@@ -98,10 +100,11 @@ public sealed class DapperNotificationOutboxProcessor : INotificationOutboxProce
 
             var sendResult = await _emailSender.SendAsync(
                 new NotificationEmailMessage(
+                    row.TenantId,
                     row.RecipientEmail,
                     payload.Subject,
                     payload.Body,
-                    payload.HtmlBody ?? ToHtml(payload.Body)),
+                    ToBrandedHtml(payload.Body, payload.HtmlBody)),
                 cancellationToken);
 
             if (sendResult.Succeeded)
@@ -167,9 +170,30 @@ public sealed class DapperNotificationOutboxProcessor : INotificationOutboxProce
             cancellationToken: cancellationToken));
     }
 
+    private static string ToBrandedHtml(string text, string? htmlBody)
+    {
+        if (!string.IsNullOrWhiteSpace(htmlBody) &&
+            htmlBody.Contains(TalentPilotEmailTemplate.TemplateMarker, StringComparison.OrdinalIgnoreCase))
+        {
+            return htmlBody;
+        }
+
+        return ToHtml(text);
+    }
+
     private static string ToHtml(string text)
     {
-        return WebUtility.HtmlEncode(text).Replace("\n", "<br>", StringComparison.Ordinal);
+        return TalentPilotEmailTemplate.Build(
+            "Talent Pilot Notification",
+            FirstNonEmptyLine(text) ?? "Talent Pilot notification",
+            text);
+    }
+
+    private static string? FirstNonEmptyLine(string text)
+    {
+        return text
+            .Split(["\r\n", "\n"], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .FirstOrDefault();
     }
 
     private static string Truncate(string value, int maxLength)
@@ -179,6 +203,7 @@ public sealed class DapperNotificationOutboxProcessor : INotificationOutboxProce
 
     private sealed record OutboxRow(
         Guid NotificationOutboxId,
+        Guid TenantId,
         string? RecipientEmail,
         string Channel,
         string PayloadJson);

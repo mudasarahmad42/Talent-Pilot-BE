@@ -843,6 +843,9 @@ BEGIN
         DurationMinutes INT NOT NULL,
         MeetingLink NVARCHAR(600) NULL,
         LocationText NVARCHAR(300) NULL,
+        CalendarProvider NVARCHAR(40) NULL,
+        CalendarEventId NVARCHAR(300) NULL,
+        CalendarEventHtmlLink NVARCHAR(1000) NULL,
         SkippedByUserId UNIQUEIDENTIFIER NULL,
         SkippedAtUtc DATETIME2(3) NULL,
         SkipReason NVARCHAR(1000) NULL,
@@ -865,6 +868,28 @@ BEGIN
                 AND NULLIF(LTRIM(RTRIM(SkipReason)), N'') IS NOT NULL
             )
         )
+    );
+END;
+GO
+
+IF OBJECT_ID(N'dbo.InterviewParticipants', N'U') IS NULL
+BEGIN
+    CREATE TABLE dbo.InterviewParticipants
+    (
+        InterviewParticipantId UNIQUEIDENTIFIER NOT NULL CONSTRAINT PK_InterviewParticipants PRIMARY KEY,
+        TenantId UNIQUEIDENTIFIER NOT NULL,
+        InterviewId UNIQUEIDENTIFIER NOT NULL,
+        UserId UNIQUEIDENTIFIER NULL,
+        DisplayName NVARCHAR(200) NOT NULL,
+        Email NVARCHAR(320) NOT NULL,
+        ParticipantRole NVARCHAR(40) NOT NULL,
+        IsOptional BIT NOT NULL CONSTRAINT DF_InterviewParticipants_IsOptional DEFAULT (0),
+        CreatedAtUtc DATETIME2(3) NOT NULL CONSTRAINT DF_InterviewParticipants_CreatedAtUtc DEFAULT SYSUTCDATETIME(),
+        CONSTRAINT FK_InterviewParticipants_Tenants FOREIGN KEY (TenantId) REFERENCES dbo.Tenants (TenantId),
+        CONSTRAINT FK_InterviewParticipants_Interviews FOREIGN KEY (InterviewId) REFERENCES dbo.Interviews (InterviewId),
+        CONSTRAINT FK_InterviewParticipants_Users FOREIGN KEY (UserId) REFERENCES dbo.AppUsers (UserId),
+        CONSTRAINT CK_InterviewParticipants_Role CHECK (ParticipantRole IN (N'Candidate', N'Interviewer', N'HiringManager', N'Recruiter', N'Other')),
+        CONSTRAINT UQ_InterviewParticipants_Tenant_Interview_Email UNIQUE (TenantId, InterviewId, Email)
     );
 END;
 GO

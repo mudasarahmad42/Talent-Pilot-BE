@@ -8,6 +8,29 @@ public sealed record AdminAiRuntimeResponse(
     string VectorStore,
     bool RuntimeEditable);
 
+public sealed record AdminLlmHealthResponse(
+    bool Available,
+    string Status,
+    string Message,
+    string Provider,
+    string LlmModel,
+    string OllamaBaseUrl);
+
+public sealed record AiHealthStatusResponse(
+    bool Available,
+    string Status,
+    string Message);
+
+public sealed record AdminSemanticSimilarityHealthResponse(
+    bool Available,
+    string Status,
+    string Message,
+    string Provider,
+    string EmbeddingModel,
+    int EmbeddingDimensions,
+    string VectorStore,
+    string OllamaBaseUrl);
+
 public sealed record AdminAiAgentListResponse(
     int ActiveAgentCount,
     IReadOnlyList<AdminAiAgentDefinition> Items);

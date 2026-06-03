@@ -4,6 +4,9 @@ namespace TalentPilot.Tests.Operations;
 
 public sealed class InterviewFeedbackPolicyTests
 {
+    private static readonly Guid AssignedInterviewerId = Guid.Parse("10000000-0000-0000-0000-000000000001");
+    private static readonly Guid OtherUserId = Guid.Parse("20000000-0000-0000-0000-000000000002");
+
     [Fact]
     public void Validate_NormalizesRecommendationAndFeedback()
     {
@@ -53,5 +56,54 @@ public sealed class InterviewFeedbackPolicyTests
 
         Assert.False(result.Succeeded);
         Assert.Equal("interview_feedback.feedback_required", result.ErrorCode);
+    }
+
+    [Fact]
+    public void CanSubmit_AllowsAssignedInterviewer()
+    {
+        Assert.True(InterviewFeedbackPolicy.CanSubmit(
+            AssignedInterviewerId,
+            isTenantAdmin: false,
+            AssignedInterviewerId,
+            "Active",
+            interviewerIsDeleted: false));
+    }
+
+    [Fact]
+    public void CanSubmit_RejectsDifferentActiveInterviewer()
+    {
+        Assert.False(InterviewFeedbackPolicy.CanSubmit(
+            OtherUserId,
+            isTenantAdmin: false,
+            AssignedInterviewerId,
+            "Active",
+            interviewerIsDeleted: false));
+    }
+
+    [Fact]
+    public void CanSubmit_RejectsTenantAdminWhenAssignedInterviewerIsActive()
+    {
+        Assert.False(InterviewFeedbackPolicy.CanSubmit(
+            OtherUserId,
+            isTenantAdmin: true,
+            AssignedInterviewerId,
+            "Active",
+            interviewerIsDeleted: false));
+    }
+
+    [Theory]
+    [InlineData("Disabled", false)]
+    [InlineData("Invited", false)]
+    [InlineData("Active", true)]
+    public void CanSubmit_AllowsTenantAdminWhenAssignedInterviewerIsInactiveOrDeleted(
+        string accountStatus,
+        bool isDeleted)
+    {
+        Assert.True(InterviewFeedbackPolicy.CanSubmit(
+            OtherUserId,
+            isTenantAdmin: true,
+            AssignedInterviewerId,
+            accountStatus,
+            isDeleted));
     }
 }

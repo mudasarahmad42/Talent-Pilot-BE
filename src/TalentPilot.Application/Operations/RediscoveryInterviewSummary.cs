@@ -12,13 +12,15 @@ public static class RediscoveryInterviewSummary
         "Cancelled"
     };
 
-    public static RediscoveryInterviewPassSummary Build(IReadOnlyList<OperationsCandidateInterviewEvidence> interviews)
+    public static RediscoveryInterviewPassSummary Build(
+        IReadOnlyList<OperationsCandidateInterviewEvidence> interviews,
+        int? configuredTotal = null)
     {
         var countedInterviews = interviews
             .Where(interview => CountedStatuses.Contains(interview.Status))
             .ToArray();
         var passed = countedInterviews.Count(IsPassedInterview);
-        var total = countedInterviews.Length;
+        var total = Math.Max(countedInterviews.Length, configuredTotal.GetValueOrDefault());
 
         return new RediscoveryInterviewPassSummary(passed, total, $"{passed}/{total} passed");
     }

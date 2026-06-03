@@ -38,7 +38,7 @@ BEGIN
         CONSTRAINT FK_JobApplicationDocuments_Candidates
             FOREIGN KEY (CandidateId) REFERENCES dbo.Candidates(CandidateId),
         CONSTRAINT FK_JobApplicationDocuments_UploadedBy
-            FOREIGN KEY (UploadedByUserId) REFERENCES dbo.AppUsers(AppUserId),
+            FOREIGN KEY (UploadedByUserId) REFERENCES dbo.AppUsers(UserId),
         CONSTRAINT CK_JobApplicationDocuments_SizeBytes_Positive
             CHECK (SizeBytes > 0)
     );

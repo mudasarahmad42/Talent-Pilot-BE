@@ -23,22 +23,22 @@
 - PMO Review manual employee recommendation, Presales recommendation decision, recruiter handoff, and Bench Matching advisory ranking.
 - Recruiter Sourcing queue and first-class Job Post draft/update/publish/close endpoints.
 - Talent Rediscovery advisory ranking for claimed Recruiter Sourcing work, persisted in `AiRecommendationLogs` with candidate-profile vector refresh.
-- Candidate portal published job listing/detail/apply APIs and candidate-owned application history/status API.
+- Candidate portal published job listing/detail/apply APIs, profile GET/PUT API, candidate-owned application history/status API, and candidate-facing interview timeline page.
+- Candidate profile vector indexing with `CandidateProfile` source type after profile saves; embedding/vector failures do not block candidate profile updates.
 - Recruiter manual sourcing into published Job Posts with invited applications, source metadata, education/work-history capture, and queued invitation email.
-- Candidate interview scheduling and interviewer feedback APIs, including candidate/interviewer/hiring-manager scheduling emails and recruiter feedback notification.
+- CV Parser Agent for recruiter manual sourcing DOCX uploads. It extracts candidate fields for recruiter review, keeps the parser summary/extracted text hidden from the modal, stores parsed CV evidence in `JobApplicationDocuments`, and upserts `JobApplicationEvidenceProfile` vectors for downstream candidate context/ranking.
+- Candidate interview scheduling and interviewer feedback APIs, including candidate/interviewer/hiring-manager scheduling emails, optional calendar metadata, persisted meeting participants, participant realtime scheduling notifications, candidate-profile meeting history, and recruiter feedback notification.
 - Hiring Manager final review, editable offer-letter draft storage, in-person offer presentation meeting, final outcome recording, external-candidate fulfillment, and explicit Job Request close.
 - Notification read/read-all endpoints.
-- Notification outbox processor abstraction and Dapper-backed processor.
+- Notification outbox processor abstraction, Dapper-backed email processor, worker heartbeat status, and Admin Center outbox diagnostics.
 - Tests for the current auth/permission and setup-sensitive logic.
 
 ## Planned Next
 
 - Harden auth for real credential login while keeping card login enabled only for local/demo.
 - Add more unit/integration tests around Admin Center save flows.
-- Implement candidate profile editing and candidate-facing interview schedule pages.
-- Implement DOCX upload/extraction API boundary.
-- Add SignalR notification hub and frontend client integration.
-- Expand worker to send email and process AI jobs from SQL outbox.
+- Extend application evidence capture to cover recruiter/candidate cover letters using the same context and vector path as parsed CV evidence.
+- Expand worker to process AI jobs from SQL outbox.
 - Add deterministic duplicate checks for candidates if time allows.
 
 ## Known Boundaries
@@ -48,3 +48,4 @@
 - Do not add onboarding, payroll, orientation, or equipment management.
 - Do not automate LinkedIn/Indeed posting or scraping.
 - Do not let AI make final hiring decisions.
+- Local/demo interview scheduling does not create Google Calendar events or Google Meet links because `GoogleCalendar:Enabled` is false. The system stores and emails a pasted meeting link; real calendar events require enabling Google Calendar with service-account credentials and an impersonated organizer.

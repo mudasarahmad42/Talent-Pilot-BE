@@ -1,7 +1,12 @@
 using System.Data;
+using System.Globalization;
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 using Dapper;
 using Microsoft.Data.SqlClient;
+using Microsoft.Extensions.Configuration;
+using TalentPilot.Application.Notifications;
 using TalentPilot.Application.Operations;
 using TalentPilot.Domain.Access;
 using TalentPilot.Domain.Notifications;
@@ -11,10 +16,16 @@ namespace TalentPilot.Infrastructure.Persistence.Repositories;
 public sealed class DapperOperationsRepository : IOperationsRepository
 {
     private readonly ISqlConnectionFactory _connectionFactory;
+    private readonly string _frontendBaseUrl;
 
-    public DapperOperationsRepository(ISqlConnectionFactory connectionFactory)
+    public DapperOperationsRepository(ISqlConnectionFactory connectionFactory, IConfiguration configuration)
     {
         _connectionFactory = connectionFactory;
+        _frontendBaseUrl = NormalizeFrontendBaseUrl(
+            configuration["Frontend:BaseUrl"]
+            ?? configuration["TalentPilot:FrontendBaseUrl"]
+            ?? Environment.GetEnvironmentVariable("TALENTPILOT_FRONTEND_BASE_URL")
+            ?? "http://localhost:4200");
     }
 
     public async Task<OperationsSnapshot> GetSnapshotAsync(Guid tenantId, Guid userId, CancellationToken cancellationToken)
@@ -1474,19 +1485,29 @@ public sealed class DapperOperationsRepository : IOperationsRepository
 
         var actorRoleCodes = await ReadActorRoleCodesAsync(connection, null, tenantId, actorUserId, cancellationToken);
         var isTenantAdmin = actorRoleCodes.Contains(AccessConstants.TenantAdminRoleCode);
-        var assignment = (await ListAssignmentsAsync(connection, tenantId, actorUserId, cancellationToken))
+        var assignments = (await ListAssignmentsAsync(connection, tenantId, actorUserId, cancellationToken))
             .Where(item => item.EntityId == jobRequestId)
             .Where(item => item.Stage == "Recruiter Sourcing")
+            .ToArray();
+        var assignment = assignments
             .Where(item => item.Status is "Pending" or "Claimed")
             .Where(item => RecruitmentQueueVisibility.CanShowAssignment(item, actorUserId, isTenantAdmin))
             .OrderByDescending(item => item.AssignedAt)
-            .FirstOrDefault();
-        if (assignment is null && !isTenantAdmin)
+            .FirstOrDefault() ??
+            assignments
+                .Where(item => item.Status == "Completed")
+                .Where(item => isTenantAdmin || item.AssignedToUserId == actorUserId || item.ClaimedByUserId == actorUserId)
+                .OrderByDescending(item => item.AssignedAt)
+                .FirstOrDefault();
+        var jobPost = await ReadJobPostByRequestIdAsync(connection, tenantId, jobRequestId, cancellationToken);
+        var canViewCompletedSourcing = assignment is not null ||
+            isTenantAdmin ||
+            jobPost?.RecruiterOwnerUserId == actorUserId;
+        if (!canViewCompletedSourcing)
         {
             return null;
         }
 
-        var jobPost = await ReadJobPostByRequestIdAsync(connection, tenantId, jobRequestId, cancellationToken);
         var applications = jobPost is null
             ? []
             : await ListRecruiterApplicationsAsync(connection, tenantId, jobPost.JobPostId, cancellationToken);
@@ -1495,6 +1516,7 @@ public sealed class DapperOperationsRepository : IOperationsRepository
             ? []
             : await ListLatestApplicantRankingsAsync(connection, tenantId, jobPost.JobPostId, cancellationToken);
         var templates = await ListInterviewTemplatesAsync(connection, tenantId, jobRequestId, cancellationToken);
+        var interviewers = await ListInterviewerOptionsAsync(connection, tenantId, jobRequestId, cancellationToken);
         var hodInterviewers = await ListDepartmentHodInterviewersAsync(connection, tenantId, jobRequestId, cancellationToken);
         var skills = await ListActiveSkillsAsync(connection, tenantId, cancellationToken);
         var requiredSkills = jobPost?.Skills.Select(skill => skill.Name).ToArray() ?? jobRequest.Skills;
@@ -1508,7 +1530,7 @@ public sealed class DapperOperationsRepository : IOperationsRepository
             .Select(ToManualCandidateSearchItem)
             .ToArray();
 
-        return new OperationsRecruiterSourcing(jobRequest, assignment, jobPost, applications, manualCandidateSearchItems, talentRediscoveryMatches, applicantRankings, templates, hodInterviewers, skills);
+        return new OperationsRecruiterSourcing(jobRequest, assignment, jobPost, applications, manualCandidateSearchItems, talentRediscoveryMatches, applicantRankings, templates, interviewers, hodInterviewers, skills);
     }
 
     public async Task<OperationsHistoricalApplicationDetail?> GetHistoricalApplicationAsync(
@@ -1526,7 +1548,6 @@ public sealed class DapperOperationsRepository : IOperationsRepository
                 candidate.Status AS CandidateStatus,
                 candidate.CurrentDesignation,
                 candidate.CurrentCompany,
-                candidate.Status,
                 candidate.ExperienceYears,
                 candidate.NoticePeriodDays,
                 application.JobApplicationId,
@@ -1580,7 +1601,10 @@ public sealed class DapperOperationsRepository : IOperationsRepository
             [jobApplicationId],
             cancellationToken);
         var interviewEvidence = interviews.Select(ToInterviewEvidence).ToArray();
-        var summary = RediscoveryInterviewSummary.Build(interviewEvidence);
+        var configuredInterviewRoundCount = row.JobPostId.HasValue
+            ? await CountActiveJobPostInterviewRoundsAsync(connection, tenantId, row.JobPostId.Value, cancellationToken)
+            : await CountJobRequestInterviewRoundsAsync(connection, tenantId, row.JobRequestId, cancellationToken);
+        var summary = RediscoveryInterviewSummary.Build(interviewEvidence, configuredInterviewRoundCount);
 
         return new OperationsHistoricalApplicationDetail(
             new OperationsHistoricalCandidateSummary(
@@ -1671,6 +1695,11 @@ public sealed class DapperOperationsRepository : IOperationsRepository
             tenantId,
             candidateId,
             cancellationToken);
+        var meetingEvents = await ListCandidateMeetingEventsAsync(
+            connection,
+            tenantId,
+            candidateId,
+            cancellationToken);
 
         return new OperationsCandidateProfile(
             new OperationsHistoricalCandidateSummary(
@@ -1683,7 +1712,8 @@ public sealed class DapperOperationsRepository : IOperationsRepository
                 candidate.ExperienceYears,
                 candidate.NoticePeriodDays),
             skills,
-            applications);
+            applications,
+            meetingEvents);
     }
 
     public async Task<OperationsJobPublishing> GetJobPublishingAsync(
@@ -1889,6 +1919,62 @@ public sealed class DapperOperationsRepository : IOperationsRepository
             skills);
     }
 
+    public async Task<PortalInvitationContext?> GetPortalInvitationAsync(
+        Guid candidateInvitationId,
+        string token,
+        CancellationToken cancellationToken)
+    {
+        await using var connection = _connectionFactory.CreateConnection();
+
+        const string sql = """
+            SELECT TOP (1)
+                invitation.CandidateInvitationId,
+                invitation.JobPostId,
+                post.Title AS JobTitle,
+                COALESCE(NULLIF(settings.CareerDisplayName, N''), tenant.DisplayName) AS CompanyName,
+                invitation.Status,
+                invitation.ExpiresAtUtc,
+                invitation.UsedAtUtc,
+                invitation.RevokedAtUtc
+            FROM dbo.CandidateInvitations AS invitation
+            INNER JOIN dbo.JobPosts AS post
+                ON post.TenantId = invitation.TenantId
+                AND post.JobPostId = invitation.JobPostId
+            INNER JOIN dbo.Tenants AS tenant
+                ON tenant.TenantId = invitation.TenantId
+            LEFT JOIN dbo.TenantRecruitmentSettings AS settings
+                ON settings.TenantId = invitation.TenantId
+            WHERE invitation.CandidateInvitationId = @CandidateInvitationId
+              AND invitation.TokenHash = @TokenHash
+              AND invitation.JobPostId IS NOT NULL
+              AND post.Status = N'Published'
+              AND post.PublishedAtUtc IS NOT NULL
+              AND COALESCE(settings.PublicJobsEnabled, CAST(1 AS BIT)) = CAST(1 AS BIT);
+            """;
+
+        var row = await connection.QuerySingleOrDefaultAsync<PortalInvitationRow>(new CommandDefinition(
+            sql,
+            new
+            {
+                CandidateInvitationId = candidateInvitationId,
+                TokenHash = HashInvitationToken(token)
+            },
+            cancellationToken: cancellationToken));
+
+        return row is null
+            ? null
+            : new PortalInvitationContext(
+                row.CandidateInvitationId,
+                row.JobPostId,
+                row.JobTitle,
+                row.CompanyName,
+                row.Status,
+                Utc(row.ExpiresAtUtc),
+                ToUtc(row.UsedAtUtc),
+                row.ExpiresAtUtc <= DateTime.UtcNow,
+                row.RevokedAtUtc.HasValue || string.Equals(row.Status, "Revoked", StringComparison.OrdinalIgnoreCase));
+    }
+
     public async Task<PortalJobApplicationResult?> ApplyToPortalJobPostAsync(
         Guid tenantId,
         Guid actorUserId,
@@ -1944,6 +2030,21 @@ public sealed class DapperOperationsRepository : IOperationsRepository
             input.CurrentDesignation,
             cancellationToken);
 
+        var invitation = await ReadCandidateInvitationForApplicationAsync(
+            connection,
+            transaction,
+            tenantId,
+            jobPostId,
+            input.CandidateInvitationId,
+            input.InvitationToken,
+            candidate.CandidateId,
+            cancellationToken);
+        if (input.CandidateInvitationId.HasValue && invitation is null)
+        {
+            await transaction.RollbackAsync(cancellationToken);
+            return null;
+        }
+
         var existingApplication = await ReadActiveJobPostApplicationAsync(
             connection,
             transaction,
@@ -1953,6 +2054,47 @@ public sealed class DapperOperationsRepository : IOperationsRepository
             cancellationToken);
         if (existingApplication is not null)
         {
+            if (string.Equals(existingApplication.CurrentStatus, "Invited", StringComparison.OrdinalIgnoreCase))
+            {
+                await CompleteInvitedPortalApplicationAsync(
+                    connection,
+                    transaction,
+                    tenantId,
+                    existingApplication.JobApplicationId,
+                    actorUserId,
+                    context,
+                    input,
+                    cancellationToken);
+
+                if (invitation is not null)
+                {
+                    await MarkCandidateInvitationUsedAsync(
+                        connection,
+                        transaction,
+                        tenantId,
+                        invitation.CandidateInvitationId,
+                        cancellationToken);
+                }
+
+                await transaction.CommitAsync(cancellationToken);
+                return new PortalJobApplicationResult(
+                    existingApplication.JobApplicationId,
+                    jobPostId,
+                    context.JobRequestId,
+                    "Applied",
+                    AlreadyApplied: false);
+            }
+
+            if (invitation is not null)
+            {
+                await MarkCandidateInvitationUsedAsync(
+                    connection,
+                    transaction,
+                    tenantId,
+                    invitation.CandidateInvitationId,
+                    cancellationToken);
+            }
+
             await transaction.CommitAsync(cancellationToken);
             return new PortalJobApplicationResult(
                 existingApplication.JobApplicationId,
@@ -1973,12 +2115,15 @@ public sealed class DapperOperationsRepository : IOperationsRepository
             source?.CandidateSourceLabelId,
             source?.DisplayName ?? "Job Portal",
             "Applied",
-            isInvited: false,
+            isInvited: invitation is not null,
             actorUserId: null,
-            sourceDetail: "Talent Pilot Portal",
+            sourceDetail: invitation is null ? "Talent Pilot Portal" : "Talent Pilot Invitation",
             sourceUrl: null,
             recruiterNotes: null,
-            snapshotJson: BuildApplicationSnapshotJson(context),
+            snapshotJson: BuildApplicationSnapshotJson(
+                context,
+                input.InterviewAvailabilityStartDate,
+                input.InterviewAvailabilityEndDate),
             coverLetterText: input.CoverLetter,
             cancellationToken);
 
@@ -1990,8 +2135,20 @@ public sealed class DapperOperationsRepository : IOperationsRepository
             null,
             "Applied",
             actorUserId,
-            "Candidate applied from the Talent Pilot portal.",
+            invitation is null
+                ? "Candidate applied from the Talent Pilot portal."
+                : "Candidate applied from a tracked Talent Pilot invitation.",
             cancellationToken);
+
+        if (invitation is not null)
+        {
+            await MarkCandidateInvitationUsedAsync(
+                connection,
+                transaction,
+                tenantId,
+                invitation.CandidateInvitationId,
+                cancellationToken);
+        }
 
         await transaction.CommitAsync(cancellationToken);
         return new PortalJobApplicationResult(applicationId, jobPostId, context.JobRequestId, "Applied", AlreadyApplied: false);
@@ -2073,6 +2230,12 @@ public sealed class DapperOperationsRepository : IOperationsRepository
                 StorageKey,
                 StorageContainer,
                 ContentHashSha256,
+                ExtractionStatus,
+                ExtractedText,
+                ExtractedTextHashSha256,
+                ParserVersion,
+                ExtractedAtUtc,
+                ExtractionError,
                 Status,
                 UploadedByUserId,
                 UploadedAtUtc,
@@ -2091,6 +2254,12 @@ public sealed class DapperOperationsRepository : IOperationsRepository
                 @StorageKey,
                 @StorageContainer,
                 @ContentHashSha256,
+                @ExtractionStatus,
+                @ExtractedText,
+                @ExtractedTextHashSha256,
+                @ParserVersion,
+                @ExtractedAtUtc,
+                @ExtractionError,
                 N'Active',
                 @UploadedByUserId,
                 @UploadedAtUtc,
@@ -2113,6 +2282,12 @@ public sealed class DapperOperationsRepository : IOperationsRepository
                 input.StorageKey,
                 input.StorageContainer,
                 input.ContentHashSha256,
+                input.ExtractionStatus,
+                input.ExtractedText,
+                input.ExtractedTextHashSha256,
+                input.ParserVersion,
+                ExtractedAtUtc = input.ExtractedAt?.UtcDateTime,
+                input.ExtractionError,
                 UploadedByUserId = actorUserId,
                 UploadedAtUtc = now,
                 CreatedAtUtc = now,
@@ -2130,7 +2305,12 @@ public sealed class DapperOperationsRepository : IOperationsRepository
             input.ContentType,
             input.SizeBytes,
             input.StorageProvider,
-            Utc(now));
+            Utc(now),
+            input.ExtractionStatus,
+            !string.IsNullOrWhiteSpace(input.ExtractedText),
+            input.ParserVersion,
+            input.ExtractedAt,
+            input.ExtractionError);
     }
 
     public async Task<IReadOnlyList<PortalApplicationDocument>> ListPortalApplicationDocumentsAsync(
@@ -2153,7 +2333,17 @@ public sealed class DapperOperationsRepository : IOperationsRepository
                 ContentType,
                 SizeBytes,
                 StorageProvider,
-                UploadedAtUtc AS UploadedAt
+                StorageKey,
+                StorageContainer,
+                ContentHashSha256,
+                UploadedAtUtc AS UploadedAt,
+                ExtractionStatus,
+                CAST(CASE WHEN NULLIF(LTRIM(RTRIM(ExtractedText)), N'') IS NULL THEN 0 ELSE 1 END AS bit) AS HasExtractedText,
+                ExtractedText,
+                ExtractedTextHashSha256,
+                ParserVersion,
+                ExtractedAtUtc AS ExtractedAt,
+                ExtractionError
             FROM dbo.JobApplicationDocuments
             WHERE TenantId = @TenantId
               AND JobApplicationId IN @JobApplicationIds
@@ -2161,10 +2351,27 @@ public sealed class DapperOperationsRepository : IOperationsRepository
             ORDER BY UploadedAtUtc DESC;
             """;
 
-        return (await connection.QueryAsync<PortalApplicationDocument>(new CommandDefinition(
+        var rows = await connection.QueryAsync<ApplicationDocumentEvidenceRow>(new CommandDefinition(
             sql,
             new { TenantId = tenantId, JobApplicationIds = jobApplicationIds },
-            cancellationToken: cancellationToken))).ToArray();
+            cancellationToken: cancellationToken));
+
+        return rows
+            .Select(row => new PortalApplicationDocument(
+                row.ApplicationDocumentId,
+                row.JobApplicationId,
+                row.DocumentType,
+                row.FileName,
+                row.ContentType,
+                row.SizeBytes,
+                row.StorageProvider,
+                Utc(row.UploadedAt),
+                row.ExtractionStatus,
+                row.HasExtractedText,
+                row.ParserVersion,
+                ToUtc(row.ExtractedAt),
+                row.ExtractionError))
+            .ToArray();
     }
 
     public async Task<PortalMyApplications> GetPortalMyApplicationsAsync(
@@ -2267,6 +2474,64 @@ public sealed class DapperOperationsRepository : IOperationsRepository
                     ? applicationDocuments
                     : []))
             .ToArray());
+    }
+
+    public async Task<PortalCandidateProfile?> GetPortalCandidateProfileAsync(
+        Guid tenantId,
+        Guid actorUserId,
+        CancellationToken cancellationToken)
+    {
+        await using var connection = _connectionFactory.CreateConnection();
+        return await ReadPortalCandidateProfileAsync(connection, null, tenantId, actorUserId, cancellationToken);
+    }
+
+    public async Task<PortalCandidateProfile?> UpdatePortalCandidateProfileAsync(
+        Guid tenantId,
+        Guid actorUserId,
+        UpdatePortalCandidateProfileInput input,
+        CancellationToken cancellationToken)
+    {
+        await using var connection = _connectionFactory.CreateConnection();
+        await connection.OpenAsync(cancellationToken);
+        await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
+
+        var candidateId = await UpsertPortalCandidateProfileAsync(
+            connection,
+            transaction,
+            tenantId,
+            actorUserId,
+            input,
+            cancellationToken);
+        if (!candidateId.HasValue)
+        {
+            await transaction.RollbackAsync(cancellationToken);
+            return null;
+        }
+
+        await ReplacePortalCandidateSkillsAsync(
+            connection,
+            transaction,
+            tenantId,
+            candidateId.Value,
+            input.Skills ?? [],
+            cancellationToken);
+        await ReplacePortalPrimaryEducationAsync(
+            connection,
+            transaction,
+            tenantId,
+            candidateId.Value,
+            input.PrimaryEducation,
+            cancellationToken);
+        await ReplacePortalCurrentWorkHistoryAsync(
+            connection,
+            transaction,
+            tenantId,
+            candidateId.Value,
+            input.CurrentWorkHistory,
+            cancellationToken);
+
+        await transaction.CommitAsync(cancellationToken);
+        return await ReadPortalCandidateProfileAsync(connection, null, tenantId, actorUserId, cancellationToken);
     }
 
     public async Task<OperationsBenchMatchingContext?> GetBenchMatchingContextAsync(
@@ -2496,6 +2761,22 @@ public sealed class DapperOperationsRepository : IOperationsRepository
             await connection.ExecuteAsync(new CommandDefinition(
                 deleteMissingSql,
                 new { TenantId = tenantId, JobRequestId = jobRequestId, CandidateIds = candidateIds },
+                transaction,
+                cancellationToken: cancellationToken));
+        }
+        else
+        {
+            const string deleteAllSql = """
+                DELETE FROM dbo.AiRecommendationLogs
+                WHERE TenantId = @TenantId
+                  AND AiAgentDefinitionId = N'talent-rediscovery'
+                  AND SourceEntityType = N'JobRequest'
+                  AND SourceEntityId = @JobRequestId
+                  AND RecommendedEntityType = N'Candidate';
+                """;
+            await connection.ExecuteAsync(new CommandDefinition(
+                deleteAllSql,
+                new { TenantId = tenantId, JobRequestId = jobRequestId },
                 transaction,
                 cancellationToken: cancellationToken));
         }
@@ -2793,6 +3074,68 @@ public sealed class DapperOperationsRepository : IOperationsRepository
             ? null
             : input.Message.Trim();
         var subject = $"{context.CompanyName} is looking for {context.JobTitle}";
+        var defaultInvitationText = $"{context.CompanyName} is looking for {context.JobTitle}. Please apply at our job portal for this job post if you are interested.";
+        var trackedInvitations = context.JobPostId.HasValue
+            ? candidates
+                .Select(candidate => CreateTrackedCandidateInvitation(
+                    candidate.CandidateId,
+                    context.JobPostId.Value,
+                    ExtractFirstAbsoluteUrl(recruiterMessage)))
+                .ToArray()
+            : [];
+        var trackedInvitationsByCandidateId = trackedInvitations.ToDictionary(invitation => invitation.CandidateId);
+
+        if (trackedInvitations.Length > 0)
+        {
+            const string insertInvitationSql = """
+                INSERT INTO dbo.CandidateInvitations
+                (
+                    CandidateInvitationId,
+                    TenantId,
+                    CandidateProspectId,
+                    CandidateId,
+                    JobRequestId,
+                    JobPostId,
+                    InvitedByUserId,
+                    TokenHash,
+                    Email,
+                    Status,
+                    ExpiresAtUtc,
+                    CreatedAtUtc
+                )
+                VALUES
+                (
+                    @CandidateInvitationId,
+                    @TenantId,
+                    NULL,
+                    @CandidateId,
+                    @JobRequestId,
+                    @JobPostId,
+                    @ActorUserId,
+                    @TokenHash,
+                    @Email,
+                    N'Sent',
+                    DATEADD(DAY, 7, SYSUTCDATETIME()),
+                    SYSUTCDATETIME()
+                );
+                """;
+
+            await connection.ExecuteAsync(new CommandDefinition(
+                insertInvitationSql,
+                trackedInvitations.Select(invitation => new
+                {
+                    TenantId = tenantId,
+                    invitation.CandidateInvitationId,
+                    invitation.CandidateId,
+                    context.JobRequestId,
+                    invitation.JobPostId,
+                    ActorUserId = actorUserId,
+                    invitation.TokenHash,
+                    Email = candidatesById[invitation.CandidateId].Email
+                }),
+                transaction,
+                cancellationToken: cancellationToken));
+        }
 
         const string insertOutboxSql = """
             INSERT INTO dbo.NotificationOutbox
@@ -2829,21 +3172,21 @@ public sealed class DapperOperationsRepository : IOperationsRepository
 
         var outboxRows = candidates.Select(candidate =>
         {
+            trackedInvitationsByCandidateId.TryGetValue(candidate.CandidateId, out var trackedInvitation);
+            var invitationText = BuildTrackedInvitationText(recruiterMessage ?? defaultInvitationText, trackedInvitation?.JobLink);
             var bodyLines = new List<string>
             {
                 $"Hello {candidate.DisplayName},",
                 string.Empty,
-                $"{context.CompanyName} is looking for {context.JobTitle}. Please apply at our job portal for this job post if you are interested."
+                invitationText
             };
-            if (!string.IsNullOrWhiteSpace(recruiterMessage))
-            {
-                bodyLines.Add(string.Empty);
-                bodyLines.Add(recruiterMessage!);
-            }
 
             bodyLines.Add(string.Empty);
             bodyLines.Add($"Regards,");
             bodyLines.Add(context.CompanyName);
+
+            var textBody = string.Join(Environment.NewLine, bodyLines);
+            var jobLink = trackedInvitation?.JobLink;
 
             return new
             {
@@ -2854,7 +3197,14 @@ public sealed class DapperOperationsRepository : IOperationsRepository
                 PayloadJson = JsonSerializer.Serialize(new
                 {
                     subject,
-                    body = string.Join(Environment.NewLine, bodyLines),
+                    body = textBody,
+                    htmlBody = BuildCandidateInvitationHtmlBody(
+                        subject,
+                        context.CompanyName,
+                        context.JobTitle,
+                        candidate.DisplayName,
+                        invitationText,
+                        jobLink),
                     entityType = "JobRequest",
                     entityId = jobRequestId,
                     variables = new Dictionary<string, string>
@@ -3045,6 +3395,16 @@ public sealed class DapperOperationsRepository : IOperationsRepository
             coverLetterText: null,
             cancellationToken);
 
+        await UpsertParsedCvApplicationDocumentAsync(
+            connection,
+            transaction,
+            tenantId,
+            actorUserId,
+            applicationId,
+            candidate.CandidateId,
+            input.ParsedCvEvidence,
+            cancellationToken);
+
         if (!existingApplicationFound)
         {
             await InsertJobApplicationStatusHistoryAsync(
@@ -3180,7 +3540,7 @@ public sealed class DapperOperationsRepository : IOperationsRepository
         return await ReadRecruiterApplicationAsync(connection, tenantId, jobPostId, jobApplicationId, cancellationToken);
     }
 
-    public async Task<ScheduleCandidateInterviewResult?> ScheduleCandidateInterviewAsync(
+    public async Task<ScheduleCandidateInterviewRepositoryResult?> ScheduleCandidateInterviewAsync(
         Guid tenantId,
         Guid actorUserId,
         Guid jobApplicationId,
@@ -3288,6 +3648,9 @@ public sealed class DapperOperationsRepository : IOperationsRepository
                 DurationMinutes,
                 MeetingLink,
                 LocationText,
+                CalendarProvider,
+                CalendarEventId,
+                CalendarEventHtmlLink,
                 Status,
                 CreatedAtUtc,
                 UpdatedAtUtc
@@ -3304,6 +3667,9 @@ public sealed class DapperOperationsRepository : IOperationsRepository
                 @DurationMinutes,
                 @MeetingLink,
                 @LocationText,
+                @CalendarProvider,
+                @CalendarEventId,
+                @CalendarEventHtmlLink,
                 N'Scheduled',
                 SYSUTCDATETIME(),
                 SYSUTCDATETIME()
@@ -3323,10 +3689,30 @@ public sealed class DapperOperationsRepository : IOperationsRepository
                 StartsAtUtc = input.StartsAtUtc.UtcDateTime,
                 DurationMinutes = round.DurationMinutes,
                 input.MeetingLink,
-                input.LocationText
+                input.LocationText,
+                input.CalendarProvider,
+                input.CalendarEventId,
+                input.CalendarEventHtmlLink
             },
             transaction,
             cancellationToken: cancellationToken));
+
+        var participantContext = await ReadInterviewScheduleNotificationContextAsync(
+            connection,
+            transaction,
+            tenantId,
+            interviewId,
+            cancellationToken);
+        if (participantContext is not null)
+        {
+            await UpsertInterviewParticipantsAsync(
+                connection,
+                transaction,
+                tenantId,
+                interviewId,
+                participantContext,
+                cancellationToken);
+        }
 
         if (!string.Equals(context.CurrentStatus, "Interviewing", StringComparison.OrdinalIgnoreCase))
         {
@@ -3376,7 +3762,7 @@ public sealed class DapperOperationsRepository : IOperationsRepository
             cancellationToken);
 
         await transaction.CommitAsync(cancellationToken);
-        return new ScheduleCandidateInterviewResult(
+        var result = new ScheduleCandidateInterviewResult(
             interviewId,
             jobApplicationId,
             input.JobPostInterviewRoundId,
@@ -3385,7 +3771,65 @@ public sealed class DapperOperationsRepository : IOperationsRepository
             round.Name,
             input.StartsAtUtc,
             round.DurationMinutes,
-            "Scheduled");
+            "Scheduled",
+            input.MeetingLink,
+            input.CalendarProvider,
+            input.CalendarEventId,
+            input.CalendarEventHtmlLink);
+
+        var notificationDispatches = participantContext is null
+            ? []
+            : BuildInterviewScheduledDispatches(interviewId, participantContext);
+
+        return new ScheduleCandidateInterviewRepositoryResult(result, notificationDispatches);
+    }
+
+    public async Task<OperationsScheduleCandidateInterviewValidation> ValidateCandidateInterviewScheduleAsync(
+        Guid tenantId,
+        Guid actorUserId,
+        Guid jobApplicationId,
+        ScheduleCandidateInterviewInput input,
+        CancellationToken cancellationToken)
+    {
+        await using var connection = _connectionFactory.CreateConnection();
+        await connection.OpenAsync(cancellationToken);
+        await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
+
+        var status = await ReadCandidateInterviewScheduleValidationAsync(
+            connection,
+            transaction,
+            tenantId,
+            actorUserId,
+            jobApplicationId,
+            input,
+            cancellationToken);
+
+        await transaction.RollbackAsync(cancellationToken);
+        return new OperationsScheduleCandidateInterviewValidation(status);
+    }
+
+    public async Task<OperationsInterviewScheduleContext?> GetInterviewScheduleContextAsync(
+        Guid tenantId,
+        Guid actorUserId,
+        Guid jobApplicationId,
+        ScheduleCandidateInterviewInput input,
+        CancellationToken cancellationToken)
+    {
+        await using var connection = _connectionFactory.CreateConnection();
+        await connection.OpenAsync(cancellationToken);
+        await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
+
+        var context = await ReadInterviewScheduleContextForSchedulingAsync(
+            connection,
+            transaction,
+            tenantId,
+            actorUserId,
+            jobApplicationId,
+            input,
+            cancellationToken);
+
+        await transaction.RollbackAsync(cancellationToken);
+        return context;
     }
 
     public async Task<OperationsInterviewTaskList> GetMyInterviewTasksAsync(
@@ -3411,6 +3855,8 @@ public sealed class DapperOperationsRepository : IOperationsRepository
                 postRound.Name AS RoundName,
                 interviewer.DisplayName AS InterviewerName,
                 interviewer.UserId AS InterviewerUserId,
+                interviewer.AccountStatus AS InterviewerAccountStatus,
+                CASE WHEN interviewer.DeletedAtUtc IS NULL THEN CAST(0 AS BIT) ELSE CAST(1 AS BIT) END AS InterviewerIsDeleted,
                 scheduledBy.DisplayName AS ScheduledByName,
                 interview.StartsAtUtc AS StartsAt,
                 interview.DurationMinutes,
@@ -3465,10 +3911,10 @@ public sealed class DapperOperationsRepository : IOperationsRepository
         return new OperationsInterviewTaskList(rows.Select(ToInterviewTask).ToArray());
     }
 
-    public async Task<SubmitInterviewFeedbackResult?> SubmitInterviewFeedbackAsync(
+    public async Task<OperationsMutationRepositoryResult<SubmitInterviewFeedbackResult>> SubmitInterviewFeedbackAsync(
         Guid tenantId,
         Guid actorUserId,
-        bool canOverride,
+        bool canAdminOverrideInactiveInterviewer,
         Guid interviewId,
         SubmitInterviewFeedbackInput input,
         CancellationToken cancellationToken)
@@ -3485,10 +3931,15 @@ public sealed class DapperOperationsRepository : IOperationsRepository
             cancellationToken);
         if (context is null ||
             !string.Equals(context.Status, "Scheduled", StringComparison.OrdinalIgnoreCase) ||
-            (!canOverride && context.InterviewerUserId != actorUserId))
+            !InterviewFeedbackPolicy.CanSubmit(
+                actorUserId,
+                canAdminOverrideInactiveInterviewer,
+                context.InterviewerUserId,
+                context.InterviewerAccountStatus,
+                context.InterviewerIsDeleted))
         {
             await transaction.RollbackAsync(cancellationToken);
-            return null;
+            return new OperationsMutationRepositoryResult<SubmitInterviewFeedbackResult>(false, null, []);
         }
 
         const string duplicateFeedbackSql = """
@@ -3506,7 +3957,7 @@ public sealed class DapperOperationsRepository : IOperationsRepository
         if (submittedCount > 0)
         {
             await transaction.RollbackAsync(cancellationToken);
-            return null;
+            return new OperationsMutationRepositoryResult<SubmitInterviewFeedbackResult>(false, null, []);
         }
 
         var submittedAt = DateTimeOffset.UtcNow;
@@ -3575,6 +4026,9 @@ public sealed class DapperOperationsRepository : IOperationsRepository
             transaction,
             cancellationToken: cancellationToken));
 
+        var reviewPath = BuildRecruiterFeedbackReviewPath(context.JobRequestId, context.JobApplicationId);
+        var reviewUrl = BuildFrontendUrl(_frontendBaseUrl, reviewPath);
+
         await QueueInterviewFeedbackSubmittedEmailAsync(
             connection,
             transaction,
@@ -3582,7 +4036,15 @@ public sealed class DapperOperationsRepository : IOperationsRepository
             context,
             input,
             interviewId,
+            reviewUrl,
             cancellationToken);
+
+        var isAdminOverride = actorUserId != context.InterviewerUserId &&
+            canAdminOverrideInactiveInterviewer &&
+            InterviewFeedbackPolicy.IsInactiveInterviewer(context.InterviewerAccountStatus, context.InterviewerIsDeleted);
+        var auditDescription = isAdminOverride
+            ? $"Admin override feedback was submitted for {context.CandidateName} in {context.RoundName} because the assigned interviewer was inactive."
+            : $"Feedback was submitted for {context.CandidateName} in {context.RoundName}.";
 
         await InsertAuditAsync(
             connection,
@@ -3593,17 +4055,22 @@ public sealed class DapperOperationsRepository : IOperationsRepository
             "Interview",
             interviewId,
             context.RequestCode,
-            $"Feedback was submitted for {context.CandidateName} in {context.RoundName}.",
+            auditDescription,
             "Interview Feedback",
             cancellationToken);
 
+        var dispatches = BuildInterviewFeedbackSubmittedDispatches(context, input, reviewPath);
+
         await transaction.CommitAsync(cancellationToken);
-        return new SubmitInterviewFeedbackResult(
-            interviewId,
-            context.JobApplicationId,
-            "Completed",
-            input.Recommendation,
-            submittedAt);
+        return new OperationsMutationRepositoryResult<SubmitInterviewFeedbackResult>(
+            true,
+            new SubmitInterviewFeedbackResult(
+                interviewId,
+                context.JobApplicationId,
+                "Completed",
+                input.Recommendation,
+                submittedAt),
+            dispatches);
     }
 
     public async Task<OperationsMutationRepositoryResult<ForwardToHiringManagerResult>> ForwardToHiringManagerAsync(
@@ -3826,6 +4293,193 @@ public sealed class DapperOperationsRepository : IOperationsRepository
             .ToArray());
     }
 
+    public async Task<HiringManagerDashboard> GetHiringManagerDashboardAsync(
+        Guid tenantId,
+        Guid actorUserId,
+        bool includeAllTenantReviews,
+        CancellationToken cancellationToken)
+    {
+        await using var connection = _connectionFactory.CreateConnection();
+
+        const string sql = """
+            WITH LatestOffer AS
+            (
+                SELECT *
+                FROM
+                (
+                    SELECT
+                        offer.OfferLetterId,
+                        offer.JobApplicationId,
+                        offer.Status,
+                        offer.UpdatedAtUtc,
+                        ROW_NUMBER() OVER
+                        (
+                            PARTITION BY offer.JobApplicationId
+                            ORDER BY offer.Version DESC, offer.UpdatedAtUtc DESC
+                        ) AS RowNumber
+                    FROM dbo.OfferLetters AS offer
+                    WHERE offer.TenantId = @TenantId
+                ) AS rankedOffer
+                WHERE rankedOffer.RowNumber = 1
+            ),
+            MeetingAgg AS
+            (
+                SELECT
+                    meeting.JobApplicationId,
+                    SUM(CASE WHEN meeting.Status = N'Scheduled' THEN 1 ELSE 0 END) AS ScheduledMeetingCount,
+                    MAX(meeting.MeetingAtUtc) AS LatestMeetingAtUtc
+                FROM dbo.OfferPresentationMeetings AS meeting
+                WHERE meeting.TenantId = @TenantId
+                GROUP BY meeting.JobApplicationId
+            ),
+            InterviewAgg AS
+            (
+                SELECT
+                    interview.JobApplicationId,
+                    SUM(CASE WHEN interview.Status = N'Completed' THEN 1 ELSE 0 END) AS CompletedInterviews,
+                    CAST(AVG(CAST(
+                        CASE
+                            WHEN feedback.TechnicalScore IS NULL OR feedback.CommunicationScore IS NULL OR feedback.CultureScore IS NULL THEN NULL
+                            ELSE (feedback.TechnicalScore + feedback.CommunicationScore + feedback.CultureScore) / 3.0
+                        END AS DECIMAL(6,2))) AS DECIMAL(6,2)) AS AverageScore,
+                    SUM(CASE WHEN feedback.Recommendation IN (N'Proceed', N'Hire') THEN 1 ELSE 0 END) AS PositiveRecommendations
+                FROM dbo.Interviews AS interview
+                LEFT JOIN dbo.InterviewFeedback AS feedback
+                    ON feedback.TenantId = interview.TenantId
+                    AND feedback.InterviewId = interview.InterviewId
+                    AND feedback.IsSubmitted = CAST(1 AS BIT)
+                WHERE interview.TenantId = @TenantId
+                GROUP BY interview.JobApplicationId
+            )
+            SELECT
+                application.JobApplicationId,
+                request.JobRequestId,
+                application.JobPostId,
+                request.RequestCode,
+                COALESCE(post.Title, request.Title) AS JobTitle,
+                COALESCE(request.ClientName, N'') AS Client,
+                department.Name AS Department,
+                candidate.DisplayName AS CandidateName,
+                candidate.Email AS CandidateEmail,
+                application.CurrentStatus AS Status,
+                hiringManager.DisplayName AS HiringManagerName,
+                application.UpdatedAtUtc AS UpdatedAt,
+                DATEDIFF(DAY, application.UpdatedAtUtc, SYSUTCDATETIME()) AS DaysWaiting,
+                COALESCE(interviewAgg.CompletedInterviews, 0) AS CompletedInterviews,
+                interviewAgg.AverageScore,
+                COALESCE(interviewAgg.PositiveRecommendations, 0) AS PositiveRecommendations,
+                latestOffer.Status AS OfferLetterStatus,
+                COALESCE(meetingAgg.ScheduledMeetingCount, 0) AS ScheduledMeetingCount,
+                meetingAgg.LatestMeetingAtUtc AS LatestMeetingAt
+            FROM dbo.JobApplications AS application
+            INNER JOIN dbo.JobRequests AS request
+                ON request.TenantId = application.TenantId
+                AND request.JobRequestId = application.JobRequestId
+            LEFT JOIN dbo.JobPosts AS post
+                ON post.TenantId = application.TenantId
+                AND post.JobPostId = application.JobPostId
+            INNER JOIN dbo.Departments AS department
+                ON department.TenantId = request.TenantId
+                AND department.DepartmentId = request.DepartmentId
+            INNER JOIN dbo.Candidates AS candidate
+                ON candidate.TenantId = application.TenantId
+                AND candidate.CandidateId = application.CandidateId
+            INNER JOIN dbo.AppUsers AS hiringManager
+                ON hiringManager.TenantId = request.TenantId
+                AND hiringManager.UserId = request.HiringManagerUserId
+            LEFT JOIN InterviewAgg AS interviewAgg
+                ON interviewAgg.JobApplicationId = application.JobApplicationId
+            LEFT JOIN LatestOffer AS latestOffer
+                ON latestOffer.JobApplicationId = application.JobApplicationId
+            LEFT JOIN MeetingAgg AS meetingAgg
+                ON meetingAgg.JobApplicationId = application.JobApplicationId
+            WHERE application.TenantId = @TenantId
+              AND application.CurrentStatus IN (N'HiringManagerReview', N'Offered', N'OnHold', N'Rejected', N'Joined')
+              AND (@IncludeAllTenantReviews = CAST(1 AS BIT) OR request.HiringManagerUserId = @ActorUserId)
+            ORDER BY
+                CASE
+                    WHEN application.CurrentStatus = N'HiringManagerReview' THEN 0
+                    WHEN application.CurrentStatus IN (N'Offered', N'OnHold') THEN 1
+                    ELSE 2
+                END,
+                DATEDIFF(DAY, application.UpdatedAtUtc, SYSUTCDATETIME()) DESC,
+                application.UpdatedAtUtc DESC;
+            """;
+
+        var rows = (await connection.QueryAsync<HiringManagerDashboardReviewRow>(new CommandDefinition(
+            sql,
+            new { TenantId = tenantId, ActorUserId = actorUserId, IncludeAllTenantReviews = includeAllTenantReviews },
+            cancellationToken: cancellationToken))).ToArray();
+
+        var activeRows = rows.Where(row => IsActiveHiringManagerDashboardStatus(row.Status)).ToArray();
+        var summary = new HiringManagerDashboardSummary(
+            PendingReviews: rows.Count(row => IsDashboardStatus(row.Status, "HiringManagerReview")),
+            OfferFollowUps: rows.Count(row =>
+                IsDashboardStatus(row.Status, "Offered") ||
+                !string.IsNullOrWhiteSpace(row.OfferLetterStatus) ||
+                row.ScheduledMeetingCount > 0),
+            OnHold: rows.Count(row => IsDashboardStatus(row.Status, "OnHold")),
+            CompletedOutcomes: rows.Count(row => IsDashboardStatus(row.Status, "Rejected") || IsDashboardStatus(row.Status, "Joined")),
+            OldestWaitingDays: activeRows.Length == 0 ? 0 : activeRows.Max(row => Math.Max(0, row.DaysWaiting)));
+
+        var priorityReviews = activeRows
+            .Take(8)
+            .Select(row => new HiringManagerDashboardReviewItem(
+                row.JobApplicationId,
+                row.JobRequestId,
+                row.JobPostId,
+                row.RequestCode,
+                row.JobTitle,
+                row.Client,
+                row.Department,
+                row.CandidateName,
+                row.CandidateEmail,
+                row.Status,
+                row.HiringManagerName,
+                Utc(row.UpdatedAt),
+                Math.Max(0, row.DaysWaiting),
+                row.CompletedInterviews,
+                row.AverageScore,
+                row.PositiveRecommendations,
+                row.OfferLetterStatus,
+                ToUtc(row.LatestMeetingAt)))
+            .ToArray();
+
+        var offerPipeline = new[]
+        {
+            new HiringManagerDashboardStatusBreakdownItem("Offer draft", rows.Count(row => !string.IsNullOrWhiteSpace(row.OfferLetterStatus))),
+            new HiringManagerDashboardStatusBreakdownItem("Meeting scheduled", rows.Count(row => row.ScheduledMeetingCount > 0)),
+            new HiringManagerDashboardStatusBreakdownItem("Offered", rows.Count(row => IsDashboardStatus(row.Status, "Offered"))),
+            new HiringManagerDashboardStatusBreakdownItem("On hold", rows.Count(row => IsDashboardStatus(row.Status, "OnHold"))),
+            new HiringManagerDashboardStatusBreakdownItem("Joined", rows.Count(row => IsDashboardStatus(row.Status, "Joined"))),
+            new HiringManagerDashboardStatusBreakdownItem("Rejected", rows.Count(row => IsDashboardStatus(row.Status, "Rejected")))
+        };
+
+        var outcomeSplit = new[]
+        {
+            new HiringManagerDashboardStatusBreakdownItem("Offered", rows.Count(row => IsDashboardStatus(row.Status, "Offered"))),
+            new HiringManagerDashboardStatusBreakdownItem("Rejected", rows.Count(row => IsDashboardStatus(row.Status, "Rejected"))),
+            new HiringManagerDashboardStatusBreakdownItem("On hold", rows.Count(row => IsDashboardStatus(row.Status, "OnHold"))),
+            new HiringManagerDashboardStatusBreakdownItem("Joined", rows.Count(row => IsDashboardStatus(row.Status, "Joined")))
+        };
+
+        var recentActivity = await ReadHiringManagerDashboardActivityAsync(
+            connection,
+            tenantId,
+            actorUserId,
+            includeAllTenantReviews,
+            cancellationToken);
+
+        return new HiringManagerDashboard(
+            DateTimeOffset.UtcNow,
+            summary,
+            priorityReviews,
+            offerPipeline,
+            BuildHiringManagerDashboardAgingBuckets(activeRows),
+            outcomeSplit,
+            recentActivity);
+    }
+
     public async Task<HiringReviewDetail?> GetHiringReviewAsync(
         Guid tenantId,
         Guid actorUserId,
@@ -3849,6 +4503,126 @@ public sealed class DapperOperationsRepository : IOperationsRepository
         }
 
         return await ReadHiringReviewDetailAsync(connection, null, tenantId, jobApplicationId, cancellationToken);
+    }
+
+    public async Task<ReportingManagerOptionList?> SearchReportingManagerOptionsAsync(
+        Guid tenantId,
+        Guid actorUserId,
+        bool includeAllTenantReviews,
+        Guid jobRequestId,
+        string? search,
+        int skip,
+        int take,
+        CancellationToken cancellationToken)
+    {
+        await using var connection = _connectionFactory.CreateConnection();
+
+        const string requestSql = """
+            SELECT TOP (1)
+                request.DepartmentId,
+                COALESCE(department.Name, N'Unassigned') AS DepartmentName
+            FROM dbo.JobRequests AS request
+            LEFT JOIN dbo.Departments AS department
+                ON department.TenantId = request.TenantId
+                AND department.DepartmentId = request.DepartmentId
+            WHERE request.TenantId = @TenantId
+              AND request.JobRequestId = @JobRequestId
+              AND (@IncludeAllTenantReviews = CAST(1 AS BIT) OR request.HiringManagerUserId = @ActorUserId);
+            """;
+
+        var context = await connection.QuerySingleOrDefaultAsync<ReportingManagerRequestContextRow>(new CommandDefinition(
+            requestSql,
+            new
+            {
+                TenantId = tenantId,
+                ActorUserId = actorUserId,
+                IncludeAllTenantReviews = includeAllTenantReviews,
+                JobRequestId = jobRequestId
+            },
+            cancellationToken: cancellationToken));
+
+        if (context is null)
+        {
+            return null;
+        }
+
+        const string optionsSql = """
+            WITH FilteredEmployees AS
+            (
+                SELECT
+                    employee.EmployeeId,
+                    employee.DisplayName,
+                    employee.Email,
+                    employee.Designation,
+                    COALESCE(department.Name, N'Unassigned') AS Department,
+                    COALESCE(location.Name, N'Unassigned') AS Location,
+                    employee.ExperienceYears,
+                    CASE
+                        WHEN @RequestDepartmentId IS NOT NULL AND employee.DepartmentId = @RequestDepartmentId THEN CAST(1 AS BIT)
+                        ELSE CAST(0 AS BIT)
+                    END AS IsDepartmentMatch
+                FROM dbo.Employees AS employee
+                LEFT JOIN dbo.Departments AS department
+                    ON department.TenantId = employee.TenantId
+                    AND department.DepartmentId = employee.DepartmentId
+                LEFT JOIN dbo.Locations AS location
+                    ON location.TenantId = employee.TenantId
+                    AND location.LocationId = employee.LocationId
+                WHERE employee.TenantId = @TenantId
+                  AND employee.Status = N'Active'
+                  AND
+                  (
+                      @Search IS NULL
+                      OR employee.DisplayName LIKE @SearchPattern
+                      OR employee.Email LIKE @SearchPattern
+                      OR employee.Designation LIKE @SearchPattern
+                      OR department.Name LIKE @SearchPattern
+                  )
+            )
+            SELECT
+                EmployeeId,
+                DisplayName,
+                Email,
+                Designation,
+                Department,
+                Location,
+                ExperienceYears,
+                IsDepartmentMatch,
+                COUNT(1) OVER() AS TotalCount
+            FROM FilteredEmployees
+            ORDER BY
+                IsDepartmentMatch DESC,
+                COALESCE(ExperienceYears, 0) DESC,
+                DisplayName ASC
+            OFFSET @Skip ROWS FETCH NEXT @Take ROWS ONLY;
+            """;
+
+        var rows = (await connection.QueryAsync<ReportingManagerOptionRow>(new CommandDefinition(
+            optionsSql,
+            new
+            {
+                TenantId = tenantId,
+                RequestDepartmentId = context.DepartmentId,
+                Search = search,
+                SearchPattern = string.IsNullOrWhiteSpace(search) ? null : $"%{search.Trim()}%",
+                Skip = skip,
+                Take = take
+            },
+            cancellationToken: cancellationToken))).ToArray();
+
+        var totalCount = rows.FirstOrDefault()?.TotalCount ?? 0;
+        return new ReportingManagerOptionList(
+            rows.Select(row => new ReportingManagerOption(
+                row.EmployeeId,
+                row.DisplayName,
+                row.Email,
+                row.Designation,
+                row.Department,
+                row.Location,
+                row.ExperienceYears,
+                row.IsDepartmentMatch)).ToArray(),
+            totalCount,
+            skip + rows.Length < totalCount);
     }
 
     public async Task<OfferLetterDetails?> GenerateOfferLetterAsync(
@@ -4162,6 +4936,7 @@ public sealed class DapperOperationsRepository : IOperationsRepository
         var oldStatus = access.ApplicationStatus;
         var newStatus = input.Outcome;
         await UpdateApplicationStatusAsync(connection, transaction, tenantId, jobApplicationId, oldStatus, newStatus, actorUserId, input.Reason, cancellationToken);
+        var requestAlreadyClosed = string.Equals(access.RequestStatus, "Closed", StringComparison.OrdinalIgnoreCase);
 
         var jobRequestStatus = newStatus switch
         {
@@ -4178,7 +4953,11 @@ public sealed class DapperOperationsRepository : IOperationsRepository
         }
 
         var progress = await ReadJobRequestFulfillmentProgressAsync(connection, transaction, tenantId, access.JobRequestId, cancellationToken);
-        if (newStatus == "Joined" && progress.FulfilledPositions >= progress.RequiredPositions)
+        if (requestAlreadyClosed)
+        {
+            jobRequestStatus = "Closed";
+        }
+        else if (newStatus == "Joined" && progress.FulfilledPositions >= progress.RequiredPositions)
         {
             await CloseJobRequestAsync(connection, transaction, tenantId, access.JobRequestId, cancellationToken);
             await CloseJobPostsForRequestAsync(connection, transaction, tenantId, access.JobRequestId, cancellationToken);
@@ -5720,6 +6499,102 @@ public sealed class DapperOperationsRepository : IOperationsRepository
         return results;
     }
 
+    private static async Task<IReadOnlyList<OperationsInterviewerOption>> ListInterviewerOptionsAsync(
+        SqlConnection connection,
+        Guid tenantId,
+        Guid jobRequestId,
+        CancellationToken cancellationToken)
+    {
+        const string sql = """
+            SELECT
+                u.UserId,
+                u.DisplayName,
+                u.Email,
+                employee.DepartmentId,
+                department.Name AS DepartmentName,
+                employee.Designation,
+                COALESCE(roleNames.RoleNamesCsv, N'') AS RoleNamesCsv,
+                COALESCE(interviewStats.CompletedInterviewCount, 0) AS CompletedInterviewCount,
+                CAST(CASE WHEN employee.DepartmentId = request.DepartmentId THEN 1 ELSE 0 END AS bit) AS IsJobDepartmentMatch,
+                CAST(CASE WHEN hodRole.UserId IS NULL THEN 0 ELSE 1 END AS bit) AS IsDepartmentHod
+            FROM dbo.JobRequests AS request
+            INNER JOIN dbo.Employees AS employee
+                ON employee.TenantId = request.TenantId
+                AND employee.AppUserId IS NOT NULL
+                AND employee.Status = N'Active'
+            INNER JOIN dbo.AppUsers AS u
+                ON u.TenantId = employee.TenantId
+                AND u.UserId = employee.AppUserId
+                AND u.AccountStatus = N'Active'
+                AND u.DeletedAtUtc IS NULL
+            LEFT JOIN dbo.Departments AS department
+                ON department.TenantId = employee.TenantId
+                AND department.DepartmentId = employee.DepartmentId
+            OUTER APPLY
+            (
+                SELECT STRING_AGG(role.Name, N', ') AS RoleNamesCsv
+                FROM dbo.UserRoles AS userRole
+                INNER JOIN dbo.Roles AS role
+                    ON role.TenantId = userRole.TenantId
+                    AND role.RoleId = userRole.RoleId
+                    AND role.Status = N'Active'
+                WHERE userRole.TenantId = u.TenantId
+                  AND userRole.UserId = u.UserId
+            ) AS roleNames
+            OUTER APPLY
+            (
+                SELECT COUNT(1) AS CompletedInterviewCount
+                FROM dbo.Interviews AS interview
+                WHERE interview.TenantId = u.TenantId
+                  AND interview.InterviewerUserId = u.UserId
+                  AND interview.Status = N'Completed'
+            ) AS interviewStats
+            OUTER APPLY
+            (
+                SELECT TOP (1) userRole.UserId
+                FROM dbo.UserRoles AS userRole
+                INNER JOIN dbo.Roles AS role
+                    ON role.TenantId = userRole.TenantId
+                    AND role.RoleId = userRole.RoleId
+                    AND role.Code = N'HOD'
+                    AND role.Status = N'Active'
+                WHERE userRole.TenantId = u.TenantId
+                  AND userRole.UserId = u.UserId
+            ) AS hodRole
+            WHERE request.TenantId = @TenantId
+              AND request.JobRequestId = @JobRequestId
+            ORDER BY
+                CASE WHEN employee.DepartmentId = request.DepartmentId THEN 0 ELSE 1 END,
+                COALESCE(department.Name, N'Unassigned'),
+                u.DisplayName;
+            """;
+
+        var rows = await connection.QueryAsync<InterviewerOptionRow>(new CommandDefinition(
+            sql,
+            new { TenantId = tenantId, JobRequestId = jobRequestId },
+            cancellationToken: cancellationToken));
+
+        return rows.Select(ToInterviewerOption).ToArray();
+    }
+
+    private static OperationsInterviewerOption ToInterviewerOption(InterviewerOptionRow row)
+    {
+        var roleNames = row.RoleNamesCsv
+            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+
+        return new OperationsInterviewerOption(
+            row.UserId,
+            row.DisplayName,
+            row.Email,
+            row.DepartmentId,
+            row.DepartmentName,
+            row.Designation,
+            roleNames,
+            row.CompletedInterviewCount,
+            row.IsJobDepartmentMatch,
+            row.IsDepartmentHod);
+    }
+
     private static async Task<IReadOnlyList<OperationsLookupOption>> ListDepartmentHodInterviewersAsync(
         SqlConnection connection,
         Guid tenantId,
@@ -5990,6 +6865,235 @@ public sealed class DapperOperationsRepository : IOperationsRepository
         return blockingPriorRounds == 0;
     }
 
+    private static async Task<OperationsInterviewScheduleContext?> ReadInterviewScheduleContextForSchedulingAsync(
+        SqlConnection connection,
+        IDbTransaction transaction,
+        Guid tenantId,
+        Guid actorUserId,
+        Guid jobApplicationId,
+        ScheduleCandidateInterviewInput input,
+        CancellationToken cancellationToken)
+    {
+        var actionContext = await ReadApplicationActionContextAsync(
+            connection,
+            transaction,
+            tenantId,
+            jobApplicationId,
+            cancellationToken);
+        if (actionContext is null ||
+            !actionContext.JobPostId.HasValue ||
+            !await CanMutateRecruiterSourcingAsync(connection, transaction, tenantId, actorUserId, actionContext.JobRequestId, cancellationToken))
+        {
+            return null;
+        }
+
+        var round = await ReadJobPostRoundForSchedulingAsync(
+            connection,
+            transaction,
+            tenantId,
+            actionContext.JobPostId.Value,
+            input.JobPostInterviewRoundId,
+            cancellationToken);
+        if (round is null)
+        {
+            return null;
+        }
+
+        if (!await PriorInterviewRoundsReadyAsync(
+                connection,
+                transaction,
+                tenantId,
+                actionContext.JobPostId.Value,
+                jobApplicationId,
+                round.RoundOrder,
+                cancellationToken))
+        {
+            return null;
+        }
+
+        var interviewerUserId = input.InterviewerUserId.GetValueOrDefault(round.OwnerUserId.GetValueOrDefault());
+        if (interviewerUserId == Guid.Empty)
+        {
+            return null;
+        }
+
+        const string duplicateSql = """
+            SELECT COUNT(1)
+            FROM dbo.Interviews
+            WHERE TenantId = @TenantId
+              AND JobApplicationId = @JobApplicationId
+              AND JobPostInterviewRoundId = @JobPostInterviewRoundId
+              AND Status IN (N'Scheduled', N'Completed', N'Skipped');
+            """;
+        var duplicateCount = await connection.ExecuteScalarAsync<int>(new CommandDefinition(
+            duplicateSql,
+            new
+            {
+                TenantId = tenantId,
+                JobApplicationId = jobApplicationId,
+                input.JobPostInterviewRoundId
+            },
+            transaction,
+            cancellationToken: cancellationToken));
+        if (duplicateCount > 0)
+        {
+            return null;
+        }
+
+        const string sql = """
+            SELECT TOP (1)
+                tenant.DisplayName AS CompanyName,
+                request.RequestCode,
+                post.Title AS JobTitle,
+                candidate.DisplayName AS CandidateName,
+                candidate.Email AS CandidateEmail,
+                interviewer.UserId AS InterviewerUserId,
+                interviewer.DisplayName AS InterviewerName,
+                interviewer.Email AS InterviewerEmail,
+                hiringManager.UserId AS HiringManagerUserId,
+                hiringManager.DisplayName AS HiringManagerName,
+                hiringManager.Email AS HiringManagerEmail,
+                recruiter.DisplayName AS RecruiterName,
+                recruiter.Email AS RecruiterEmail,
+                postRound.Name AS RoundName,
+                postRound.DurationMinutes,
+                tenant.DefaultTimezoneId AS TimeZoneId
+            FROM dbo.JobApplications AS application
+            INNER JOIN dbo.Tenants AS tenant
+                ON tenant.TenantId = application.TenantId
+            INNER JOIN dbo.JobRequests AS request
+                ON request.TenantId = application.TenantId
+                AND request.JobRequestId = application.JobRequestId
+            INNER JOIN dbo.JobPosts AS post
+                ON post.TenantId = application.TenantId
+                AND post.JobPostId = application.JobPostId
+            INNER JOIN dbo.Candidates AS candidate
+                ON candidate.TenantId = application.TenantId
+                AND candidate.CandidateId = application.CandidateId
+            INNER JOIN dbo.JobPostInterviewRounds AS postRound
+                ON postRound.TenantId = application.TenantId
+                AND postRound.JobPostInterviewRoundId = @JobPostInterviewRoundId
+            INNER JOIN dbo.AppUsers AS interviewer
+                ON interviewer.TenantId = application.TenantId
+                AND interviewer.UserId = @InterviewerUserId
+                AND interviewer.AccountStatus = N'Active'
+                AND interviewer.DeletedAtUtc IS NULL
+            INNER JOIN dbo.AppUsers AS hiringManager
+                ON hiringManager.TenantId = request.TenantId
+                AND hiringManager.UserId = request.HiringManagerUserId
+                AND hiringManager.AccountStatus = N'Active'
+                AND hiringManager.DeletedAtUtc IS NULL
+            INNER JOIN dbo.AppUsers AS recruiter
+                ON recruiter.TenantId = application.TenantId
+                AND recruiter.UserId = @ActorUserId
+            WHERE application.TenantId = @TenantId
+              AND application.JobApplicationId = @JobApplicationId
+              AND application.JobPostId = @JobPostId
+              AND postRound.JobPostId = @JobPostId
+              AND postRound.Status = N'Active';
+            """;
+
+        return await connection.QuerySingleOrDefaultAsync<OperationsInterviewScheduleContext>(new CommandDefinition(
+            sql,
+            new
+            {
+                TenantId = tenantId,
+                JobApplicationId = jobApplicationId,
+                JobPostId = actionContext.JobPostId.Value,
+                input.JobPostInterviewRoundId,
+                InterviewerUserId = interviewerUserId,
+                ActorUserId = actorUserId
+            },
+            transaction,
+            cancellationToken: cancellationToken));
+    }
+
+    private static async Task<OperationsScheduleCandidateInterviewValidationStatus> ReadCandidateInterviewScheduleValidationAsync(
+        SqlConnection connection,
+        IDbTransaction transaction,
+        Guid tenantId,
+        Guid actorUserId,
+        Guid jobApplicationId,
+        ScheduleCandidateInterviewInput input,
+        CancellationToken cancellationToken)
+    {
+        var actionContext = await ReadApplicationActionContextAsync(
+            connection,
+            transaction,
+            tenantId,
+            jobApplicationId,
+            cancellationToken);
+        if (actionContext is null ||
+            !actionContext.JobPostId.HasValue ||
+            !await CanMutateRecruiterSourcingAsync(connection, transaction, tenantId, actorUserId, actionContext.JobRequestId, cancellationToken))
+        {
+            return OperationsScheduleCandidateInterviewValidationStatus.NotFound;
+        }
+
+        var round = await ReadJobPostRoundForSchedulingAsync(
+            connection,
+            transaction,
+            tenantId,
+            actionContext.JobPostId.Value,
+            input.JobPostInterviewRoundId,
+            cancellationToken);
+        if (round is null)
+        {
+            return OperationsScheduleCandidateInterviewValidationStatus.NotFound;
+        }
+
+        if (!await PriorInterviewRoundsReadyAsync(
+                connection,
+                transaction,
+                tenantId,
+                actionContext.JobPostId.Value,
+                jobApplicationId,
+                round.RoundOrder,
+                cancellationToken))
+        {
+            return OperationsScheduleCandidateInterviewValidationStatus.PriorRoundsPending;
+        }
+
+        const string duplicateSql = """
+            SELECT COUNT(1)
+            FROM dbo.Interviews
+            WHERE TenantId = @TenantId
+              AND JobApplicationId = @JobApplicationId
+              AND JobPostInterviewRoundId = @JobPostInterviewRoundId
+              AND Status IN (N'Scheduled', N'Completed', N'Skipped');
+            """;
+        var duplicateCount = await connection.ExecuteScalarAsync<int>(new CommandDefinition(
+            duplicateSql,
+            new
+            {
+                TenantId = tenantId,
+                JobApplicationId = jobApplicationId,
+                input.JobPostInterviewRoundId
+            },
+            transaction,
+            cancellationToken: cancellationToken));
+        if (duplicateCount > 0)
+        {
+            return OperationsScheduleCandidateInterviewValidationStatus.RoundAlreadyScheduled;
+        }
+
+        var interviewerUserId = input.InterviewerUserId.GetValueOrDefault(round.OwnerUserId.GetValueOrDefault());
+        if (interviewerUserId == Guid.Empty)
+        {
+            return OperationsScheduleCandidateInterviewValidationStatus.MissingInterviewer;
+        }
+
+        var interviewerName = await ReadActiveUserDisplayNameAsync(
+            connection,
+            transaction,
+            tenantId,
+            interviewerUserId,
+            cancellationToken);
+        return string.IsNullOrWhiteSpace(interviewerName)
+            ? OperationsScheduleCandidateInterviewValidationStatus.MissingInterviewer
+            : OperationsScheduleCandidateInterviewValidationStatus.Ready;
+    }
+
     private static async Task<string?> ReadActiveUserDisplayNameAsync(
         SqlConnection connection,
         IDbTransaction transaction,
@@ -6029,6 +7133,8 @@ public sealed class DapperOperationsRepository : IOperationsRepository
             row.RoundName,
             row.InterviewerName,
             row.InterviewerUserId,
+            row.InterviewerAccountStatus,
+            row.InterviewerIsDeleted,
             row.ScheduledByName,
             Utc(row.StartsAt),
             row.DurationMinutes,
@@ -6101,6 +7207,93 @@ public sealed class DapperOperationsRepository : IOperationsRepository
             cancellationToken);
     }
 
+    private static IReadOnlyList<OperationsNotificationDispatch> BuildInterviewScheduledDispatches(
+        Guid interviewId,
+        InterviewScheduleNotificationContextRow context)
+    {
+        var startsAtUtc = Utc(context.StartsAt);
+        var startsAtLabel = startsAtUtc.ToString("MMM d, yyyy, h:mm tt 'UTC'", CultureInfo.InvariantCulture);
+        var internalRoute = BuildRecruiterFeedbackReviewPath(context.JobRequestId, context.JobApplicationId);
+        var interviewerRoute = $"/app/interview-feedback?interviewId={interviewId:D}";
+        var candidateRoute = $"/candidate/applications/{context.JobApplicationId:D}/status";
+        var sharedMetadata = new Dictionary<string, string>
+        {
+            ["requestCode"] = context.RequestCode,
+            ["jobTitle"] = context.JobTitle,
+            ["candidateName"] = context.CandidateName,
+            ["roundName"] = context.RoundName,
+            ["startsAtUtc"] = startsAtUtc.ToString("O", CultureInfo.InvariantCulture)
+        };
+
+        if (!string.IsNullOrWhiteSpace(context.MeetingLink))
+        {
+            sharedMetadata["meetingLink"] = context.MeetingLink;
+        }
+
+        var dispatches = new List<OperationsNotificationDispatch>();
+        AddDispatch(
+            dispatches,
+            interviewId,
+            context.CandidateUserId,
+            "Interview scheduled",
+            $"Your {context.RoundName} interview for {context.JobTitle} is scheduled for {startsAtLabel}.",
+            candidateRoute,
+            sharedMetadata);
+        AddDispatch(
+            dispatches,
+            interviewId,
+            context.InterviewerUserId,
+            "Interview scheduled",
+            $"{context.CandidateName}'s {context.RoundName} interview for {context.JobTitle} is scheduled for {startsAtLabel}.",
+            interviewerRoute,
+            sharedMetadata);
+        AddDispatch(
+            dispatches,
+            interviewId,
+            context.HiringManagerUserId,
+            "Interview scheduled",
+            $"{context.CandidateName}'s {context.RoundName} interview for {context.JobTitle} is scheduled for {startsAtLabel}.",
+            internalRoute,
+            sharedMetadata);
+
+        return dispatches
+            .Where(dispatch => dispatch.RecipientUserId != Guid.Empty)
+            .GroupBy(dispatch => dispatch.RecipientUserId)
+            .Select(group => group.First())
+            .ToArray();
+    }
+
+    private static void AddDispatch(
+        ICollection<OperationsNotificationDispatch> dispatches,
+        Guid interviewId,
+        Guid recipientUserId,
+        string title,
+        string message,
+        string route,
+        IReadOnlyDictionary<string, string> sharedMetadata)
+    {
+        if (recipientUserId == Guid.Empty)
+        {
+            return;
+        }
+
+        var metadata = new Dictionary<string, string>(sharedMetadata)
+        {
+            ["route"] = route
+        };
+
+        dispatches.Add(new OperationsNotificationDispatch(
+            recipientUserId,
+            NotificationEventCodes.InterviewScheduled,
+            title,
+            message,
+            "Interview",
+            "Info",
+            "Interview",
+            interviewId,
+            metadata));
+    }
+
     private static async Task QueueInterviewFeedbackSubmittedEmailAsync(
         SqlConnection connection,
         IDbTransaction transaction,
@@ -6108,6 +7301,7 @@ public sealed class DapperOperationsRepository : IOperationsRepository
         InterviewFeedbackContextRow context,
         SubmitInterviewFeedbackInput input,
         Guid interviewId,
+        string reviewUrl,
         CancellationToken cancellationToken)
     {
         if (string.IsNullOrWhiteSpace(context.RecruiterEmail))
@@ -6124,19 +7318,24 @@ public sealed class DapperOperationsRepository : IOperationsRepository
             "User:Recruiter",
             cancellationToken);
 
+        var subject = $"Feedback submitted: {context.CandidateName}";
         var body = string.Join(Environment.NewLine, new[]
         {
             $"Hello {context.RecruiterName},",
             string.Empty,
-            $"Feedback for {context.CandidateName} is ready for recruiter review.",
+            $"Feedback for {context.CandidateName}'s {context.RoundName} interview is ready for recruiter review.",
             string.Empty,
             $"Job: {context.JobTitle} ({context.RequestCode})",
             $"Round: {context.RoundName}",
             $"Recommendation: {input.Recommendation}",
             $"Scores: Technical {input.TechnicalScore}/5, Communication {input.CommunicationScore}/5, Culture {input.CultureScore}/5",
             string.Empty,
+            "Next step: Review the feedback and schedule the next interview when appropriate.",
+            reviewUrl,
+            string.Empty,
             input.FeedbackText
         });
+        var htmlBody = BuildInterviewFeedbackSubmittedHtmlBody(context, input, reviewUrl);
 
         await InsertInterviewEmailOutboxAsync(
             connection,
@@ -6151,10 +7350,93 @@ public sealed class DapperOperationsRepository : IOperationsRepository
                     "Recruiter",
                     context.RecruiterUserId,
                     context.RecruiterEmail,
-                    $"Feedback submitted for {context.CandidateName}",
-                    body)
+                    subject,
+                    body,
+                    htmlBody)
             ],
             cancellationToken);
+    }
+
+    private static IReadOnlyList<OperationsNotificationDispatch> BuildInterviewFeedbackSubmittedDispatches(
+        InterviewFeedbackContextRow context,
+        SubmitInterviewFeedbackInput input,
+        string reviewPath)
+    {
+        if (context.RecruiterUserId == Guid.Empty)
+        {
+            return [];
+        }
+
+        return
+        [
+            new OperationsNotificationDispatch(
+                context.RecruiterUserId,
+                NotificationEventCodes.InterviewFeedbackSubmitted,
+                "Interview feedback submitted",
+                $"{context.CandidateName}'s {context.RoundName} feedback is ready. Review it and schedule the next interview.",
+                "Interview",
+                "Info",
+                "JobApplication",
+                context.JobApplicationId,
+                new Dictionary<string, string>
+                {
+                    ["requestCode"] = context.RequestCode,
+                    ["jobTitle"] = context.JobTitle,
+                    ["candidateName"] = context.CandidateName,
+                    ["roundName"] = context.RoundName,
+                    ["recommendation"] = input.Recommendation,
+                    ["route"] = reviewPath
+                })
+        ];
+    }
+
+    private static string BuildInterviewFeedbackSubmittedHtmlBody(
+        InterviewFeedbackContextRow context,
+        SubmitInterviewFeedbackInput input,
+        string reviewUrl)
+    {
+        return TalentPilotEmailTemplate.Build(
+            "Interview Feedback",
+            $"{context.CandidateName} feedback is ready",
+            $"Hello {context.RecruiterName},\n\n{context.RoundName} feedback has been submitted for {context.CandidateName}. Review the notes, then schedule the next interview when the candidate should continue.",
+            [
+                ("Role", $"{context.JobTitle} ({context.RequestCode})"),
+                ("Recommendation", input.Recommendation),
+                ("Scores", $"Technical {input.TechnicalScore}/5 - Communication {input.CommunicationScore}/5 - Culture {input.CultureScore}/5")
+            ],
+            "Review feedback and schedule next interview",
+            reviewUrl,
+            $"{context.CandidateName} feedback is ready");
+    }
+
+    private static string BuildRecruiterFeedbackReviewPath(Guid jobRequestId, Guid jobApplicationId)
+    {
+        return $"/app/recruitment/sourcing/{jobRequestId:D}?tab=applications&applicationId={jobApplicationId:D}";
+    }
+
+    private static string BuildFrontendUrl(string frontendBaseUrl, string pathAndQuery)
+    {
+        if (!Uri.TryCreate(frontendBaseUrl, UriKind.Absolute, out var baseUri))
+        {
+            return pathAndQuery;
+        }
+
+        var pathParts = pathAndQuery.Split('?', 2);
+        var builder = new UriBuilder(baseUri)
+        {
+            Path = pathParts[0],
+            Query = pathParts.Length > 1 ? pathParts[1] : string.Empty
+        };
+
+        return builder.Uri.ToString();
+    }
+
+    private static string NormalizeFrontendBaseUrl(string value)
+    {
+        var trimmed = value.Trim();
+        return string.IsNullOrWhiteSpace(trimmed)
+            ? "http://localhost:4200"
+            : trimmed.TrimEnd('/');
     }
 
     private static async Task InsertInterviewEmailOutboxAsync(
@@ -6182,6 +7464,7 @@ public sealed class DapperOperationsRepository : IOperationsRepository
                 {
                     subject = message.Subject,
                     body = message.Body,
+                    htmlBody = message.HtmlBody,
                     entityType,
                     entityId,
                     variables = new Dictionary<string, string>
@@ -6246,9 +7529,12 @@ public sealed class DapperOperationsRepository : IOperationsRepository
     {
         const string sql = """
             SELECT TOP (1)
+                application.JobApplicationId,
+                request.JobRequestId,
                 tenant.DisplayName AS CompanyName,
                 request.RequestCode,
                 post.Title AS JobTitle,
+                candidate.AppUserId AS CandidateUserId,
                 candidate.DisplayName AS CandidateName,
                 candidate.Email AS CandidateEmail,
                 interviewer.UserId AS InterviewerUserId,
@@ -6301,6 +7587,111 @@ public sealed class DapperOperationsRepository : IOperationsRepository
             cancellationToken: cancellationToken));
     }
 
+    private static async Task UpsertInterviewParticipantsAsync(
+        SqlConnection connection,
+        IDbTransaction transaction,
+        Guid tenantId,
+        Guid interviewId,
+        InterviewScheduleNotificationContextRow context,
+        CancellationToken cancellationToken)
+    {
+        var rows = new[]
+            {
+                new InterviewParticipantInsertRow(
+                    Guid.NewGuid(),
+                    tenantId,
+                    interviewId,
+                    context.CandidateUserId,
+                    context.CandidateName,
+                    context.CandidateEmail,
+                    "Candidate",
+                    false),
+                new InterviewParticipantInsertRow(
+                    Guid.NewGuid(),
+                    tenantId,
+                    interviewId,
+                    context.InterviewerUserId,
+                    context.InterviewerName,
+                    context.InterviewerEmail,
+                    "Interviewer",
+                    false),
+                new InterviewParticipantInsertRow(
+                    Guid.NewGuid(),
+                    tenantId,
+                    interviewId,
+                    context.HiringManagerUserId,
+                    context.HiringManagerName,
+                    context.HiringManagerEmail,
+                    "HiringManager",
+                    true)
+            }
+            .Where(row => !string.IsNullOrWhiteSpace(row.Email))
+            .GroupBy(row => row.Email.Trim(), StringComparer.OrdinalIgnoreCase)
+            .Select(group => group.First())
+            .ToArray();
+
+        if (rows.Length == 0)
+        {
+            return;
+        }
+
+        const string sql = """
+            MERGE dbo.InterviewParticipants AS target
+            USING
+            (
+                SELECT
+                    @InterviewParticipantId AS InterviewParticipantId,
+                    @TenantId AS TenantId,
+                    @InterviewId AS InterviewId,
+                    @UserId AS UserId,
+                    @DisplayName AS DisplayName,
+                    @Email AS Email,
+                    @ParticipantRole AS ParticipantRole,
+                    @IsOptional AS IsOptional
+            ) AS source
+            ON target.TenantId = source.TenantId
+               AND target.InterviewId = source.InterviewId
+               AND target.Email = source.Email
+            WHEN MATCHED THEN
+                UPDATE SET
+                    UserId = source.UserId,
+                    DisplayName = source.DisplayName,
+                    ParticipantRole = source.ParticipantRole,
+                    IsOptional = source.IsOptional
+            WHEN NOT MATCHED THEN
+                INSERT
+                (
+                    InterviewParticipantId,
+                    TenantId,
+                    InterviewId,
+                    UserId,
+                    DisplayName,
+                    Email,
+                    ParticipantRole,
+                    IsOptional,
+                    CreatedAtUtc
+                )
+                VALUES
+                (
+                    source.InterviewParticipantId,
+                    source.TenantId,
+                    source.InterviewId,
+                    source.UserId,
+                    source.DisplayName,
+                    source.Email,
+                    source.ParticipantRole,
+                    source.IsOptional,
+                    SYSUTCDATETIME()
+                );
+            """;
+
+        await connection.ExecuteAsync(new CommandDefinition(
+            sql,
+            rows,
+            transaction,
+            cancellationToken: cancellationToken));
+    }
+
     private static async Task<InterviewFeedbackContextRow?> ReadInterviewFeedbackContextAsync(
         SqlConnection connection,
         IDbTransaction transaction,
@@ -6312,7 +7703,10 @@ public sealed class DapperOperationsRepository : IOperationsRepository
             SELECT TOP (1)
                 interview.InterviewId,
                 application.JobApplicationId,
+                application.JobRequestId,
                 interview.InterviewerUserId,
+                interviewer.AccountStatus AS InterviewerAccountStatus,
+                CASE WHEN interviewer.DeletedAtUtc IS NULL THEN CAST(0 AS BIT) ELSE CAST(1 AS BIT) END AS InterviewerIsDeleted,
                 interview.Status,
                 request.RequestCode,
                 post.Title AS JobTitle,
@@ -6337,6 +7731,9 @@ public sealed class DapperOperationsRepository : IOperationsRepository
             INNER JOIN dbo.JobPostInterviewRounds AS postRound
                 ON postRound.TenantId = interview.TenantId
                 AND postRound.JobPostInterviewRoundId = interview.JobPostInterviewRoundId
+            INNER JOIN dbo.AppUsers AS interviewer
+                ON interviewer.TenantId = interview.TenantId
+                AND interviewer.UserId = interview.InterviewerUserId
             INNER JOIN dbo.AppUsers AS recruiter
                 ON recruiter.TenantId = interview.TenantId
                 AND recruiter.UserId = interview.ScheduledByUserId
@@ -6878,7 +8275,8 @@ public sealed class DapperOperationsRepository : IOperationsRepository
                 COALESCE(nr.EntityType, N'WorkflowAssignment') AS EntityType,
                 COALESCE(nr.EntityId, nr.NotificationEventId) AS EntityId,
                 nr.ReadAtUtc AS ReadAt,
-                nr.CreatedAtUtc AS CreatedAt
+                nr.CreatedAtUtc AS CreatedAt,
+                nr.MetadataJson
             FROM dbo.NotificationRecipients AS nr
             INNER JOIN dbo.NotificationEvents AS ne ON ne.NotificationEventId = nr.NotificationEventId
             WHERE nr.TenantId = @TenantId
@@ -6900,8 +8298,48 @@ public sealed class DapperOperationsRepository : IOperationsRepository
                 row.EntityType,
                 row.EntityId,
                 ToUtc(row.ReadAt),
-                Utc(row.CreatedAt)))
+                Utc(row.CreatedAt),
+                ParseStringMetadata(row.MetadataJson)))
             .ToArray();
+    }
+
+    private static IReadOnlyDictionary<string, string> ParseStringMetadata(string? metadataJson)
+    {
+        if (string.IsNullOrWhiteSpace(metadataJson))
+        {
+            return new Dictionary<string, string>();
+        }
+
+        try
+        {
+            using var document = JsonDocument.Parse(metadataJson);
+            if (document.RootElement.ValueKind != JsonValueKind.Object)
+            {
+                return new Dictionary<string, string>();
+            }
+
+            var values = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var property in document.RootElement.EnumerateObject())
+            {
+                var value = property.Value.ValueKind switch
+                {
+                    JsonValueKind.String => property.Value.GetString(),
+                    JsonValueKind.Number or JsonValueKind.True or JsonValueKind.False => property.Value.ToString(),
+                    _ => null
+                };
+
+                if (!string.IsNullOrWhiteSpace(value))
+                {
+                    values[property.Name] = value;
+                }
+            }
+
+            return values;
+        }
+        catch (JsonException)
+        {
+            return new Dictionary<string, string>();
+        }
     }
 
     private static async Task<OperationsJobRequest?> GetJobRequestByIdAsync(
@@ -7675,7 +9113,7 @@ public sealed class DapperOperationsRepository : IOperationsRepository
                   FROM dbo.JobApplications AS hiredApplication
                   WHERE hiredApplication.TenantId = candidate.TenantId
                     AND hiredApplication.CandidateId = candidate.CandidateId
-                    AND hiredApplication.CurrentStatus = N'Hired'
+                    AND hiredApplication.CurrentStatus IN (N'Hired', N'Joined')
               )
               AND NOT EXISTS
               (
@@ -7719,6 +9157,11 @@ public sealed class DapperOperationsRepository : IOperationsRepository
 
         var candidateIds = rows.Select(row => row.CandidateId).Distinct().ToArray();
         var applications = await ListRediscoveryApplicationEvidenceAsync(connection, tenantId, jobRequestId, candidateIds, cancellationToken);
+        var documentsByApplication = await ListApplicantDocumentEvidenceAsync(
+            connection,
+            tenantId,
+            applications.Select(application => application.JobApplicationId).Distinct().ToArray(),
+            cancellationToken);
         var interviews = await ListRediscoveryInterviewEvidenceAsync(
             connection,
             tenantId,
@@ -7737,6 +9180,9 @@ public sealed class DapperOperationsRepository : IOperationsRepository
                             application,
                             interviewEvidenceByApplication.TryGetValue(application.JobApplicationId, out var applicationInterviews)
                                 ? applicationInterviews
+                                : [],
+                            documentsByApplication.TryGetValue(application.JobApplicationId, out var applicationDocuments)
+                                ? applicationDocuments
                                 : []))
                     .ToArray());
         var interviewLookup = interviews
@@ -7815,6 +9261,7 @@ public sealed class DapperOperationsRepository : IOperationsRepository
                 COALESCE(location.Name, N'Remote') AS Location,
                 application.CurrentStatus AS Status,
                 application.SourceLabel,
+                application.CoverLetterText,
                 application.AppliedAtUtc AS AppliedAt,
                 application.FinalDecisionAtUtc AS FinalDecisionAt,
                 application.FinalDecisionReason
@@ -7865,6 +9312,7 @@ public sealed class DapperOperationsRepository : IOperationsRepository
                 COALESCE(location.Name, N'Remote') AS Location,
                 application.CurrentStatus AS Status,
                 application.SourceLabel,
+                application.CoverLetterText,
                 application.AppliedAtUtc AS AppliedAt,
                 application.FinalDecisionAtUtc AS FinalDecisionAt,
                 application.FinalDecisionReason
@@ -7909,6 +9357,117 @@ public sealed class DapperOperationsRepository : IOperationsRepository
                 application,
                 interviewEvidenceByApplication.TryGetValue(application.JobApplicationId, out var applicationInterviews)
                     ? applicationInterviews
+                    : []))
+            .ToArray();
+    }
+
+    private static async Task<IReadOnlyList<OperationsCandidateMeetingEvent>> ListCandidateMeetingEventsAsync(
+        SqlConnection connection,
+        Guid tenantId,
+        Guid candidateId,
+        CancellationToken cancellationToken)
+    {
+        const string meetingSql = """
+            SELECT
+                interview.InterviewId,
+                application.JobApplicationId,
+                application.JobRequestId,
+                application.JobPostId,
+                request.RequestCode,
+                COALESCE(post.Title, request.Title) AS JobTitle,
+                COALESCE(request.ClientName, N'Internal') AS Client,
+                COALESCE(postRound.Name, N'Interview') AS RoundName,
+                interview.Status,
+                interview.StartsAtUtc AS StartsAt,
+                interview.DurationMinutes,
+                interview.MeetingLink,
+                interview.CalendarProvider,
+                interview.CalendarEventId,
+                interview.CalendarEventHtmlLink,
+                interview.LocationText
+            FROM dbo.Interviews AS interview
+            INNER JOIN dbo.JobApplications AS application
+                ON application.TenantId = interview.TenantId
+                AND application.JobApplicationId = interview.JobApplicationId
+            INNER JOIN dbo.JobRequests AS request
+                ON request.TenantId = application.TenantId
+                AND request.JobRequestId = application.JobRequestId
+            LEFT JOIN dbo.JobPosts AS post
+                ON post.TenantId = application.TenantId
+                AND post.JobPostId = application.JobPostId
+            LEFT JOIN dbo.JobPostInterviewRounds AS postRound
+                ON postRound.TenantId = interview.TenantId
+                AND postRound.JobPostInterviewRoundId = interview.JobPostInterviewRoundId
+            WHERE interview.TenantId = @TenantId
+              AND application.CandidateId = @CandidateId
+            ORDER BY interview.StartsAtUtc DESC;
+            """;
+
+        var meetings = (await connection.QueryAsync<CandidateMeetingEventRow>(new CommandDefinition(
+            meetingSql,
+            new { TenantId = tenantId, CandidateId = candidateId },
+            cancellationToken: cancellationToken))).ToArray();
+        if (meetings.Length == 0)
+        {
+            return [];
+        }
+
+        const string participantSql = """
+            SELECT
+                InterviewId,
+                DisplayName,
+                Email,
+                ParticipantRole AS Role,
+                IsOptional
+            FROM dbo.InterviewParticipants
+            WHERE TenantId = @TenantId
+              AND InterviewId IN @InterviewIds
+            ORDER BY
+                CASE ParticipantRole
+                    WHEN N'Candidate' THEN 1
+                    WHEN N'Interviewer' THEN 2
+                    WHEN N'HiringManager' THEN 3
+                    WHEN N'Recruiter' THEN 4
+                    ELSE 5
+                END,
+                DisplayName;
+            """;
+        var participants = (await connection.QueryAsync<CandidateMeetingParticipantRow>(new CommandDefinition(
+            participantSql,
+            new { TenantId = tenantId, InterviewIds = meetings.Select(meeting => meeting.InterviewId).ToArray() },
+            cancellationToken: cancellationToken))).ToArray();
+        var participantsByInterview = participants
+            .GroupBy(participant => participant.InterviewId)
+            .ToDictionary(
+                group => group.Key,
+                group => group
+                    .Select(participant => new OperationsCandidateMeetingParticipant(
+                        participant.DisplayName,
+                        participant.Email,
+                        participant.Role,
+                        participant.IsOptional))
+                    .ToArray());
+
+        return meetings
+            .Select(meeting => new OperationsCandidateMeetingEvent(
+                meeting.InterviewId,
+                meeting.JobApplicationId,
+                meeting.JobRequestId,
+                meeting.JobPostId,
+                meeting.RequestCode,
+                meeting.JobTitle,
+                meeting.Client,
+                meeting.RoundName,
+                meeting.Status,
+                Utc(meeting.StartsAt),
+                meeting.DurationMinutes,
+                meeting.MeetingLink,
+                meeting.CalendarProvider,
+                meeting.CalendarEventId,
+                meeting.CalendarEventHtmlLink,
+                meeting.LocationText,
+                participantsByInterview.TryGetValue(meeting.InterviewId, out var meetingParticipants)
+                    ? meetingParticipants
                     : []))
             .ToArray();
     }
@@ -7979,6 +9538,11 @@ public sealed class DapperOperationsRepository : IOperationsRepository
             jobRequestId,
             candidateIds,
             cancellationToken);
+        var historicalDocumentsByApplication = await ListApplicantDocumentEvidenceAsync(
+            connection,
+            tenantId,
+            historicalApplications.Select(application => application.JobApplicationId).Distinct().ToArray(),
+            cancellationToken);
         var interviewApplicationIds = historicalApplications
             .Select(application => application.JobApplicationId)
             .Concat(applicationIds)
@@ -7997,6 +9561,9 @@ public sealed class DapperOperationsRepository : IOperationsRepository
                         application,
                         interviewsByApplication.TryGetValue(application.JobApplicationId, out var applicationInterviews)
                             ? applicationInterviews
+                            : [],
+                        historicalDocumentsByApplication.TryGetValue(application.JobApplicationId, out var applicationDocuments)
+                            ? applicationDocuments
                             : []))
                     .ToArray());
         var interviewEvidenceByCandidate = interviews
@@ -8077,7 +9644,14 @@ public sealed class DapperOperationsRepository : IOperationsRepository
                 StorageKey,
                 StorageContainer,
                 ContentHashSha256,
-                UploadedAtUtc AS UploadedAt
+                UploadedAtUtc AS UploadedAt,
+                ExtractionStatus,
+                CAST(CASE WHEN NULLIF(LTRIM(RTRIM(ExtractedText)), N'') IS NULL THEN 0 ELSE 1 END AS bit) AS HasExtractedText,
+                ExtractedText,
+                ExtractedTextHashSha256,
+                ParserVersion,
+                ExtractedAtUtc AS ExtractedAt,
+                ExtractionError
             FROM dbo.JobApplicationDocuments
             WHERE TenantId = @TenantId
               AND JobApplicationId IN @ApplicationIds
@@ -8105,8 +9679,80 @@ public sealed class DapperOperationsRepository : IOperationsRepository
                         row.StorageKey,
                         row.StorageContainer,
                         row.ContentHashSha256,
-                        Utc(row.UploadedAt)))
+                        Utc(row.UploadedAt),
+                        row.ExtractionStatus,
+                        row.HasExtractedText,
+                        row.ExtractedText,
+                        row.ExtractedTextHashSha256,
+                        row.ParserVersion,
+                        ToUtc(row.ExtractedAt),
+                        row.ExtractionError))
                     .ToArray());
+    }
+
+    public async Task<OperationsApplicantDocumentEvidence?> GetRecruiterApplicationDocumentAsync(
+        Guid tenantId,
+        Guid jobApplicationId,
+        Guid applicationDocumentId,
+        CancellationToken cancellationToken)
+    {
+        await using var connection = _connectionFactory.CreateConnection();
+        const string sql = """
+            SELECT
+                document.ApplicationDocumentId,
+                document.JobApplicationId,
+                document.DocumentType,
+                document.OriginalFileName AS FileName,
+                document.ContentType,
+                document.SizeBytes,
+                document.StorageProvider,
+                document.StorageKey,
+                document.StorageContainer,
+                document.ContentHashSha256,
+                document.UploadedAtUtc AS UploadedAt,
+                document.ExtractionStatus,
+                CAST(CASE WHEN NULLIF(LTRIM(RTRIM(document.ExtractedText)), N'') IS NULL THEN 0 ELSE 1 END AS bit) AS HasExtractedText,
+                document.ExtractedText,
+                document.ExtractedTextHashSha256,
+                document.ParserVersion,
+                document.ExtractedAtUtc AS ExtractedAt,
+                document.ExtractionError
+            FROM dbo.JobApplicationDocuments AS document
+            INNER JOIN dbo.JobApplications AS application
+                ON application.TenantId = document.TenantId
+                AND application.JobApplicationId = document.JobApplicationId
+            WHERE document.TenantId = @TenantId
+              AND document.JobApplicationId = @JobApplicationId
+              AND document.ApplicationDocumentId = @ApplicationDocumentId
+              AND document.Status = N'Active'
+              AND application.IsActive = CAST(1 AS BIT);
+            """;
+
+        var row = await connection.QuerySingleOrDefaultAsync<ApplicationDocumentEvidenceRow>(new CommandDefinition(
+            sql,
+            new { TenantId = tenantId, JobApplicationId = jobApplicationId, ApplicationDocumentId = applicationDocumentId },
+            cancellationToken: cancellationToken));
+
+        return row is null
+            ? null
+            : new OperationsApplicantDocumentEvidence(
+                row.ApplicationDocumentId,
+                row.DocumentType,
+                row.FileName,
+                row.ContentType,
+                row.SizeBytes,
+                row.StorageProvider,
+                row.StorageKey,
+                row.StorageContainer,
+                row.ContentHashSha256,
+                Utc(row.UploadedAt),
+                row.ExtractionStatus,
+                row.HasExtractedText,
+                row.ExtractedText,
+                row.ExtractedTextHashSha256,
+                row.ParserVersion,
+                ToUtc(row.ExtractedAt),
+                row.ExtractionError);
     }
 
     private static async Task<IReadOnlyList<OperationsRecruiterApplication>> ListRecruiterApplicationsAsync(
@@ -8161,10 +9807,21 @@ public sealed class DapperOperationsRepository : IOperationsRepository
             return [];
         }
 
+        var applicationIds = rows.Select(row => row.JobApplicationId).Distinct().ToArray();
+        var documentsByApplication = await ListApplicantDocumentEvidenceAsync(
+            connection,
+            tenantId,
+            applicationIds,
+            cancellationToken);
         var interviews = await ListRecruiterApplicationInterviewsAsync(
             connection,
             tenantId,
-            rows.Select(row => row.JobApplicationId).Distinct().ToArray(),
+            applicationIds,
+            cancellationToken);
+        var configuredInterviewRoundCount = await CountActiveJobPostInterviewRoundsAsync(
+            connection,
+            tenantId,
+            jobPostId,
             cancellationToken);
         var interviewsByApplication = interviews
             .GroupBy(interview => interview.JobApplicationId)
@@ -8175,6 +9832,9 @@ public sealed class DapperOperationsRepository : IOperationsRepository
             var rowInterviews = interviewsByApplication.TryGetValue(row.JobApplicationId, out var applicationInterviews)
                 ? applicationInterviews
                 : Array.Empty<RecruiterApplicationInterviewRow>();
+            var rowDocuments = documentsByApplication.TryGetValue(row.JobApplicationId, out var applicationDocuments)
+                ? applicationDocuments
+                : Array.Empty<OperationsApplicantDocumentEvidence>();
             var evidence = rowInterviews
                 .Select(interview => new OperationsCandidateInterviewEvidence(
                     interview.InterviewId,
@@ -8188,7 +9848,7 @@ public sealed class DapperOperationsRepository : IOperationsRepository
                     null,
                     null))
                 .ToArray();
-            var summary = RediscoveryInterviewSummary.Build(evidence);
+            var summary = RediscoveryInterviewSummary.Build(evidence, configuredInterviewRoundCount);
 
             return new OperationsRecruiterApplication(
                 row.JobApplicationId,
@@ -8210,6 +9870,18 @@ public sealed class DapperOperationsRepository : IOperationsRepository
                 summary.Passed,
                 summary.Total,
                 summary.DisplayText,
+                rowDocuments
+                    .Select(document => new OperationsRecruiterApplicationDocument(
+                        document.ApplicationDocumentId,
+                        row.JobApplicationId,
+                        string.IsNullOrWhiteSpace(document.DocumentType) ? "Application document" : document.DocumentType.Trim(),
+                        BuildRecruiterApplicationDocumentDisplayName(document.DocumentType),
+                        string.IsNullOrWhiteSpace(document.ContentType) ? "application/octet-stream" : document.ContentType,
+                        document.SizeBytes,
+                        document.UploadedAt,
+                        document.ExtractionStatus,
+                        document.HasExtractedText))
+                    .ToArray(),
                 rowInterviews.Select(ToRecruiterApplicationInterview).ToArray());
         }).ToArray();
     }
@@ -8244,6 +9916,8 @@ public sealed class DapperOperationsRepository : IOperationsRepository
                 COALESCE(postRound.Name, requestRound.Name, N'Interview') AS RoundName,
                 interviewer.UserId AS InterviewerUserId,
                 interviewer.DisplayName AS InterviewerName,
+                interviewer.AccountStatus AS InterviewerAccountStatus,
+                CASE WHEN interviewer.DeletedAtUtc IS NULL THEN CAST(0 AS BIT) ELSE CAST(1 AS BIT) END AS InterviewerIsDeleted,
                 interview.Status,
                 interview.StartsAtUtc AS StartsAt,
                 interview.DurationMinutes,
@@ -8275,6 +9949,45 @@ public sealed class DapperOperationsRepository : IOperationsRepository
             cancellationToken: cancellationToken))).ToArray();
     }
 
+    private static async Task<int> CountActiveJobPostInterviewRoundsAsync(
+        SqlConnection connection,
+        Guid tenantId,
+        Guid jobPostId,
+        CancellationToken cancellationToken)
+    {
+        const string sql = """
+            SELECT COUNT(1)
+            FROM dbo.JobPostInterviewRounds
+            WHERE TenantId = @TenantId
+              AND JobPostId = @JobPostId
+              AND Status = N'Active';
+            """;
+
+        return await connection.ExecuteScalarAsync<int>(new CommandDefinition(
+            sql,
+            new { TenantId = tenantId, JobPostId = jobPostId },
+            cancellationToken: cancellationToken));
+    }
+
+    private static async Task<int> CountJobRequestInterviewRoundsAsync(
+        SqlConnection connection,
+        Guid tenantId,
+        Guid jobRequestId,
+        CancellationToken cancellationToken)
+    {
+        const string sql = """
+            SELECT COUNT(1)
+            FROM dbo.JobRequestInterviewRounds
+            WHERE TenantId = @TenantId
+              AND JobRequestId = @JobRequestId;
+            """;
+
+        return await connection.ExecuteScalarAsync<int>(new CommandDefinition(
+            sql,
+            new { TenantId = tenantId, JobRequestId = jobRequestId },
+            cancellationToken: cancellationToken));
+    }
+
     private static OperationsRecruiterApplicationInterview ToRecruiterApplicationInterview(RecruiterApplicationInterviewRow row)
     {
         return new OperationsRecruiterApplicationInterview(
@@ -8283,12 +9996,39 @@ public sealed class DapperOperationsRepository : IOperationsRepository
             row.RoundName,
             row.InterviewerName,
             row.InterviewerUserId,
+            row.InterviewerAccountStatus,
+            row.InterviewerIsDeleted,
             row.Status,
             Utc(row.StartsAt),
             row.DurationMinutes,
             row.MeetingLink,
             row.LocationText,
             row.Recommendation);
+    }
+
+    private static string BuildRecruiterApplicationDocumentDisplayName(string? documentType)
+    {
+        if (string.IsNullOrWhiteSpace(documentType))
+        {
+            return "Application document";
+        }
+
+        var type = documentType.Trim();
+        if (string.Equals(type, "Resume", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(type, "CV", StringComparison.OrdinalIgnoreCase))
+        {
+            return "Resume document";
+        }
+
+        if (type.Contains("cover", StringComparison.OrdinalIgnoreCase) &&
+            type.Contains("letter", StringComparison.OrdinalIgnoreCase))
+        {
+            return "Cover letter document";
+        }
+
+        return type.Contains("document", StringComparison.OrdinalIgnoreCase)
+            ? type
+            : $"{type} document";
     }
 
     private static async Task<IReadOnlyList<RediscoveryInterviewEvidenceRow>> ListRediscoveryInterviewEvidenceAsync(
@@ -8373,7 +10113,8 @@ public sealed class DapperOperationsRepository : IOperationsRepository
 
     private static OperationsCandidateApplicationEvidence ToApplicationEvidence(
         RediscoveryApplicationEvidenceRow row,
-        IReadOnlyList<OperationsCandidateInterviewEvidence> interviews)
+        IReadOnlyList<OperationsCandidateInterviewEvidence> interviews,
+        IReadOnlyList<OperationsApplicantDocumentEvidence>? documents = null)
     {
         var summary = RediscoveryInterviewSummary.Build(interviews);
 
@@ -8396,7 +10137,9 @@ public sealed class DapperOperationsRepository : IOperationsRepository
             row.DisplayJobTitle,
             summary.Passed,
             summary.Total,
-            summary.DisplayText);
+            summary.DisplayText,
+            row.CoverLetterText,
+            documents ?? []);
     }
 
     private static OperationsManualCandidateSearchItem ToManualCandidateSearchItem(OperationsRediscoveryCandidate candidate)
@@ -8662,19 +10405,31 @@ public sealed class DapperOperationsRepository : IOperationsRepository
     {
         const string sql = """
             SELECT
-                RecommendedEntityId AS CandidateId,
-                AiAgentRunId,
-                Score,
-                Explanation,
-                PayloadJson,
-                COALESCE(UpdatedAtUtc, CreatedAtUtc) AS GeneratedAt
-            FROM dbo.AiRecommendationLogs
-            WHERE TenantId = @TenantId
-              AND AiAgentDefinitionId = N'talent-rediscovery'
-              AND SourceEntityType = N'JobRequest'
-              AND SourceEntityId = @JobRequestId
-              AND RecommendedEntityType = N'Candidate'
-            ORDER BY Score DESC, CreatedAtUtc DESC;
+                recommendation.RecommendedEntityId AS CandidateId,
+                recommendation.AiAgentRunId,
+                recommendation.Score,
+                recommendation.Explanation,
+                recommendation.PayloadJson,
+                COALESCE(recommendation.UpdatedAtUtc, recommendation.CreatedAtUtc) AS GeneratedAt
+            FROM dbo.AiRecommendationLogs AS recommendation
+            INNER JOIN dbo.Candidates AS candidate
+                ON candidate.TenantId = recommendation.TenantId
+                AND candidate.CandidateId = recommendation.RecommendedEntityId
+            WHERE recommendation.TenantId = @TenantId
+              AND recommendation.AiAgentDefinitionId = N'talent-rediscovery'
+              AND recommendation.SourceEntityType = N'JobRequest'
+              AND recommendation.SourceEntityId = @JobRequestId
+              AND recommendation.RecommendedEntityType = N'Candidate'
+              AND candidate.Status = N'Active'
+              AND NOT EXISTS
+              (
+                  SELECT 1
+                  FROM dbo.JobApplications AS hiredApplication
+                  WHERE hiredApplication.TenantId = candidate.TenantId
+                    AND hiredApplication.CandidateId = candidate.CandidateId
+                    AND hiredApplication.CurrentStatus IN (N'Hired', N'Joined')
+              )
+            ORDER BY recommendation.Score DESC, recommendation.CreatedAtUtc DESC;
             """;
 
         var rows = (await connection.QueryAsync<TalentRediscoveryLogRow>(new CommandDefinition(
@@ -9771,6 +11526,589 @@ public sealed class DapperOperationsRepository : IOperationsRepository
         return candidate;
     }
 
+    private static async Task<PortalCandidateProfile?> ReadPortalCandidateProfileAsync(
+        SqlConnection connection,
+        IDbTransaction? transaction,
+        Guid tenantId,
+        Guid actorUserId,
+        CancellationToken cancellationToken)
+    {
+        var candidate = await connection.QuerySingleOrDefaultAsync<PortalCandidateProfileRow>(new CommandDefinition(
+            """
+            SELECT TOP (1)
+                CandidateId,
+                DisplayName,
+                Email,
+                Phone,
+                LinkedInUrl,
+                CurrentDesignation,
+                CurrentCompany,
+                ExperienceYears,
+                ExpectedSalaryAmount,
+                ExpectedSalaryCurrency,
+                NoticePeriodDays
+            FROM dbo.Candidates
+            WHERE TenantId = @TenantId
+              AND AppUserId = @ActorUserId;
+            """,
+            new { TenantId = tenantId, ActorUserId = actorUserId },
+            transaction,
+            cancellationToken: cancellationToken));
+
+        if (candidate is null)
+        {
+            var appUser = await connection.QuerySingleOrDefaultAsync<AppUserCandidateSeedRow>(new CommandDefinition(
+                """
+                SELECT TOP (1) UserId, DisplayName, Email
+                FROM dbo.AppUsers
+                WHERE TenantId = @TenantId
+                  AND UserId = @ActorUserId
+                  AND DeletedAtUtc IS NULL
+                  AND AccountStatus <> N'Disabled';
+                """,
+                new { TenantId = tenantId, ActorUserId = actorUserId },
+                transaction,
+                cancellationToken: cancellationToken));
+            if (appUser is null)
+            {
+                return null;
+            }
+
+            candidate = new PortalCandidateProfileRow(
+                null,
+                appUser.DisplayName,
+                appUser.Email,
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                null);
+        }
+
+        var skillOptions = await ListPortalCandidateSkillOptionsAsync(connection, transaction, tenantId, cancellationToken);
+        if (!candidate.CandidateId.HasValue)
+        {
+            return new PortalCandidateProfile(
+                null,
+                candidate.DisplayName,
+                candidate.Email,
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                [],
+                skillOptions);
+        }
+
+        var skills = await ListPortalCandidateProfileSkillsAsync(
+            connection,
+            transaction,
+            tenantId,
+            candidate.CandidateId.Value,
+            cancellationToken);
+        var education = await ReadPortalPrimaryEducationAsync(
+            connection,
+            transaction,
+            tenantId,
+            candidate.CandidateId.Value,
+            cancellationToken);
+        var workHistory = await ReadPortalCurrentWorkHistoryAsync(
+            connection,
+            transaction,
+            tenantId,
+            candidate.CandidateId.Value,
+            cancellationToken);
+
+        return new PortalCandidateProfile(
+            candidate.CandidateId,
+            candidate.DisplayName,
+            candidate.Email,
+            candidate.Phone,
+            candidate.LinkedInUrl,
+            candidate.CurrentDesignation,
+            candidate.CurrentCompany,
+            candidate.ExperienceYears,
+            candidate.ExpectedSalaryAmount,
+            candidate.ExpectedSalaryCurrency,
+            candidate.NoticePeriodDays,
+            education,
+            workHistory,
+            skills,
+            skillOptions);
+    }
+
+    private static async Task<Guid?> UpsertPortalCandidateProfileAsync(
+        SqlConnection connection,
+        IDbTransaction transaction,
+        Guid tenantId,
+        Guid actorUserId,
+        UpdatePortalCandidateProfileInput input,
+        CancellationToken cancellationToken)
+    {
+        var appUser = await connection.QuerySingleOrDefaultAsync<AppUserCandidateSeedRow>(new CommandDefinition(
+            """
+            SELECT TOP (1) UserId, DisplayName, Email
+            FROM dbo.AppUsers
+            WHERE TenantId = @TenantId
+              AND UserId = @ActorUserId
+              AND DeletedAtUtc IS NULL
+              AND AccountStatus <> N'Disabled';
+            """,
+            new { TenantId = tenantId, ActorUserId = actorUserId },
+            transaction,
+            cancellationToken: cancellationToken));
+        if (appUser is null)
+        {
+            return null;
+        }
+
+        var existingCandidateId = await connection.ExecuteScalarAsync<Guid?>(new CommandDefinition(
+            """
+            SELECT TOP (1) CandidateId
+            FROM dbo.Candidates
+            WHERE TenantId = @TenantId
+              AND AppUserId = @ActorUserId;
+            """,
+            new { TenantId = tenantId, ActorUserId = actorUserId },
+            transaction,
+            cancellationToken: cancellationToken));
+
+        if (!existingCandidateId.HasValue)
+        {
+            var candidateId = Guid.NewGuid();
+            await connection.ExecuteAsync(new CommandDefinition(
+                """
+                INSERT INTO dbo.Candidates
+                (
+                    CandidateId,
+                    TenantId,
+                    AppUserId,
+                    DisplayName,
+                    Email,
+                    Phone,
+                    LinkedInUrl,
+                    CurrentDesignation,
+                    CurrentCompany,
+                    ExperienceYears,
+                    ExpectedSalaryAmount,
+                    ExpectedSalaryCurrency,
+                    NoticePeriodDays,
+                    Status,
+                    CreatedAtUtc,
+                    UpdatedAtUtc
+                )
+                VALUES
+                (
+                    @CandidateId,
+                    @TenantId,
+                    @AppUserId,
+                    @DisplayName,
+                    @Email,
+                    @Phone,
+                    @LinkedInUrl,
+                    @CurrentDesignation,
+                    @CurrentCompany,
+                    @ExperienceYears,
+                    @ExpectedSalaryAmount,
+                    @ExpectedSalaryCurrency,
+                    @NoticePeriodDays,
+                    N'Active',
+                    SYSUTCDATETIME(),
+                    SYSUTCDATETIME()
+                );
+                """,
+                new
+                {
+                    CandidateId = candidateId,
+                    TenantId = tenantId,
+                    AppUserId = actorUserId,
+                    DisplayName = Truncate(input.DisplayName, 200),
+                    Email = appUser.Email,
+                    input.Phone,
+                    input.LinkedInUrl,
+                    input.CurrentDesignation,
+                    input.CurrentCompany,
+                    input.ExperienceYears,
+                    input.ExpectedSalaryAmount,
+                    input.ExpectedSalaryCurrency,
+                    input.NoticePeriodDays
+                },
+                transaction,
+                cancellationToken: cancellationToken));
+            return candidateId;
+        }
+
+        await connection.ExecuteAsync(new CommandDefinition(
+            """
+            UPDATE dbo.Candidates
+            SET DisplayName = @DisplayName,
+                Phone = @Phone,
+                LinkedInUrl = @LinkedInUrl,
+                CurrentDesignation = @CurrentDesignation,
+                CurrentCompany = @CurrentCompany,
+                ExperienceYears = @ExperienceYears,
+                ExpectedSalaryAmount = @ExpectedSalaryAmount,
+                ExpectedSalaryCurrency = @ExpectedSalaryCurrency,
+                NoticePeriodDays = @NoticePeriodDays,
+                Status = N'Active',
+                UpdatedAtUtc = SYSUTCDATETIME()
+            WHERE TenantId = @TenantId
+              AND CandidateId = @CandidateId;
+            """,
+            new
+            {
+                TenantId = tenantId,
+                CandidateId = existingCandidateId.Value,
+                DisplayName = Truncate(input.DisplayName, 200),
+                input.Phone,
+                input.LinkedInUrl,
+                input.CurrentDesignation,
+                input.CurrentCompany,
+                input.ExperienceYears,
+                input.ExpectedSalaryAmount,
+                input.ExpectedSalaryCurrency,
+                input.NoticePeriodDays
+            },
+            transaction,
+            cancellationToken: cancellationToken));
+
+        return existingCandidateId.Value;
+    }
+
+    private static async Task<IReadOnlyList<PortalCandidateProfileSkillOption>> ListPortalCandidateSkillOptionsAsync(
+        SqlConnection connection,
+        IDbTransaction? transaction,
+        Guid tenantId,
+        CancellationToken cancellationToken)
+    {
+        const string sql = """
+            SELECT SkillId, Name AS SkillName, Category
+            FROM dbo.Skills
+            WHERE TenantId = @TenantId
+              AND Status = N'Active'
+            ORDER BY Category, Name;
+            """;
+
+        var rows = await connection.QueryAsync<PortalCandidateProfileSkillOption>(new CommandDefinition(
+            sql,
+            new { TenantId = tenantId },
+            transaction,
+            cancellationToken: cancellationToken));
+        return rows.ToArray();
+    }
+
+    private static async Task<IReadOnlyList<PortalCandidateProfileSkill>> ListPortalCandidateProfileSkillsAsync(
+        SqlConnection connection,
+        IDbTransaction? transaction,
+        Guid tenantId,
+        Guid candidateId,
+        CancellationToken cancellationToken)
+    {
+        const string sql = """
+            SELECT
+                skill.SkillId,
+                skill.Name AS SkillName,
+                candidateSkill.SkillLevel,
+                candidateSkill.YearsExperience,
+                candidateSkill.IsPrimary
+            FROM dbo.CandidateSkills AS candidateSkill
+            INNER JOIN dbo.Skills AS skill
+                ON skill.TenantId = candidateSkill.TenantId
+                AND skill.SkillId = candidateSkill.SkillId
+            WHERE candidateSkill.TenantId = @TenantId
+              AND candidateSkill.CandidateId = @CandidateId
+            ORDER BY candidateSkill.IsPrimary DESC, skill.Name;
+            """;
+
+        var rows = await connection.QueryAsync<PortalCandidateProfileSkill>(new CommandDefinition(
+            sql,
+            new { TenantId = tenantId, CandidateId = candidateId },
+            transaction,
+            cancellationToken: cancellationToken));
+        return rows.ToArray();
+    }
+
+    private static async Task<PortalCandidateProfileEducation?> ReadPortalPrimaryEducationAsync(
+        SqlConnection connection,
+        IDbTransaction? transaction,
+        Guid tenantId,
+        Guid candidateId,
+        CancellationToken cancellationToken)
+    {
+        const string sql = """
+            SELECT TOP (1) UniversityName, DegreeName, GraduationYear
+            FROM dbo.CandidateEducation
+            WHERE TenantId = @TenantId
+              AND CandidateId = @CandidateId
+            ORDER BY IsPrimary DESC, UpdatedAtUtc DESC, CreatedAtUtc DESC;
+            """;
+
+        return await connection.QuerySingleOrDefaultAsync<PortalCandidateProfileEducation>(new CommandDefinition(
+            sql,
+            new { TenantId = tenantId, CandidateId = candidateId },
+            transaction,
+            cancellationToken: cancellationToken));
+    }
+
+    private static async Task<PortalCandidateProfileWorkHistory?> ReadPortalCurrentWorkHistoryAsync(
+        SqlConnection connection,
+        IDbTransaction? transaction,
+        Guid tenantId,
+        Guid candidateId,
+        CancellationToken cancellationToken)
+    {
+        const string sql = """
+            SELECT TOP (1) CompanyName, Title
+            FROM dbo.CandidateWorkHistory
+            WHERE TenantId = @TenantId
+              AND CandidateId = @CandidateId
+            ORDER BY IsCurrent DESC, UpdatedAtUtc DESC, CreatedAtUtc DESC;
+            """;
+
+        return await connection.QuerySingleOrDefaultAsync<PortalCandidateProfileWorkHistory>(new CommandDefinition(
+            sql,
+            new { TenantId = tenantId, CandidateId = candidateId },
+            transaction,
+            cancellationToken: cancellationToken));
+    }
+
+    private static async Task ReplacePortalCandidateSkillsAsync(
+        SqlConnection connection,
+        IDbTransaction transaction,
+        Guid tenantId,
+        Guid candidateId,
+        IReadOnlyList<UpdatePortalCandidateProfileSkillInput> skills,
+        CancellationToken cancellationToken)
+    {
+        await connection.ExecuteAsync(new CommandDefinition(
+            """
+            DELETE FROM dbo.CandidateSkills
+            WHERE TenantId = @TenantId
+              AND CandidateId = @CandidateId;
+            """,
+            new { TenantId = tenantId, CandidateId = candidateId },
+            transaction,
+            cancellationToken: cancellationToken));
+
+        var rows = skills
+            .Where(skill => skill.SkillId != Guid.Empty)
+            .GroupBy(skill => skill.SkillId)
+            .Select(group => group.First())
+            .ToArray();
+        if (rows.Length == 0)
+        {
+            return;
+        }
+
+        const string insertSql = """
+            INSERT INTO dbo.CandidateSkills
+            (
+                TenantId,
+                CandidateId,
+                SkillId,
+                SkillLevel,
+                YearsExperience,
+                IsPrimary,
+                CreatedAtUtc
+            )
+            SELECT
+                @TenantId,
+                @CandidateId,
+                skill.SkillId,
+                @SkillLevel,
+                @YearsExperience,
+                @IsPrimary,
+                SYSUTCDATETIME()
+            FROM dbo.Skills AS skill
+            WHERE skill.TenantId = @TenantId
+              AND skill.SkillId = @SkillId
+              AND skill.Status = N'Active';
+            """;
+
+        await connection.ExecuteAsync(new CommandDefinition(
+            insertSql,
+            rows.Select(skill => new
+            {
+                TenantId = tenantId,
+                CandidateId = candidateId,
+                skill.SkillId,
+                SkillLevel = string.IsNullOrWhiteSpace(skill.SkillLevel) ? "Intermediate" : skill.SkillLevel,
+                skill.YearsExperience,
+                skill.IsPrimary
+            }),
+            transaction,
+            cancellationToken: cancellationToken));
+    }
+
+    private static async Task ReplacePortalPrimaryEducationAsync(
+        SqlConnection connection,
+        IDbTransaction transaction,
+        Guid tenantId,
+        Guid candidateId,
+        PortalCandidateProfileEducation? education,
+        CancellationToken cancellationToken)
+    {
+        if (education is null ||
+            (string.IsNullOrWhiteSpace(education.UniversityName) &&
+             string.IsNullOrWhiteSpace(education.DegreeName) &&
+             !education.GraduationYear.HasValue))
+        {
+            await connection.ExecuteAsync(new CommandDefinition(
+                """
+                DELETE FROM dbo.CandidateEducation
+                WHERE TenantId = @TenantId
+                  AND CandidateId = @CandidateId
+                  AND IsPrimary = CAST(1 AS BIT);
+                """,
+                new { TenantId = tenantId, CandidateId = candidateId },
+                transaction,
+                cancellationToken: cancellationToken));
+            return;
+        }
+
+        const string sql = """
+            MERGE dbo.CandidateEducation AS target
+            USING
+            (
+                SELECT @TenantId AS TenantId, @CandidateId AS CandidateId
+            ) AS source
+            ON target.TenantId = source.TenantId
+               AND target.CandidateId = source.CandidateId
+               AND target.IsPrimary = CAST(1 AS BIT)
+            WHEN MATCHED THEN UPDATE SET
+                UniversityName = @UniversityName,
+                DegreeName = @DegreeName,
+                GraduationYear = @GraduationYear,
+                UpdatedAtUtc = SYSUTCDATETIME()
+            WHEN NOT MATCHED THEN
+                INSERT
+                (
+                    CandidateEducationId,
+                    TenantId,
+                    CandidateId,
+                    UniversityName,
+                    DegreeName,
+                    GraduationYear,
+                    IsPrimary,
+                    CreatedAtUtc,
+                    UpdatedAtUtc
+                )
+                VALUES
+                (
+                    NEWID(),
+                    @TenantId,
+                    @CandidateId,
+                    @UniversityName,
+                    @DegreeName,
+                    @GraduationYear,
+                    CAST(1 AS BIT),
+                    SYSUTCDATETIME(),
+                    SYSUTCDATETIME()
+                );
+            """;
+
+        await connection.ExecuteAsync(new CommandDefinition(
+            sql,
+            new
+            {
+                TenantId = tenantId,
+                CandidateId = candidateId,
+                UniversityName = NullIfBlank(education.UniversityName) ?? "Not recorded",
+                DegreeName = NullIfBlank(education.DegreeName),
+                education.GraduationYear
+            },
+            transaction,
+            cancellationToken: cancellationToken));
+    }
+
+    private static async Task ReplacePortalCurrentWorkHistoryAsync(
+        SqlConnection connection,
+        IDbTransaction transaction,
+        Guid tenantId,
+        Guid candidateId,
+        PortalCandidateProfileWorkHistory? workHistory,
+        CancellationToken cancellationToken)
+    {
+        if (workHistory is null ||
+            (string.IsNullOrWhiteSpace(workHistory.CompanyName) && string.IsNullOrWhiteSpace(workHistory.Title)))
+        {
+            await connection.ExecuteAsync(new CommandDefinition(
+                """
+                DELETE FROM dbo.CandidateWorkHistory
+                WHERE TenantId = @TenantId
+                  AND CandidateId = @CandidateId
+                  AND IsCurrent = CAST(1 AS BIT);
+                """,
+                new { TenantId = tenantId, CandidateId = candidateId },
+                transaction,
+                cancellationToken: cancellationToken));
+            return;
+        }
+
+        const string sql = """
+            MERGE dbo.CandidateWorkHistory AS target
+            USING
+            (
+                SELECT @TenantId AS TenantId, @CandidateId AS CandidateId
+            ) AS source
+            ON target.TenantId = source.TenantId
+               AND target.CandidateId = source.CandidateId
+               AND target.IsCurrent = CAST(1 AS BIT)
+            WHEN MATCHED THEN UPDATE SET
+                CompanyName = @CompanyName,
+                Title = @Title,
+                UpdatedAtUtc = SYSUTCDATETIME()
+            WHEN NOT MATCHED THEN
+                INSERT
+                (
+                    CandidateWorkHistoryId,
+                    TenantId,
+                    CandidateId,
+                    CompanyName,
+                    Title,
+                    IsCurrent,
+                    StartsOn,
+                    EndsOn,
+                    CreatedAtUtc,
+                    UpdatedAtUtc
+                )
+                VALUES
+                (
+                    NEWID(),
+                    @TenantId,
+                    @CandidateId,
+                    @CompanyName,
+                    @Title,
+                    CAST(1 AS BIT),
+                    NULL,
+                    NULL,
+                    SYSUTCDATETIME(),
+                    SYSUTCDATETIME()
+                );
+            """;
+
+        await connection.ExecuteAsync(new CommandDefinition(
+            sql,
+            new
+            {
+                TenantId = tenantId,
+                CandidateId = candidateId,
+                CompanyName = NullIfBlank(workHistory.CompanyName) ?? "Not recorded",
+                Title = NullIfBlank(workHistory.Title)
+            },
+            transaction,
+            cancellationToken: cancellationToken));
+    }
+
     private static async Task<CandidateMutableRow?> CreateInvitedCandidateAsync(
         SqlConnection connection,
         IDbTransaction transaction,
@@ -10284,6 +12622,125 @@ public sealed class DapperOperationsRepository : IOperationsRepository
             cancellationToken: cancellationToken));
     }
 
+    private static async Task<CandidateInvitationApplicationRow?> ReadCandidateInvitationForApplicationAsync(
+        SqlConnection connection,
+        IDbTransaction transaction,
+        Guid tenantId,
+        Guid jobPostId,
+        Guid? candidateInvitationId,
+        string? invitationToken,
+        Guid candidateId,
+        CancellationToken cancellationToken)
+    {
+        if (!candidateInvitationId.HasValue || string.IsNullOrWhiteSpace(invitationToken))
+        {
+            return null;
+        }
+
+        const string sql = """
+            SELECT TOP (1)
+                CandidateInvitationId,
+                CandidateId,
+                Status,
+                ExpiresAtUtc,
+                RevokedAtUtc
+            FROM dbo.CandidateInvitations
+            WHERE TenantId = @TenantId
+              AND CandidateInvitationId = @CandidateInvitationId
+              AND JobPostId = @JobPostId
+              AND TokenHash = @TokenHash
+              AND ExpiresAtUtc > SYSUTCDATETIME()
+              AND RevokedAtUtc IS NULL
+              AND Status IN (N'Sent', N'Used')
+              AND (CandidateId IS NULL OR CandidateId = @CandidateId);
+            """;
+
+        return await connection.QuerySingleOrDefaultAsync<CandidateInvitationApplicationRow>(new CommandDefinition(
+            sql,
+            new
+            {
+                TenantId = tenantId,
+                JobPostId = jobPostId,
+                CandidateInvitationId = candidateInvitationId.Value,
+                TokenHash = HashInvitationToken(invitationToken),
+                CandidateId = candidateId
+            },
+            transaction,
+            cancellationToken: cancellationToken));
+    }
+
+    private static async Task CompleteInvitedPortalApplicationAsync(
+        SqlConnection connection,
+        IDbTransaction transaction,
+        Guid tenantId,
+        Guid jobApplicationId,
+        Guid actorUserId,
+        PortalJobPostRow context,
+        PortalApplyToJobPostInput input,
+        CancellationToken cancellationToken)
+    {
+        const string updateSql = """
+            UPDATE dbo.JobApplications
+            SET CurrentStatus = N'Applied',
+                ConfirmedAtUtc = COALESCE(ConfirmedAtUtc, SYSUTCDATETIME()),
+                CoverLetterText = COALESCE(@CoverLetterText, CoverLetterText),
+                ApplicationSnapshotJson = @ApplicationSnapshotJson,
+                UpdatedAtUtc = SYSUTCDATETIME()
+            WHERE TenantId = @TenantId
+              AND JobApplicationId = @JobApplicationId
+              AND CurrentStatus = N'Invited';
+            """;
+
+        await connection.ExecuteAsync(new CommandDefinition(
+            updateSql,
+            new
+            {
+                TenantId = tenantId,
+                JobApplicationId = jobApplicationId,
+                CoverLetterText = NullIfBlank(input.CoverLetter),
+                ApplicationSnapshotJson = BuildApplicationSnapshotJson(
+                    context,
+                    input.InterviewAvailabilityStartDate,
+                    input.InterviewAvailabilityEndDate)
+            },
+            transaction,
+            cancellationToken: cancellationToken));
+
+        await InsertJobApplicationStatusHistoryAsync(
+            connection,
+            transaction,
+            tenantId,
+            jobApplicationId,
+            "Invited",
+            "Applied",
+            actorUserId,
+            "Candidate completed an invited application from a tracked Talent Pilot invitation.",
+            cancellationToken);
+    }
+
+    private static async Task MarkCandidateInvitationUsedAsync(
+        SqlConnection connection,
+        IDbTransaction transaction,
+        Guid tenantId,
+        Guid candidateInvitationId,
+        CancellationToken cancellationToken)
+    {
+        const string sql = """
+            UPDATE dbo.CandidateInvitations
+            SET Status = N'Used',
+                UsedAtUtc = COALESCE(UsedAtUtc, SYSUTCDATETIME())
+            WHERE TenantId = @TenantId
+              AND CandidateInvitationId = @CandidateInvitationId
+              AND RevokedAtUtc IS NULL;
+            """;
+
+        await connection.ExecuteAsync(new CommandDefinition(
+            sql,
+            new { TenantId = tenantId, CandidateInvitationId = candidateInvitationId },
+            transaction,
+            cancellationToken: cancellationToken));
+    }
+
     private static async Task<Guid> InsertJobApplicationAsync(
         SqlConnection connection,
         IDbTransaction transaction,
@@ -10392,6 +12849,145 @@ public sealed class DapperOperationsRepository : IOperationsRepository
             cancellationToken: cancellationToken));
 
         return applicationId;
+    }
+
+    private static async Task UpsertParsedCvApplicationDocumentAsync(
+        SqlConnection connection,
+        IDbTransaction transaction,
+        Guid tenantId,
+        Guid actorUserId,
+        Guid jobApplicationId,
+        Guid candidateId,
+        ParsedCandidateCvEvidenceInput? evidence,
+        CancellationToken cancellationToken)
+    {
+        if (evidence is null ||
+            string.IsNullOrWhiteSpace(evidence.ExtractedText) ||
+            string.IsNullOrWhiteSpace(evidence.ContentHashSha256) ||
+            evidence.ContentHashSha256.Length != 64)
+        {
+            return;
+        }
+
+        var extractedText = BuildParsedCvEvidenceText(evidence);
+        if (string.IsNullOrWhiteSpace(extractedText))
+        {
+            return;
+        }
+
+        const string sql = """
+            DECLARE @Now DATETIME2(7) = SYSUTCDATETIME();
+            DECLARE @ApplicationDocumentId UNIQUEIDENTIFIER;
+
+            SELECT TOP (1) @ApplicationDocumentId = ApplicationDocumentId
+            FROM dbo.JobApplicationDocuments
+            WHERE TenantId = @TenantId
+              AND JobApplicationId = @JobApplicationId
+              AND DocumentType = N'CV'
+              AND ContentHashSha256 = @ContentHashSha256
+            ORDER BY UploadedAtUtc DESC;
+
+            IF @ApplicationDocumentId IS NULL
+            BEGIN
+                SET @ApplicationDocumentId = NEWID();
+
+                INSERT INTO dbo.JobApplicationDocuments
+                (
+                    ApplicationDocumentId,
+                    TenantId,
+                    JobApplicationId,
+                    CandidateId,
+                    DocumentType,
+                    OriginalFileName,
+                    ContentType,
+                    SizeBytes,
+                    StorageProvider,
+                    StorageKey,
+                    StorageContainer,
+                    ContentHashSha256,
+                    ExtractionStatus,
+                    ExtractedText,
+                    ExtractedTextHashSha256,
+                    ParserVersion,
+                    ExtractedAtUtc,
+                    ExtractionError,
+                    Status,
+                    UploadedByUserId,
+                    UploadedAtUtc,
+                    CreatedAtUtc,
+                    UpdatedAtUtc
+                )
+                VALUES
+                (
+                    @ApplicationDocumentId,
+                    @TenantId,
+                    @JobApplicationId,
+                    @CandidateId,
+                    N'CV',
+                    @OriginalFileName,
+                    @ContentType,
+                    @SizeBytes,
+                    N'CvParserAgent',
+                    @StorageKey,
+                    NULL,
+                    @ContentHashSha256,
+                    N'Extracted',
+                    @ExtractedText,
+                    LOWER(CONVERT(CHAR(64), HASHBYTES('SHA2_256', CONVERT(VARBINARY(MAX), @ExtractedText)), 2)),
+                    @ParserVersion,
+                    @ExtractedAtUtc,
+                    NULL,
+                    N'Active',
+                    @ActorUserId,
+                    @Now,
+                    @Now,
+                    @Now
+                );
+            END
+            ELSE
+            BEGIN
+                UPDATE dbo.JobApplicationDocuments
+                SET CandidateId = @CandidateId,
+                    OriginalFileName = @OriginalFileName,
+                    ContentType = @ContentType,
+                    SizeBytes = @SizeBytes,
+                    StorageProvider = N'CvParserAgent',
+                    StorageKey = @StorageKey,
+                    StorageContainer = NULL,
+                    ExtractionStatus = N'Extracted',
+                    ExtractedText = @ExtractedText,
+                    ExtractedTextHashSha256 = LOWER(CONVERT(CHAR(64), HASHBYTES('SHA2_256', CONVERT(VARBINARY(MAX), @ExtractedText)), 2)),
+                    ParserVersion = @ParserVersion,
+                    ExtractedAtUtc = @ExtractedAtUtc,
+                    ExtractionError = NULL,
+                    Status = N'Active',
+                    UploadedByUserId = @ActorUserId,
+                    UploadedAtUtc = @Now,
+                    UpdatedAtUtc = @Now
+                WHERE TenantId = @TenantId
+                  AND ApplicationDocumentId = @ApplicationDocumentId;
+            END
+            """;
+
+        await connection.ExecuteAsync(new CommandDefinition(
+            sql,
+            new
+            {
+                TenantId = tenantId,
+                ActorUserId = actorUserId,
+                JobApplicationId = jobApplicationId,
+                CandidateId = candidateId,
+                OriginalFileName = Truncate(Path.GetFileName(evidence.FileName.Trim()), 260),
+                ContentType = Truncate(NullIfBlank(evidence.ContentType) ?? "application/vnd.openxmlformats-officedocument.wordprocessingml.document", 160),
+                SizeBytes = Math.Max(1L, evidence.SizeBytes),
+                ContentHashSha256 = evidence.ContentHashSha256.Trim().ToLowerInvariant(),
+                StorageKey = Truncate($"cv-parser-agent/{(evidence.AgentRunId.HasValue ? evidence.AgentRunId.Value.ToString("D") : evidence.ContentHashSha256.Trim().ToLowerInvariant())}", 512),
+                ExtractedText = extractedText,
+                ParserVersion = BuildCvParserVersion(evidence.Model),
+                ExtractedAtUtc = (evidence.ParsedAtUtc ?? DateTimeOffset.UtcNow).UtcDateTime
+            },
+            transaction,
+            cancellationToken: cancellationToken));
     }
 
     private static async Task InsertJobApplicationStatusHistoryAsync(
@@ -10621,21 +13217,28 @@ public sealed class DapperOperationsRepository : IOperationsRepository
             tenantId,
             cancellationToken);
         var subject = $"{context.CompanyName} is looking for {context.Title}";
+        var invitationText = string.IsNullOrWhiteSpace(recruiterMessage)
+            ? $"{context.CompanyName} is looking for {context.Title}. Please apply at our job portal for this job post if you are interested."
+            : recruiterMessage.Trim();
+        var candidateInvitationId = Guid.NewGuid();
+        var invitationToken = CreateInvitationToken();
+        var jobLink = BuildCandidateInvitationLink(
+            ExtractFirstAbsoluteUrl(invitationText),
+            context.JobPostId,
+            candidateInvitationId,
+            invitationToken);
+        var trackedInvitationText = BuildTrackedInvitationText(invitationText, jobLink);
         var bodyLines = new List<string>
         {
             $"Hello {candidate.DisplayName},",
             string.Empty,
-            $"{context.CompanyName} is looking for {context.Title}. Please apply at our job portal for this job post if you are interested."
+            trackedInvitationText
         };
-        if (!string.IsNullOrWhiteSpace(recruiterMessage))
-        {
-            bodyLines.Add(string.Empty);
-            bodyLines.Add(recruiterMessage.Trim());
-        }
 
         bodyLines.Add(string.Empty);
         bodyLines.Add("Regards,");
         bodyLines.Add(context.CompanyName);
+        var textBody = string.Join(Environment.NewLine, bodyLines);
 
         await connection.ExecuteAsync(new CommandDefinition(
             """
@@ -10656,7 +13259,7 @@ public sealed class DapperOperationsRepository : IOperationsRepository
             )
             VALUES
             (
-                NEWID(),
+                @CandidateInvitationId,
                 @TenantId,
                 @CandidateProspectId,
                 @CandidateId,
@@ -10704,18 +13307,26 @@ public sealed class DapperOperationsRepository : IOperationsRepository
             new
             {
                 TenantId = tenantId,
+                CandidateInvitationId = candidateInvitationId,
                 CandidateProspectId = prospectId,
                 candidate.CandidateId,
                 context.JobRequestId,
                 context.JobPostId,
                 ActorUserId = actorUserId,
-                TokenHash = Guid.NewGuid().ToString("N"),
+                TokenHash = HashInvitationToken(invitationToken),
                 candidate.Email,
                 NotificationEventId = notificationEventId,
                 PayloadJson = JsonSerializer.Serialize(new
                 {
                     subject,
-                    body = string.Join(Environment.NewLine, bodyLines),
+                    body = textBody,
+                    htmlBody = BuildCandidateInvitationHtmlBody(
+                        subject,
+                        context.CompanyName,
+                        context.Title,
+                        candidate.DisplayName,
+                        trackedInvitationText,
+                        jobLink),
                     entityType = "JobPost",
                     entityId = context.JobPostId,
                     variables = new Dictionary<string, string>
@@ -10733,7 +13344,136 @@ public sealed class DapperOperationsRepository : IOperationsRepository
         return true;
     }
 
-    private static string BuildApplicationSnapshotJson(PortalJobPostRow context)
+    private static TrackedCandidateInvitation CreateTrackedCandidateInvitation(
+        Guid candidateId,
+        Guid jobPostId,
+        string? baseJobLink)
+    {
+        var candidateInvitationId = Guid.NewGuid();
+        var invitationToken = CreateInvitationToken();
+        return new TrackedCandidateInvitation(
+            candidateId,
+            jobPostId,
+            candidateInvitationId,
+            HashInvitationToken(invitationToken),
+            BuildCandidateInvitationLink(baseJobLink, jobPostId, candidateInvitationId, invitationToken));
+    }
+
+    private static string BuildTrackedInvitationText(string invitationText, string? trackedJobLink)
+    {
+        if (string.IsNullOrWhiteSpace(trackedJobLink))
+        {
+            return invitationText;
+        }
+
+        var existingLink = ExtractFirstAbsoluteUrl(invitationText);
+        if (string.IsNullOrWhiteSpace(existingLink))
+        {
+            return $"{invitationText}{Environment.NewLine}{Environment.NewLine}Apply here: {trackedJobLink}";
+        }
+
+        return invitationText.Replace(existingLink, trackedJobLink, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string? BuildCandidateInvitationLink(
+        string? baseJobLink,
+        Guid jobPostId,
+        Guid candidateInvitationId,
+        string invitationToken)
+    {
+        if (!Uri.TryCreate(baseJobLink, UriKind.Absolute, out var uri))
+        {
+            return null;
+        }
+
+        var builder = new UriBuilder(uri);
+        if (!builder.Path.Contains(jobPostId.ToString("D"), StringComparison.OrdinalIgnoreCase))
+        {
+            builder.Path = $"/candidate/jobs/{jobPostId:D}";
+        }
+
+        var retainedQueryParameters = builder.Query
+            .TrimStart('?')
+            .Split('&', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Where(part => !IsTrackedInviteQueryKey(part.Split('=', 2)[0]));
+        var trackedQueryParameters = retainedQueryParameters.Concat(
+        [
+            "source=invite",
+            $"inviteId={candidateInvitationId:D}",
+            $"token={Uri.EscapeDataString(invitationToken)}"
+        ]);
+        builder.Query = string.Join('&', trackedQueryParameters);
+
+        return builder.Uri.ToString();
+    }
+
+    private static bool IsTrackedInviteQueryKey(string key)
+    {
+        var normalized = Uri.UnescapeDataString(key);
+        return string.Equals(normalized, "source", StringComparison.OrdinalIgnoreCase) ||
+               string.Equals(normalized, "inviteId", StringComparison.OrdinalIgnoreCase) ||
+               string.Equals(normalized, "token", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string CreateInvitationToken()
+    {
+        var token = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32));
+        return token.TrimEnd('=').Replace('+', '-').Replace('/', '_');
+    }
+
+    private static string HashInvitationToken(string token)
+    {
+        var bytes = SHA256.HashData(Encoding.UTF8.GetBytes(token.Trim()));
+        return Convert.ToHexString(bytes).ToLowerInvariant();
+    }
+
+    private static string BuildCandidateInvitationHtmlBody(
+        string subject,
+        string companyName,
+        string jobTitle,
+        string candidateName,
+        string invitationText,
+        string? jobLink)
+    {
+        var body = $"Hello {candidateName},\n\n{invitationText}\n\nRegards,\n{companyName}";
+        return TalentPilotEmailTemplate.Build(
+            "Talent Pilot Invitation",
+            $"{companyName} is hiring {jobTitle}",
+            body,
+            [
+                ("Role", jobTitle),
+                ("Company", companyName)
+            ],
+            string.IsNullOrWhiteSpace(jobLink) ? null : "View role and apply",
+            jobLink,
+            subject);
+    }
+
+    private static string? ExtractFirstAbsoluteUrl(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return null;
+        }
+
+        foreach (var part in value.Split([' ', '\r', '\n', '\t'], StringSplitOptions.RemoveEmptyEntries))
+        {
+            var candidate = part.Trim().TrimEnd('.', ',', ';', ')', ']', '>');
+            if (Uri.TryCreate(candidate, UriKind.Absolute, out var uri) &&
+                (string.Equals(uri.Scheme, Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase) ||
+                 string.Equals(uri.Scheme, Uri.UriSchemeHttp, StringComparison.OrdinalIgnoreCase)))
+            {
+                return uri.ToString();
+            }
+        }
+
+        return null;
+    }
+
+    private static string BuildApplicationSnapshotJson(
+        PortalJobPostRow context,
+        DateOnly? interviewAvailabilityStartDate = null,
+        DateOnly? interviewAvailabilityEndDate = null)
     {
         return JsonSerializer.Serialize(new
         {
@@ -10746,6 +13486,13 @@ public sealed class DapperOperationsRepository : IOperationsRepository
             experienceMinYears = context.ExperienceMinYears,
             experienceMaxYears = context.ExperienceMaxYears,
             requiredPositions = context.RequiredPositions,
+            interviewAvailability = interviewAvailabilityStartDate.HasValue || interviewAvailabilityEndDate.HasValue
+                ? new
+                {
+                    startDate = interviewAvailabilityStartDate,
+                    endDate = interviewAvailabilityEndDate
+                }
+                : null,
             capturedAtUtc = DateTimeOffset.UtcNow
         });
     }
@@ -10753,6 +13500,39 @@ public sealed class DapperOperationsRepository : IOperationsRepository
     private static string? NullIfBlank(string? value)
     {
         return string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+    }
+
+    private static string BuildParsedCvEvidenceText(ParsedCandidateCvEvidenceInput evidence)
+    {
+        var parts = new List<string>
+        {
+            $"CV file: {evidence.FileName}"
+        };
+
+        if (!string.IsNullOrWhiteSpace(evidence.Model))
+        {
+            parts.Add($"Parser model: {evidence.Model}");
+        }
+
+        if (evidence.AgentRunId.HasValue)
+        {
+            parts.Add($"Parser run: {evidence.AgentRunId.Value:D}");
+        }
+
+        if (!string.IsNullOrWhiteSpace(evidence.Summary))
+        {
+            parts.Add($"CV Parser Agent summary: {evidence.Summary}");
+        }
+
+        parts.Add($"Extracted CV text: {evidence.ExtractedText}");
+        return string.Join('\n', parts);
+    }
+
+    private static string BuildCvParserVersion(string? model)
+    {
+        return string.IsNullOrWhiteSpace(model)
+            ? "cv-parser-agent-v1"
+            : Truncate($"cv-parser-agent:{model.Trim()}", 64);
     }
 
     private static string BuildInitials(string displayName)
@@ -10881,38 +13661,6 @@ public sealed class DapperOperationsRepository : IOperationsRepository
                 SYSUTCDATETIME(),
                 N'Recruiter invited candidate from Talent Rediscovery.'
             FROM @Inserted AS inserted;
-
-            INSERT INTO dbo.CandidateInvitations
-            (
-                CandidateInvitationId,
-                TenantId,
-                CandidateProspectId,
-                CandidateId,
-                JobRequestId,
-                JobPostId,
-                InvitedByUserId,
-                TokenHash,
-                Email,
-                Status,
-                ExpiresAtUtc,
-                CreatedAtUtc
-            )
-            SELECT
-                NEWID(),
-                @TenantId,
-                NULL,
-                candidate.CandidateId,
-                @JobRequestId,
-                @JobPostId,
-                @ActorUserId,
-                CONVERT(NVARCHAR(256), NEWID()),
-                candidate.Email,
-                N'Sent',
-                DATEADD(DAY, 7, SYSUTCDATETIME()),
-                SYSUTCDATETIME()
-            FROM dbo.Candidates AS candidate
-            WHERE candidate.TenantId = @TenantId
-              AND candidate.CandidateId IN @CandidateIds;
             """;
 
         await connection.ExecuteAsync(new CommandDefinition(
@@ -11282,6 +14030,14 @@ public sealed class DapperOperationsRepository : IOperationsRepository
             {
                 subject = notificationContent.Title,
                 body = notificationContent.Message,
+                htmlBody = TalentPilotEmailTemplate.Build(
+                    "Talent Pilot Notification",
+                    notificationContent.Title,
+                    notificationContent.Message,
+                    [
+                        ("Request", $"{jobTitle} ({requestCode})"),
+                        ("Requester", requesterName)
+                    ]),
                 entityType = "JobRequest",
                 entityId = jobRequestId,
                 variables
@@ -11576,15 +14332,21 @@ public sealed class DapperOperationsRepository : IOperationsRepository
                 application.JobPostId,
                 application.CandidateId,
                 application.CurrentStatus AS ApplicationStatus,
+                application.FinalDecisionAtUtc AS FinalOutcomeRecordedAt,
+                application.FinalDecisionReason AS FinalOutcomeReason,
                 application.SourceLabel,
                 application.SourceDetail,
                 application.RecruiterNotes,
                 request.RequestCode,
                 request.Title AS RequestTitle,
+                request.Description AS RequestDescription,
                 COALESCE(post.Title, request.Title) AS JobTitle,
+                post.Description AS JobPostDescription,
                 COALESCE(request.ClientName, N'') AS Client,
                 department.Name AS Department,
                 location.Name AS Location,
+                COALESCE(post.ExperienceMinYears, request.ExperienceMinYears) AS ExperienceMinYears,
+                COALESCE(post.ExperienceMaxYears, request.ExperienceMaxYears) AS ExperienceMaxYears,
                 request.RequiredPositions,
                 request.FulfilledPositions,
                 request.Status AS RequestStatus,
@@ -11596,8 +14358,39 @@ public sealed class DapperOperationsRepository : IOperationsRepository
                 candidate.CurrentDesignation,
                 candidate.CurrentCompany,
                 candidate.ExperienceYears,
+                candidate.ExpectedSalaryAmount,
+                candidate.ExpectedSalaryCurrency,
                 candidate.NoticePeriodDays,
-                tenant.DisplayName AS CompanyName
+                (
+                    SELECT STRING_AGG(skill.Name, N', ')
+                    FROM dbo.CandidateSkills AS candidateSkill
+                    INNER JOIN dbo.Skills AS skill
+                        ON skill.SkillId = candidateSkill.SkillId
+                    WHERE candidateSkill.TenantId = candidate.TenantId
+                      AND candidateSkill.CandidateId = candidate.CandidateId
+                ) AS CandidateSkillList,
+                (
+                    SELECT STRING_AGG(skill.Name, N', ')
+                    FROM dbo.JobRequestSkills AS requestSkill
+                    INNER JOIN dbo.Skills AS skill
+                        ON skill.SkillId = requestSkill.SkillId
+                    WHERE requestSkill.TenantId = request.TenantId
+                      AND requestSkill.JobRequestId = request.JobRequestId
+                ) AS RequestSkillList,
+                (
+                    SELECT STRING_AGG(skill.Name, N', ')
+                    FROM dbo.JobPostSkills AS postSkill
+                    INNER JOIN dbo.Skills AS skill
+                        ON skill.SkillId = postSkill.SkillId
+                    WHERE postSkill.TenantId = post.TenantId
+                      AND postSkill.JobPostId = post.JobPostId
+                ) AS JobPostSkillList,
+                tenant.DisplayName AS CompanyName,
+                settings.CompanyAddress,
+                settings.CompanyCity,
+                settings.CompanyCountry,
+                settings.OfficialEmail,
+                settings.OfficialPhone
             FROM dbo.JobApplications AS application
             INNER JOIN dbo.JobRequests AS request
                 ON request.TenantId = application.TenantId
@@ -11619,6 +14412,8 @@ public sealed class DapperOperationsRepository : IOperationsRepository
                 AND candidate.CandidateId = application.CandidateId
             INNER JOIN dbo.Tenants AS tenant
                 ON tenant.TenantId = application.TenantId
+            LEFT JOIN dbo.TenantRecruitmentSettings AS settings
+                ON settings.TenantId = application.TenantId
             WHERE application.TenantId = @TenantId
               AND application.JobApplicationId = @JobApplicationId
               AND (@IncludeAllTenantReviews = CAST(1 AS BIT) OR request.HiringManagerUserId = @ActorUserId);
@@ -11635,6 +14430,103 @@ public sealed class DapperOperationsRepository : IOperationsRepository
             },
             transaction,
             cancellationToken: cancellationToken));
+    }
+
+    private static async Task<IReadOnlyList<HiringManagerDashboardActivityItem>> ReadHiringManagerDashboardActivityAsync(
+        SqlConnection connection,
+        Guid tenantId,
+        Guid actorUserId,
+        bool includeAllTenantReviews,
+        CancellationToken cancellationToken)
+    {
+        const string sql = """
+            WITH ScopedApplications AS
+            (
+                SELECT
+                    application.JobApplicationId,
+                    application.JobRequestId,
+                    request.RequestCode,
+                    candidate.DisplayName AS CandidateName
+                FROM dbo.JobApplications AS application
+                INNER JOIN dbo.JobRequests AS request
+                    ON request.TenantId = application.TenantId
+                    AND request.JobRequestId = application.JobRequestId
+                INNER JOIN dbo.Candidates AS candidate
+                    ON candidate.TenantId = application.TenantId
+                    AND candidate.CandidateId = application.CandidateId
+                WHERE application.TenantId = @TenantId
+                  AND application.CurrentStatus IN (N'HiringManagerReview', N'Offered', N'OnHold', N'Rejected', N'Joined')
+                  AND (@IncludeAllTenantReviews = CAST(1 AS BIT) OR request.HiringManagerUserId = @ActorUserId)
+            )
+            SELECT TOP (8)
+                audit.AuditLogId AS Id,
+                COALESCE(requestScope.JobApplicationId, applicationScope.JobApplicationId, offerScope.JobApplicationId) AS JobApplicationId,
+                COALESCE(requestScope.JobRequestId, applicationScope.JobRequestId, offerScope.JobRequestId) AS JobRequestId,
+                COALESCE(requestScope.RequestCode, applicationScope.RequestCode, offerScope.RequestCode) AS RequestCode,
+                COALESCE(requestScope.CandidateName, applicationScope.CandidateName, offerScope.CandidateName) AS CandidateName,
+                audit.ActorDisplayName AS ActorName,
+                audit.EventType AS Title,
+                audit.EventSummary AS Detail,
+                audit.OccurredAtUtc AS CreatedAt
+            FROM dbo.AuditLogs AS audit
+            LEFT JOIN ScopedApplications AS requestScope
+                ON audit.EntityType = N'JobRequest'
+                AND audit.EntityId = requestScope.JobRequestId
+            LEFT JOIN ScopedApplications AS applicationScope
+                ON audit.EntityType = N'JobApplication'
+                AND audit.EntityId = applicationScope.JobApplicationId
+            LEFT JOIN dbo.OfferLetters AS offer
+                ON audit.EntityType = N'OfferLetter'
+                AND offer.TenantId = audit.TenantId
+                AND offer.OfferLetterId = audit.EntityId
+            LEFT JOIN ScopedApplications AS offerScope
+                ON offerScope.JobApplicationId = offer.JobApplicationId
+            WHERE audit.TenantId = @TenantId
+              AND COALESCE(requestScope.JobApplicationId, applicationScope.JobApplicationId, offerScope.JobApplicationId) IS NOT NULL
+            ORDER BY audit.OccurredAtUtc DESC;
+            """;
+
+        var rows = await connection.QueryAsync<HiringManagerDashboardActivityRow>(new CommandDefinition(
+            sql,
+            new { TenantId = tenantId, ActorUserId = actorUserId, IncludeAllTenantReviews = includeAllTenantReviews },
+            cancellationToken: cancellationToken));
+
+        return rows
+            .Select(row => new HiringManagerDashboardActivityItem(
+                row.Id,
+                row.JobApplicationId,
+                row.JobRequestId,
+                row.RequestCode,
+                row.CandidateName,
+                row.ActorName,
+                row.Title,
+                row.Detail,
+                Utc(row.CreatedAt)))
+            .ToArray();
+    }
+
+    private static IReadOnlyList<HiringManagerDashboardAgingBucket> BuildHiringManagerDashboardAgingBuckets(
+        IReadOnlyList<HiringManagerDashboardReviewRow> rows)
+    {
+        return
+        [
+            new HiringManagerDashboardAgingBucket("0-1 days", rows.Count(row => Math.Max(0, row.DaysWaiting) <= 1)),
+            new HiringManagerDashboardAgingBucket("2-3 days", rows.Count(row => Math.Max(0, row.DaysWaiting) is >= 2 and <= 3)),
+            new HiringManagerDashboardAgingBucket("4-7 days", rows.Count(row => Math.Max(0, row.DaysWaiting) is >= 4 and <= 7)),
+            new HiringManagerDashboardAgingBucket("8+ days", rows.Count(row => Math.Max(0, row.DaysWaiting) >= 8))
+        ];
+    }
+
+    private static bool IsActiveHiringManagerDashboardStatus(string status)
+    {
+        return IsDashboardStatus(status, "HiringManagerReview") ||
+            IsDashboardStatus(status, "Offered") ||
+            IsDashboardStatus(status, "OnHold");
+    }
+
+    private static bool IsDashboardStatus(string? status, string expected)
+    {
+        return string.Equals(status?.Replace(" ", string.Empty), expected, StringComparison.OrdinalIgnoreCase);
     }
 
     private static async Task<HiringReviewDetail?> ReadHiringReviewDetailAsync(
@@ -11662,6 +14554,7 @@ public sealed class DapperOperationsRepository : IOperationsRepository
         var meetings = offerLetter is null
             ? []
             : await ReadOfferPresentationMeetingsAsync(connection, transaction, tenantId, jobApplicationId, cancellationToken);
+        var decisionBriefInsight = BuildHiringManagerDecisionBrief(access, interviews);
 
         return new HiringReviewDetail(
             new HiringReviewCandidateSummary(
@@ -11672,6 +14565,8 @@ public sealed class DapperOperationsRepository : IOperationsRepository
                 access.CurrentDesignation,
                 access.CurrentCompany,
                 access.ExperienceYears,
+                access.ExpectedSalaryAmount,
+                access.ExpectedSalaryCurrency,
                 access.NoticePeriodDays),
             new HiringReviewJobSummary(
                 access.JobRequestId,
@@ -11681,45 +14576,366 @@ public sealed class DapperOperationsRepository : IOperationsRepository
                 access.Client,
                 access.Department,
                 access.Location,
+                access.ExperienceMinYears,
+                access.ExperienceMaxYears,
                 access.RequiredPositions,
                 access.FulfilledPositions,
                 access.RequestStatus,
                 access.ApplicationStatus,
+                ToUtc(access.FinalOutcomeRecordedAt),
+                access.FinalOutcomeReason,
                 access.SourceLabel,
                 access.SourceDetail,
-                access.RecruiterNotes),
+                access.RecruiterNotes,
+                access.RequestDescription,
+                access.JobPostDescription),
             interviews,
-            BuildHiringManagerDecisionBrief(access, interviews),
+            decisionBriefInsight.Summary,
+            decisionBriefInsight,
             offerLetter,
             meetings);
     }
 
-    private static string BuildHiringManagerDecisionBrief(
+    private static HiringReviewDecisionBriefInsight BuildHiringManagerDecisionBrief(
         HiringReviewAccessRow access,
         IReadOnlyList<HiringReviewInterviewDetail> interviews)
     {
-        var completed = interviews.Count(interview => string.Equals(interview.Status, "Completed", StringComparison.OrdinalIgnoreCase));
-        var skipped = interviews.Count(interview => string.Equals(interview.Status, "Skipped", StringComparison.OrdinalIgnoreCase));
-        var proceed = interviews.Count(interview =>
-            string.Equals(interview.Recommendation, "Proceed", StringComparison.OrdinalIgnoreCase) ||
-            string.Equals(interview.Recommendation, "Hire", StringComparison.OrdinalIgnoreCase));
+        var totalRounds = interviews.Count;
+        var completed = interviews.Count(interview => IsNormalized(interview.Status, "completed"));
+        var skipped = interviews.Count(interview => IsNormalized(interview.Status, "skipped"));
+        var proceed = interviews.Count(interview => IsPositiveRecommendation(interview.Recommendation));
         var scored = interviews
             .Where(interview => interview.AverageScore.HasValue)
             .Select(interview => interview.AverageScore!.Value)
             .ToArray();
-        var average = scored.Length == 0
-            ? "no submitted score average"
-            : $"{scored.Average():0.0}/5 average score";
-        var source = string.IsNullOrWhiteSpace(access.SourceLabel)
-            ? "source not recorded"
-            : $"source {access.SourceLabel}";
-        var notes = string.IsNullOrWhiteSpace(access.RecruiterNotes)
-            ? "No recruiter notes were recorded."
-            : $"Recruiter note: {access.RecruiterNotes}";
+        var averageScore = scored.Length == 0 ? (decimal?)null : scored.Average();
+        var interviewClearance = totalRounds == 0 ? 0 : Math.Round((decimal)completed / totalRounds * 100m, 1);
+        var positiveRatio = completed == 0 ? 0 : Math.Round((decimal)proceed / completed * 100m, 1);
+        var sentiment = BuildCollectiveInterviewSentiment(proceed, completed, averageScore);
+        var requirementFit = BuildRequirementFit(access, averageScore, positiveRatio);
+        var salaryExpectation = FormatSalary(access.ExpectedSalaryAmount, access.ExpectedSalaryCurrency);
+        var experienceSummary = BuildExperienceSummary(access);
+        var alignmentSummary = BuildAlignmentSummary(access);
+        var scoreText = averageScore.HasValue ? $"{averageScore.Value:0.0}/5" : "No score";
 
-        return $"{access.CandidateName} is ready for final hiring-manager review for {access.JobTitle}. " +
-            $"Interview evidence includes {completed} completed round(s), {skipped} skipped round(s), {proceed} positive recommendation(s), and {average}. " +
-            $"Application status is {access.ApplicationStatus}; {source}. {notes} Human review remains required before offering, rejecting, holding, or marking joined.";
+        var summary = $"{access.CandidateName} is ready for final hiring-manager review for {access.JobTitle}. " +
+            $"{experienceSummary} Interviewers recorded {proceed}/{completed} positive recommendation(s) with {scoreText} average scoring. " +
+            $"{alignmentSummary} Salary expectation: {salaryExpectation}.";
+
+        var metrics = new List<HiringReviewDecisionMetric>
+        {
+            new(
+                "interviewsCleared",
+                "Interviews cleared",
+                $"{completed}/{Math.Max(totalRounds, completed)}",
+                interviewClearance,
+                "%",
+                completed == totalRounds && totalRounds > 0 ? "success" : "warning",
+                "task_alt",
+                $"{completed} completed, {skipped} skipped"),
+            new(
+                "collectiveSentiment",
+                "Collective sentiment",
+                sentiment,
+                positiveRatio,
+                "%",
+                positiveRatio >= 70 ? "success" : positiveRatio >= 40 ? "warning" : "danger",
+                "thumb_up",
+                $"{proceed}/{Math.Max(completed, 1)} positive recommendation(s)"),
+            new(
+                "averageScore",
+                "Average score",
+                averageScore.HasValue ? $"{averageScore.Value:0.0}/5" : "No score",
+                averageScore.HasValue ? Math.Round(averageScore.Value / 5m * 100m, 1) : null,
+                "%",
+                averageScore.GetValueOrDefault() >= 4m ? "success" : averageScore.GetValueOrDefault() >= 3m ? "warning" : "neutral",
+                "speed",
+                scored.Length == 0 ? "No submitted interview score" : "Average across submitted interview scorecards"),
+            new(
+                "requirementFit",
+                "Requirement fit",
+                requirementFit.Label,
+                requirementFit.Score,
+                "%",
+                requirementFit.Score >= 70 ? "success" : requirementFit.Score >= 40 ? "warning" : "neutral",
+                "fact_check",
+                requirementFit.Detail),
+            new(
+                "experienceMatch",
+                "Experience match",
+                FormatExperience(access.ExperienceYears),
+                BuildExperienceMatchScore(access),
+                "%",
+                BuildExperienceMatchScore(access) >= 70 ? "success" : "neutral",
+                "work_history",
+                $"{NullIfWhiteSpace(access.CurrentDesignation) ?? "Designation not recorded"} at {NullIfWhiteSpace(access.CurrentCompany) ?? "company not recorded"}"),
+            new(
+                "salaryExpectation",
+                "Salary expectation",
+                salaryExpectation,
+                null,
+                null,
+                access.ExpectedSalaryAmount.HasValue ? "neutral" : "warning",
+                "payments",
+                access.ExpectedSalaryAmount.HasValue ? "Candidate-entered salary expectation" : "Salary expectation has not been captured")
+        };
+
+        var context = new List<HiringReviewDecisionContextItem>
+        {
+            new("applicationStatus", "Application status", FormatStatus(access.ApplicationStatus), "approval_delegation", "info"),
+            new("source", "Source", NullIfWhiteSpace(access.SourceLabel) ?? "Not recorded", "travel_explore", "info"),
+            new("recruiterNotes", "Recruiter notes", NullIfWhiteSpace(access.RecruiterNotes) ?? "No notes recorded", "edit_note", string.IsNullOrWhiteSpace(access.RecruiterNotes) ? "warning" : "info"),
+            new("decisionControl", "Decision control", "Human review required", "verified_user", "info")
+        };
+
+        var signals = new List<string>
+        {
+            $"Past experience: {experienceSummary.Trim()}",
+            $"Job alignment: {alignmentSummary}",
+            $"Interview feedback: {sentiment} based on {completed} completed round(s).",
+            $"Salary expectation: {salaryExpectation}."
+        };
+
+        return new HiringReviewDecisionBriefInsight(
+            "hiring-manager-decision-brief",
+            "Hiring Manager Decision Brief",
+            summary,
+            metrics,
+            context,
+            signals);
+    }
+
+    private static string BuildCollectiveInterviewSentiment(int positiveRecommendations, int completedRounds, decimal? averageScore)
+    {
+        if (completedRounds == 0)
+        {
+            return "No completed interview signal";
+        }
+
+        var positiveRatio = (decimal)positiveRecommendations / completedRounds;
+        var score = averageScore.GetValueOrDefault();
+        if (positiveRatio >= 0.75m && score >= 4m)
+        {
+            return "Strong positive";
+        }
+
+        if (positiveRatio >= 0.5m || score >= 3.5m)
+        {
+            return "Positive";
+        }
+
+        if (positiveRatio > 0m || score >= 3m)
+        {
+            return "Mixed";
+        }
+
+        return "Needs review";
+    }
+
+    private static RequirementFitResult BuildRequirementFit(
+        HiringReviewAccessRow access,
+        decimal? averageScore,
+        decimal positiveRatio)
+    {
+        var candidateSkills = SplitSkillList(access.CandidateSkillList);
+        var requiredSkills = SplitSkillList($"{access.RequestSkillList}, {access.JobPostSkillList}");
+        var matchedSkills = requiredSkills
+            .Where(skill => candidateSkills.Any(candidateSkill => SkillMatches(candidateSkill, skill)))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+
+        var interviewScore = averageScore.HasValue ? averageScore.Value / 5m * 100m : 0m;
+        decimal fitScore;
+        string detail;
+
+        if (requiredSkills.Count > 0)
+        {
+            var skillScore = Math.Round((decimal)matchedSkills.Length / requiredSkills.Count * 100m, 1);
+            fitScore = Math.Round((skillScore * 0.55m) + (positiveRatio * 0.30m) + (interviewScore * 0.15m), 1);
+            detail = matchedSkills.Length == 0
+                ? $"No required skills were explicitly found in the candidate profile. Checked {requiredSkills.Count} required skill(s)."
+                : $"{matchedSkills.Length}/{requiredSkills.Count} required skill(s) appear in the candidate profile: {string.Join(", ", matchedSkills.Take(4))}.";
+        }
+        else
+        {
+            var keywordScore = KeywordOverlapScore(
+                $"{access.CurrentDesignation} {access.CurrentCompany} {access.CandidateSkillList}",
+                $"{access.JobTitle} {access.RequestDescription} {access.JobPostDescription}");
+            fitScore = Math.Round((keywordScore * 0.50m) + (positiveRatio * 0.30m) + (interviewScore * 0.20m), 1);
+            detail = keywordScore > 0
+                ? "Fit is inferred from overlap between candidate profile text and job/request descriptions."
+                : "No skill taxonomy overlap was available; fit is weighted toward interviews and submitted scores.";
+        }
+
+        return new RequirementFitResult(
+            fitScore >= 70m ? "Strong fit" : fitScore >= 45m ? "Moderate fit" : "Needs validation",
+            Math.Min(100m, fitScore),
+            detail);
+    }
+
+    private static string BuildExperienceSummary(HiringReviewAccessRow access)
+    {
+        var role = NullIfWhiteSpace(access.CurrentDesignation) ?? "role not recorded";
+        var company = NullIfWhiteSpace(access.CurrentCompany) ?? "company not recorded";
+        var experience = FormatExperience(access.ExperienceYears);
+        var match = BuildExperienceMatchScore(access);
+        var matchText = match >= 70m ? "matches the requested experience band" : "needs experience-band validation";
+        return $"Past experience shows {experience} as {role} at {company}; this {matchText}.";
+    }
+
+    private static string BuildAlignmentSummary(HiringReviewAccessRow access)
+    {
+        var requiredSkills = SplitSkillList($"{access.RequestSkillList}, {access.JobPostSkillList}");
+        var candidateSkills = SplitSkillList(access.CandidateSkillList);
+        var matchedSkills = requiredSkills
+            .Where(skill => candidateSkills.Any(candidateSkill => SkillMatches(candidateSkill, skill)))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Take(4)
+            .ToArray();
+
+        if (matchedSkills.Length > 0)
+        {
+            return $"Profile-to-role alignment is supported by {string.Join(", ", matchedSkills)} against the job/request description.";
+        }
+
+        var overlapScore = KeywordOverlapScore(
+            $"{access.CurrentDesignation} {access.CurrentCompany} {access.CandidateSkillList}",
+            $"{access.JobTitle} {access.RequestDescription} {access.JobPostDescription}");
+        return overlapScore > 0
+            ? "Profile-to-role alignment is inferred from candidate profile and job/request description overlap."
+            : "Profile-to-role alignment should be manually validated against the job/request description.";
+    }
+
+    private static decimal BuildExperienceMatchScore(HiringReviewAccessRow access)
+    {
+        if (!access.ExperienceYears.HasValue)
+        {
+            return 0m;
+        }
+
+        if (!access.ExperienceMinYears.HasValue && !access.ExperienceMaxYears.HasValue)
+        {
+            return 70m;
+        }
+
+        var experience = access.ExperienceYears.Value;
+        if (access.ExperienceMinYears.HasValue && experience < access.ExperienceMinYears.Value)
+        {
+            var gap = access.ExperienceMinYears.Value - experience;
+            return Math.Max(0m, 70m - (gap * 20m));
+        }
+
+        if (access.ExperienceMaxYears.HasValue && experience > access.ExperienceMaxYears.Value)
+        {
+            return 85m;
+        }
+
+        return 100m;
+    }
+
+    private static decimal KeywordOverlapScore(string candidateText, string jobText)
+    {
+        var candidateTerms = TokenizeDecisionBriefText(candidateText);
+        var jobTerms = TokenizeDecisionBriefText(jobText);
+        if (candidateTerms.Count == 0 || jobTerms.Count == 0)
+        {
+            return 0m;
+        }
+
+        var overlap = jobTerms.Count(term => candidateTerms.Contains(term));
+        var denominator = Math.Min(jobTerms.Count, 12);
+        return Math.Min(100m, Math.Round((decimal)overlap / denominator * 100m, 1));
+    }
+
+    private static HashSet<string> TokenizeDecisionBriefText(string value)
+    {
+        var stopWords = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            "and", "the", "for", "with", "from", "role", "job", "senior", "developer", "engineer",
+            "required", "requirements", "experience", "candidate", "client", "team", "work"
+        };
+
+        return value
+            .Split([' ', ',', '.', ';', ':', '/', '\\', '-', '_', '(', ')', '[', ']', '\r', '\n', '\t'], StringSplitOptions.RemoveEmptyEntries)
+            .Select(term => term.Trim().ToLowerInvariant())
+            .Where(term => term.Length >= 3 && !stopWords.Contains(term))
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+    }
+
+    private static IReadOnlyList<string> SplitSkillList(string? value)
+    {
+        return (value ?? string.Empty)
+            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Where(skill => !string.IsNullOrWhiteSpace(skill))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+    }
+
+    private static bool SkillMatches(string candidateSkill, string requiredSkill)
+    {
+        return candidateSkill.Contains(requiredSkill, StringComparison.OrdinalIgnoreCase)
+            || requiredSkill.Contains(candidateSkill, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool IsPositiveRecommendation(string? recommendation)
+    {
+        var normalized = NormalizeDecisionBriefText(recommendation);
+        return normalized is "proceed" or "hire" or "recommended" or "recommend" or "positive" or "yes" or "stronghire";
+    }
+
+    private static bool IsNormalized(string? value, string expected)
+    {
+        return string.Equals(NormalizeDecisionBriefText(value), expected, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string NormalizeDecisionBriefText(string? value)
+    {
+        return (value ?? string.Empty).Replace(" ", string.Empty).Replace("_", string.Empty).Replace("-", string.Empty).ToLowerInvariant();
+    }
+
+    private static string FormatExperience(decimal? value)
+    {
+        return value.HasValue ? $"{value.Value:0.#} years" : "experience not recorded";
+    }
+
+    private static string FormatSalary(decimal? amount, string? currency)
+    {
+        if (!amount.HasValue)
+        {
+            return "Not recorded";
+        }
+
+        return string.IsNullOrWhiteSpace(currency)
+            ? amount.Value.ToString("N0", CultureInfo.InvariantCulture)
+            : $"{currency.Trim().ToUpperInvariant()} {amount.Value:N0}";
+    }
+
+    private static string FormatStatus(string? value)
+    {
+        var status = NullIfWhiteSpace(value);
+        if (status is null)
+        {
+            return "Not recorded";
+        }
+
+        var builder = new StringBuilder(status.Length + 4);
+        for (var index = 0; index < status.Length; index++)
+        {
+            var character = status[index];
+            if (index > 0 && char.IsUpper(character) && char.IsLower(status[index - 1]))
+            {
+                builder.Append(' ');
+            }
+
+            builder.Append(character);
+        }
+
+        return builder.ToString();
+    }
+
+    private static string? NullIfWhiteSpace(string? value)
+    {
+        return string.IsNullOrWhiteSpace(value) ? null : value.Trim();
     }
 
     private static async Task<IReadOnlyList<HiringReviewInterviewDetail>> ReadHiringReviewInterviewsAsync(
@@ -12083,31 +15299,127 @@ public sealed class DapperOperationsRepository : IOperationsRepository
 
     private static string BuildOfferLetterBody(HiringReviewAccessRow access, GenerateOfferLetterInput input)
     {
-        var startDate = input.StartDate?.ToString("yyyy-MM-dd") ?? "[Start date]";
-        var compensation = string.IsNullOrWhiteSpace(input.CompensationText) ? "[Compensation details]" : input.CompensationText;
-        var reportingManager = string.IsNullOrWhiteSpace(input.ReportingManager) ? access.HiringManagerName : input.ReportingManager;
-        var workLocation = string.IsNullOrWhiteSpace(input.WorkLocation) ? access.Location : input.WorkLocation;
+        var companyName = NullIfWhiteSpace(access.CompanyName) ?? "[Company Name]";
+        var candidateName = NullIfWhiteSpace(access.CandidateName) ?? "[Candidate Name]";
+        var jobTitle = NullIfWhiteSpace(access.JobTitle) ?? NullIfWhiteSpace(access.RequestTitle) ?? "[Position Title]";
+        var department = NullIfWhiteSpace(access.Department) ?? "[Department]";
+        var reportingManager = NullIfWhiteSpace(input.ReportingManager)
+            ?? NullIfWhiteSpace(access.HiringManagerName)
+            ?? "[Manager Name / Designation]";
+        var workLocation = NullIfWhiteSpace(input.WorkLocation)
+            ?? NullIfWhiteSpace(access.Location)
+            ?? "[Office Location / Remote / Hybrid]";
+        var joiningDate = input.StartDate?.ToString("MMMM d, yyyy", CultureInfo.InvariantCulture) ?? "[Joining Date]";
+        var compensation = NullIfWhiteSpace(input.CompensationText) ?? "[Salary Amount] per [month/year]";
+        var generatedDate = DateTime.UtcNow.ToString("MMMM d, yyyy", CultureInfo.InvariantCulture);
+        var signerName = NullIfWhiteSpace(access.HiringManagerName) ?? "[Authorized Person Name]";
 
-        return string.Join(Environment.NewLine, new[]
+        var lines = new List<string> { companyName };
+        AddIfNotBlank(lines, access.CompanyAddress);
+
+        var cityCountry = JoinNonEmpty(", ", access.CompanyCity, access.CompanyCountry);
+        AddIfNotBlank(lines, cityCountry);
+
+        var officialContact = JoinNonEmpty(
+            " | ",
+            PrefixIfPresent("Email: ", access.OfficialEmail),
+            PrefixIfPresent("Phone: ", access.OfficialPhone));
+        AddIfNotBlank(lines, officialContact);
+
+        lines.AddRange([
+            string.Empty,
+            $"Date: {generatedDate}",
+            string.Empty,
+            $"To: {candidateName}",
+            string.Empty,
+            $"Subject: Offer of Employment - {jobTitle}",
+            string.Empty,
+            $"Dear {candidateName},",
+            string.Empty,
+            $"We are pleased to offer you the position of {jobTitle} at {companyName}. We were impressed with your expertise, problem-solving abilities, and professional experience, and we believe you will be a valuable addition to our team.",
+            string.Empty,
+            "Your employment details are as follows:",
+            string.Empty,
+            $"Position: {jobTitle}",
+            $"Department: {department}",
+            $"Reporting To: {reportingManager}",
+            $"Joining Date: {joiningDate}",
+            "Employment Type: Full-time / Permanent",
+            $"Work Location: {workLocation}",
+            string.Empty,
+            $"Your total compensation will be {compensation}, subject to applicable taxes and deductions. Additional benefits, if applicable, may include health insurance, paid leaves, performance bonuses, provident fund, learning opportunities, and other company-provided benefits as per {companyName}'s policies.",
+            string.Empty,
+            BuildOfferResponsibilitiesParagraph(access, jobTitle),
+            string.Empty,
+            $"This offer is subject to successful completion of any required background checks, reference verification, and submission of necessary employment documents. You will also be expected to comply with {companyName}'s policies, confidentiality requirements, intellectual property agreements, and code of conduct.",
+            string.Empty,
+            "Please confirm your acceptance of this offer by signing and returning a copy of this letter by [Acceptance Deadline]."
+        ]);
+
+        var additionalNotes = NullIfWhiteSpace(input.AdditionalNotes);
+        if (additionalNotes is not null)
         {
-            $"Offer Letter - {access.JobTitle}",
+            lines.Add(string.Empty);
+            lines.Add($"Additional notes: {additionalNotes}");
+        }
+
+        lines.AddRange([
             string.Empty,
-            $"Dear {access.CandidateName},",
+            $"We are excited about the possibility of you joining {companyName} and look forward to your contribution to our continued success.",
             string.Empty,
-            $"We are pleased to offer you the position of {access.JobTitle} at {access.CompanyName}.",
+            "Sincerely,",
             string.Empty,
-            $"Client / request: {access.Client} ({access.RequestCode})",
-            $"Work location: {workLocation}",
-            $"Expected start date: {startDate}",
-            $"Reporting manager: {reportingManager}",
-            $"Compensation: {compensation}",
+            signerName,
+            companyName,
             string.Empty,
-            "This draft is prepared in Talent Pilot for hiring-manager review and can be edited before presentation.",
-            string.IsNullOrWhiteSpace(input.AdditionalNotes) ? string.Empty : $"Additional notes: {input.AdditionalNotes}",
+            "Acceptance",
             string.Empty,
-            $"Regards,",
-            access.HiringManagerName
-        });
+            $"I, {candidateName}, accept the offer for the position of {jobTitle} at {companyName} under the terms stated above.",
+            string.Empty,
+            "Signature: _______________________",
+            "Date: ___________________________"
+        ]);
+
+        return string.Join(Environment.NewLine, lines);
+    }
+
+    private static void AddIfNotBlank(List<string> lines, string? value)
+    {
+        var text = NullIfWhiteSpace(value);
+        if (text is not null)
+        {
+            lines.Add(text);
+        }
+    }
+
+    private static string? PrefixIfPresent(string prefix, string? value)
+    {
+        var text = NullIfWhiteSpace(value);
+        return text is null ? null : $"{prefix}{text}";
+    }
+
+    private static string? JoinNonEmpty(string separator, params string?[] values)
+    {
+        var nonEmpty = values
+            .Select(NullIfWhiteSpace)
+            .Where(value => value is not null)
+            .ToArray();
+
+        return nonEmpty.Length == 0 ? null : string.Join(separator, nonEmpty);
+    }
+
+    private static string BuildOfferResponsibilitiesParagraph(HiringReviewAccessRow access, string jobTitle)
+    {
+        var normalizedTitle = NormalizeDecisionBriefText(jobTitle);
+        if (normalizedTitle.Contains("software", StringComparison.OrdinalIgnoreCase)
+            || normalizedTitle.Contains("engineer", StringComparison.OrdinalIgnoreCase)
+            || normalizedTitle.Contains("developer", StringComparison.OrdinalIgnoreCase))
+        {
+            return $"As a {jobTitle}, your responsibilities will include designing, developing, testing, and maintaining software solutions; collaborating with cross-functional teams; reviewing code; mentoring junior engineers; contributing to architecture decisions; and ensuring high standards of quality, performance, and security.";
+        }
+
+        var department = NullIfWhiteSpace(access.Department) ?? "the relevant department";
+        return $"As a {jobTitle}, your responsibilities will include fulfilling the duties described in the approved job request and job description; collaborating with cross-functional teams; supporting {department} delivery goals; mentoring where appropriate; and ensuring high standards of quality, performance, and professionalism.";
     }
 
     private static async Task UpdateApplicationStatusAsync(
@@ -12124,8 +15436,8 @@ public sealed class DapperOperationsRepository : IOperationsRepository
         const string sql = """
             UPDATE dbo.JobApplications
             SET CurrentStatus = @NewStatus,
-                FinalDecisionAtUtc = CASE WHEN @NewStatus IN (N'Rejected', N'OnHold', N'Joined') THEN SYSUTCDATETIME() ELSE FinalDecisionAtUtc END,
-                FinalDecisionReason = CASE WHEN @NewStatus IN (N'Rejected', N'OnHold', N'Joined') THEN @Reason ELSE FinalDecisionReason END,
+                FinalDecisionAtUtc = CASE WHEN @NewStatus IN (N'Offered', N'Rejected', N'OnHold', N'Joined') THEN SYSUTCDATETIME() ELSE FinalDecisionAtUtc END,
+                FinalDecisionReason = CASE WHEN @NewStatus IN (N'Offered', N'Rejected', N'OnHold', N'Joined') THEN @Reason ELSE FinalDecisionReason END,
                 UpdatedAtUtc = SYSUTCDATETIME()
             WHERE TenantId = @TenantId
               AND JobApplicationId = @JobApplicationId;
@@ -12888,7 +16200,8 @@ public sealed class DapperOperationsRepository : IOperationsRepository
         string EntityType,
         Guid EntityId,
         DateTime? ReadAt,
-        DateTime CreatedAt);
+        DateTime CreatedAt,
+        string? MetadataJson);
 
     private sealed record IntakeDepartmentOptionRow(
         Guid DepartmentId,
@@ -13054,7 +16367,14 @@ public sealed class DapperOperationsRepository : IOperationsRepository
         string StorageKey,
         string? StorageContainer,
         string ContentHashSha256,
-        DateTime UploadedAt);
+        DateTime UploadedAt,
+        string ExtractionStatus,
+        bool HasExtractedText,
+        string? ExtractedText,
+        string? ExtractedTextHashSha256,
+        string? ParserVersion,
+        DateTime? ExtractedAt,
+        string? ExtractionError);
 
     private sealed record RediscoveryCandidateSkillRow(
         Guid CandidateId,
@@ -13083,6 +16403,7 @@ public sealed class DapperOperationsRepository : IOperationsRepository
         string Location,
         string Status,
         string SourceLabel,
+        string? CoverLetterText,
         DateTime AppliedAt,
         DateTime? FinalDecisionAt,
         string? FinalDecisionReason);
@@ -13202,6 +16523,18 @@ public sealed class DapperOperationsRepository : IOperationsRepository
         string DepartmentName,
         string Description);
 
+    private sealed record InterviewerOptionRow(
+        Guid UserId,
+        string DisplayName,
+        string Email,
+        Guid? DepartmentId,
+        string? DepartmentName,
+        string? Designation,
+        string RoleNamesCsv,
+        int CompletedInterviewCount,
+        bool IsJobDepartmentMatch,
+        bool IsDepartmentHod);
+
     private sealed record JobPostRequestDefaultsRow(
         Guid JobRequestId,
         string RequestCode,
@@ -13258,6 +16591,23 @@ public sealed class DapperOperationsRepository : IOperationsRepository
         string JobTitle,
         string CompanyName);
 
+    private sealed record PortalInvitationRow(
+        Guid CandidateInvitationId,
+        Guid JobPostId,
+        string JobTitle,
+        string CompanyName,
+        string Status,
+        DateTime ExpiresAtUtc,
+        DateTime? UsedAtUtc,
+        DateTime? RevokedAtUtc);
+
+    private sealed record TrackedCandidateInvitation(
+        Guid CandidateId,
+        Guid JobPostId,
+        Guid CandidateInvitationId,
+        string TokenHash,
+        string? JobLink);
+
     private sealed record PortalJobPostRow(
         Guid JobPostId,
         Guid TenantId,
@@ -13281,6 +16631,19 @@ public sealed class DapperOperationsRepository : IOperationsRepository
         string DisplayName,
         string Email);
 
+    private sealed record PortalCandidateProfileRow(
+        Guid? CandidateId,
+        string DisplayName,
+        string Email,
+        string? Phone,
+        string? LinkedInUrl,
+        string? CurrentDesignation,
+        string? CurrentCompany,
+        decimal? ExperienceYears,
+        decimal? ExpectedSalaryAmount,
+        string? ExpectedSalaryCurrency,
+        int? NoticePeriodDays);
+
     private sealed record AppUserCandidateSeedRow(
         Guid UserId,
         string DisplayName,
@@ -13294,6 +16657,13 @@ public sealed class DapperOperationsRepository : IOperationsRepository
     private sealed record ApplicationIdentityRow(
         Guid JobApplicationId,
         string CurrentStatus);
+
+    private sealed record CandidateInvitationApplicationRow(
+        Guid CandidateInvitationId,
+        Guid? CandidateId,
+        string Status,
+        DateTime ExpiresAtUtc,
+        DateTime? RevokedAtUtc);
 
     private sealed record RecruiterApplicationRow(
         Guid JobApplicationId,
@@ -13321,6 +16691,8 @@ public sealed class DapperOperationsRepository : IOperationsRepository
         string RoundName,
         Guid InterviewerUserId,
         string InterviewerName,
+        string InterviewerAccountStatus,
+        bool InterviewerIsDeleted,
         string Status,
         DateTime StartsAt,
         int DurationMinutes,
@@ -13357,6 +16729,8 @@ public sealed class DapperOperationsRepository : IOperationsRepository
         string RoundName,
         string InterviewerName,
         Guid InterviewerUserId,
+        string InterviewerAccountStatus,
+        bool InterviewerIsDeleted,
         string ScheduledByName,
         DateTime StartsAt,
         int DurationMinutes,
@@ -13371,9 +16745,12 @@ public sealed class DapperOperationsRepository : IOperationsRepository
         DateTime? SubmittedAt);
 
     private sealed record InterviewScheduleNotificationContextRow(
+        Guid JobApplicationId,
+        Guid JobRequestId,
         string CompanyName,
         string RequestCode,
         string JobTitle,
+        Guid CandidateUserId,
         string CandidateName,
         string CandidateEmail,
         Guid InterviewerUserId,
@@ -13389,10 +16766,48 @@ public sealed class DapperOperationsRepository : IOperationsRepository
         string? MeetingLink,
         string? LocationText);
 
+    private sealed record InterviewParticipantInsertRow(
+        Guid InterviewParticipantId,
+        Guid TenantId,
+        Guid InterviewId,
+        Guid? UserId,
+        string DisplayName,
+        string Email,
+        string ParticipantRole,
+        bool IsOptional);
+
+    private sealed record CandidateMeetingEventRow(
+        Guid InterviewId,
+        Guid JobApplicationId,
+        Guid JobRequestId,
+        Guid? JobPostId,
+        string RequestCode,
+        string JobTitle,
+        string Client,
+        string RoundName,
+        string Status,
+        DateTime StartsAt,
+        int DurationMinutes,
+        string? MeetingLink,
+        string? CalendarProvider,
+        string? CalendarEventId,
+        string? CalendarEventHtmlLink,
+        string? LocationText);
+
+    private sealed record CandidateMeetingParticipantRow(
+        Guid InterviewId,
+        string DisplayName,
+        string Email,
+        string Role,
+        bool IsOptional);
+
     private sealed record InterviewFeedbackContextRow(
         Guid InterviewId,
         Guid JobApplicationId,
+        Guid JobRequestId,
         Guid InterviewerUserId,
+        string InterviewerAccountStatus,
+        bool InterviewerIsDeleted,
         string Status,
         string RequestCode,
         string JobTitle,
@@ -13422,21 +16837,79 @@ public sealed class DapperOperationsRepository : IOperationsRepository
         string HiringManagerName,
         DateTime UpdatedAt);
 
+    private sealed record HiringManagerDashboardReviewRow(
+        Guid JobApplicationId,
+        Guid JobRequestId,
+        Guid? JobPostId,
+        string RequestCode,
+        string JobTitle,
+        string Client,
+        string Department,
+        string CandidateName,
+        string CandidateEmail,
+        string Status,
+        string HiringManagerName,
+        DateTime UpdatedAt,
+        int DaysWaiting,
+        int CompletedInterviews,
+        decimal? AverageScore,
+        int PositiveRecommendations,
+        string? OfferLetterStatus,
+        int ScheduledMeetingCount,
+        DateTime? LatestMeetingAt);
+
+    private sealed record HiringManagerDashboardActivityRow(
+        Guid Id,
+        Guid JobApplicationId,
+        Guid JobRequestId,
+        string RequestCode,
+        string CandidateName,
+        string ActorName,
+        string Title,
+        string Detail,
+        DateTime CreatedAt);
+
+    private sealed record RequirementFitResult(
+        string Label,
+        decimal Score,
+        string Detail);
+
+    private sealed record ReportingManagerRequestContextRow(
+        Guid? DepartmentId,
+        string DepartmentName);
+
+    private sealed record ReportingManagerOptionRow(
+        Guid EmployeeId,
+        string DisplayName,
+        string Email,
+        string? Designation,
+        string Department,
+        string Location,
+        decimal? ExperienceYears,
+        bool IsDepartmentMatch,
+        int TotalCount);
+
     private sealed record HiringReviewAccessRow(
         Guid JobApplicationId,
         Guid JobRequestId,
         Guid? JobPostId,
         Guid CandidateId,
         string ApplicationStatus,
+        DateTime? FinalOutcomeRecordedAt,
+        string? FinalOutcomeReason,
         string SourceLabel,
         string? SourceDetail,
         string? RecruiterNotes,
         string RequestCode,
         string RequestTitle,
+        string RequestDescription,
         string JobTitle,
+        string? JobPostDescription,
         string Client,
         string Department,
         string Location,
+        decimal? ExperienceMinYears,
+        decimal? ExperienceMaxYears,
         int RequiredPositions,
         int FulfilledPositions,
         string RequestStatus,
@@ -13448,8 +16921,18 @@ public sealed class DapperOperationsRepository : IOperationsRepository
         string? CurrentDesignation,
         string? CurrentCompany,
         decimal? ExperienceYears,
+        decimal? ExpectedSalaryAmount,
+        string? ExpectedSalaryCurrency,
         int? NoticePeriodDays,
-        string CompanyName);
+        string? CandidateSkillList,
+        string? RequestSkillList,
+        string? JobPostSkillList,
+        string CompanyName,
+        string? CompanyAddress,
+        string? CompanyCity,
+        string? CompanyCountry,
+        string? OfficialEmail,
+        string? OfficialPhone);
 
     private sealed record HiringReviewInterviewRow(
         Guid InterviewId,

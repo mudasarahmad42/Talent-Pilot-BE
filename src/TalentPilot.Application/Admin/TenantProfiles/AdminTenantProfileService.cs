@@ -1,6 +1,7 @@
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using TalentPilot.Application.Abstractions;
+using TalentPilot.Application.Admin.Notifications;
 using TalentPilot.Common.Results;
 using TalentPilot.Domain.Tenancy;
 
@@ -75,12 +76,18 @@ public sealed class AdminTenantProfileService : IAdminTenantProfileService
                 nameof(input.DefaultCurrency),
                 nameof(input.Status),
                 nameof(input.CareerDisplayName),
+                nameof(input.CompanyAddress),
+                nameof(input.CompanyCity),
+                nameof(input.CompanyCountry),
+                nameof(input.OfficialEmail),
+                nameof(input.OfficialPhone),
                 nameof(input.PrimaryColor),
                 nameof(input.CandidateLoginRequired),
                 nameof(input.CandidateCvFormat),
                 nameof(input.PublicJobsEnabled),
                 nameof(input.InviteExpiryDays),
                 nameof(input.ReapplyCooldownDays),
+                nameof(input.NotificationEmailProvider),
                 nameof(input.LogoFileName)
             }
         });
@@ -144,6 +151,11 @@ public sealed class AdminTenantProfileService : IAdminTenantProfileService
             return Result.Failure("tenant.primary_color_invalid", "Primary color must be a hex color.");
         }
 
+        if (!string.IsNullOrWhiteSpace(input.OfficialEmail) && !input.OfficialEmail.Contains('@', StringComparison.Ordinal))
+        {
+            return Result.Failure("tenant.official_email_invalid", "Official email must be valid.");
+        }
+
         if (!string.Equals(input.CandidateCvFormat, "DOCX", StringComparison.OrdinalIgnoreCase))
         {
             return Result.Failure("tenant.cv_format_invalid", "MVP supports DOCX resumes only.");
@@ -157,6 +169,11 @@ public sealed class AdminTenantProfileService : IAdminTenantProfileService
         if (input.ReapplyCooldownDays is < 1 or > 365)
         {
             return Result.Failure("tenant.reapply_cooldown_invalid", "Reapply cooldown must be between 1 and 365 days.");
+        }
+
+        if (!NotificationEmailProviders.IsSupported(input.NotificationEmailProvider))
+        {
+            return Result.Failure("tenant.notification_email_provider_invalid", "Email provider must be Resend or Microsoft Graph.");
         }
 
         if (string.IsNullOrWhiteSpace(input.LogoContentBase64))

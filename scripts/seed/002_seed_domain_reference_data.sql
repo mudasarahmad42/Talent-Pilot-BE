@@ -375,18 +375,30 @@ WHEN MATCHED THEN UPDATE SET Status = source.Status, Notes = source.Notes
 WHEN NOT MATCHED THEN INSERT (TenantId, CandidateProspectId, JobRequestId, Status, Notes, CreatedAtUtc)
 VALUES (source.TenantId, source.CandidateProspectId, source.JobRequestId, source.Status, source.Notes, @Now);
 
-MERGE dbo.CandidateInvitations AS target
-USING (VALUES
-    (@CandidateInvitationId, @TenantId, @CandidateProspectId, @CandidateId, @JobRequestId, @RecruiterUserId, N'demo-token-hash-only', N'ai-candidate@8pkk57.onmicrosoft.com', N'Used', DATEADD(DAY, 7, @Now), DATEADD(HOUR, -6, @Now), CAST(NULL AS DATETIME2(3)), 0)
-) AS source (CandidateInvitationId, TenantId, CandidateProspectId, CandidateId, JobRequestId, InvitedByUserId, TokenHash, Email, Status, ExpiresAtUtc, UsedAtUtc, RevokedAtUtc, ResendCount)
-ON target.CandidateInvitationId = source.CandidateInvitationId
-WHEN MATCHED THEN UPDATE SET Status = source.Status, UsedAtUtc = source.UsedAtUtc, ResendCount = source.ResendCount
-WHEN NOT MATCHED THEN INSERT (CandidateInvitationId, TenantId, CandidateProspectId, CandidateId, JobRequestId, InvitedByUserId, TokenHash, Email, Status, ExpiresAtUtc, UsedAtUtc, RevokedAtUtc, ResendCount, CreatedAtUtc)
-VALUES (source.CandidateInvitationId, source.TenantId, source.CandidateProspectId, source.CandidateId, source.JobRequestId, source.InvitedByUserId, source.TokenHash, source.Email, source.Status, source.ExpiresAtUtc, source.UsedAtUtc, source.RevokedAtUtc, source.ResendCount, @Now);
+DELETE feedback
+FROM dbo.InterviewFeedback AS feedback
+INNER JOIN dbo.Interviews AS interview ON interview.InterviewId = feedback.InterviewId
+WHERE interview.JobApplicationId = @JobApplicationId;
+
+DELETE participant
+FROM dbo.InterviewParticipants AS participant
+INNER JOIN dbo.Interviews AS interview ON interview.InterviewId = participant.InterviewId
+WHERE interview.JobApplicationId = @JobApplicationId;
+
+DELETE FROM dbo.Interviews WHERE JobApplicationId = @JobApplicationId;
+DELETE FROM dbo.JobApplicationDocuments WHERE JobApplicationId = @JobApplicationId;
+DELETE FROM dbo.JobApplicationStatusHistory WHERE JobApplicationId = @JobApplicationId;
+DELETE FROM dbo.JobRequestFulfillments WHERE JobApplicationId = @JobApplicationId;
+DELETE FROM dbo.OfferPresentationMeetings WHERE JobApplicationId = @JobApplicationId;
+DELETE FROM dbo.OfferLetters WHERE JobApplicationId = @JobApplicationId;
+DELETE FROM dbo.AiRecommendationLogs WHERE RecommendedEntityId = @JobApplicationId OR SourceEntityId = @JobApplicationId;
+DELETE FROM dbo.AiAgentRuns WHERE SourceEntityId = @JobApplicationId;
+DELETE FROM dbo.VectorEmbeddings WHERE EntityId = @JobApplicationId;
+DELETE FROM dbo.JobApplications WHERE JobApplicationId = @JobApplicationId;
+DELETE FROM dbo.CandidateInvitations WHERE CandidateInvitationId = @CandidateInvitationId;
 
 MERGE dbo.JobApplications AS target
 USING (VALUES
-    (@JobApplicationId, @TenantId, @JobRequestId, @CandidateId, @LinkedInSourceLabelId, N'LinkedIn', N'Interviewing', 1, CAST(1 AS BIT), CAST(1 AS BIT), DATEADD(HOUR, -6, @Now), DATEADD(HOUR, -6, @Now), CAST(NULL AS DATETIME2(3)), CAST(NULL AS NVARCHAR(500))),
     (@ReactHistoricalApplicationId, @TenantId, @HistoricalReactJobRequestId, @ReactCandidateId, @ReferralSourceLabelId, N'Referral', N'Rejected', 1, CAST(0 AS BIT), CAST(0 AS BIT), DATEADD(DAY, -170, @Now), DATEADD(DAY, -170, @Now), DATEADD(DAY, -150, @Now), N'Client selected a local full-stack profile; interviewer feedback stayed positive.'),
     (@AngularHistoricalApplicationId, @TenantId, @HistoricalDotNetJobRequestId, @AngularCandidateId, @LinkedInSourceLabelId, N'LinkedIn', N'OfferDeclined', 1, CAST(0 AS BIT), CAST(0 AS BIT), DATEADD(DAY, -115, @Now), DATEADD(DAY, -115, @Now), DATEADD(DAY, -95, @Now), N'Offer declined due to notice period and compensation timing; feedback recommended keeping warm.'),
     (@HiredHistoricalApplicationId, @TenantId, @HistoricalQaJobRequestId, @HiredCandidateId, @ReferralSourceLabelId, N'Referral', N'Hired', 1, CAST(0 AS BIT), CAST(0 AS BIT), DATEADD(DAY, -85, @Now), DATEADD(DAY, -85, @Now), DATEADD(DAY, -60, @Now), N'Hired on a historical QA role and excluded from rediscovery.')

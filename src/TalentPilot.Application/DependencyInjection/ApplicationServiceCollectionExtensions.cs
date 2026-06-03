@@ -15,6 +15,7 @@ using TalentPilot.Application.Admin.TenantProfiles;
 using TalentPilot.Application.Admin.Users;
 using TalentPilot.Application.Admin.Workflows;
 using TalentPilot.Application.Auth;
+using TalentPilot.Application.Calendar;
 using TalentPilot.Application.Notifications;
 using TalentPilot.Application.Operations;
 
@@ -39,11 +40,13 @@ public static class ApplicationServiceCollectionExtensions
         services.AddScoped<IAdminWorkflowsService, AdminWorkflowsService>();
         services.AddScoped<IAdminHiringPipelinesService, AdminHiringPipelinesService>();
         services.AddScoped<IOperationsService, OperationsService>();
+        services.AddSingleton<IApplicationDocumentTextExtractor, DocxApplicationDocumentTextExtractor>();
         services.AddScoped<IJobDescriptionDraftingAgent, JobDescriptionDraftingAgent>();
         services.AddScoped<ICvParserAgent, CvParserAgent>();
         services.AddScoped<IBenchMatchingAgent, BenchMatchingAgent>();
         services.AddScoped<ITalentRediscoveryAgent, TalentRediscoveryAgent>();
         services.AddScoped<IApplicantRankingAgent, ApplicantRankingAgent>();
+        services.TryAddSingleton<ICalendarMeetingService, NoOpCalendarMeetingService>();
         services.TryAddSingleton<IRealtimeNotificationPublisher, NoOpRealtimeNotificationPublisher>();
         services.TryAddSingleton<IRealtimeConnectionCounter, NoOpRealtimeNotificationPublisher>();
 

@@ -123,6 +123,120 @@ public sealed class TalentRediscoveryAgentTests
         Assert.Equal(halfPassedCandidateId, result.Matches[0].CandidateId);
     }
 
+    [Fact]
+    public async Task RankAsync_DoesNotLetUnrelatedOnHoldBackendHistoryBeatCurrentSkillMatch()
+    {
+        var backendOnHoldCandidateId = Guid.Parse("33333333-3333-3333-3333-333333333337");
+        var reactCandidateId = Guid.Parse("33333333-3333-3333-3333-333333333338");
+        var context = CreatePriorityContext(
+            CreateCandidate(
+                backendOnHoldCandidateId,
+                "Backend OnHold Candidate",
+                "OnHold",
+                [
+                    CreateInterview(backendOnHoldCandidateId, "Completed", "Proceed", 4, 4, 4),
+                    CreateInterview(backendOnHoldCandidateId, "Completed", "Hire", 4, 5, 4)
+                ],
+                skills: ["Java", "Spring Boot", "Kafka"],
+                matchedSkills: [],
+                missingSkills: ["React", "Angular"],
+                designation: "Senior Java Developer",
+                jobTitle: "Backend Java Engineer"),
+            CreateCandidate(
+                reactCandidateId,
+                "React Skill Match Candidate",
+                "Rejected",
+                [
+                    CreateInterview(reactCandidateId, "Completed", "Proceed", 4, 4, 4)
+                ]));
+        var agent = CreateAgent(new CapturingVectorStore(new Dictionary<Guid, decimal>
+        {
+            [backendOnHoldCandidateId] = 0.6m,
+            [reactCandidateId] = 0.6m
+        }));
+
+        var result = await agent.RankAsync(TenantId, context, CancellationToken.None);
+
+        Assert.Equal(reactCandidateId, result.Matches[0].CandidateId);
+        Assert.True(result.Matches[0].Score > result.Matches[1].Score);
+    }
+
+    [Fact]
+    public async Task RankAsync_CapsZeroSkillCoverageCandidatesAtLowFitEvenWithWarmHistoryAndHighVectorScore()
+    {
+        var backendOnHoldCandidateId = Guid.Parse("33333333-3333-3333-3333-33333333333b");
+        var reactCandidateId = Guid.Parse("33333333-3333-3333-3333-33333333333c");
+        var context = CreatePriorityContext(
+            CreateCandidate(
+                backendOnHoldCandidateId,
+                "Farah Backend Candidate",
+                "OnHold",
+                [
+                    CreateInterview(backendOnHoldCandidateId, "Completed", "Proceed", 5, 5, 5),
+                    CreateInterview(backendOnHoldCandidateId, "Completed", "Hire", 5, 5, 5)
+                ],
+                skills: ["Java", "Spring Boot", "Kafka", "Microservices"],
+                matchedSkills: [],
+                missingSkills: ["React", "Angular"],
+                designation: "Senior Java Developer",
+                jobTitle: "Java Platform Engineer",
+                finalReason: "Cleared all interviews and kept warm, but backend-only profile with no React evidence."),
+            CreateCandidate(
+                reactCandidateId,
+                "React Skill Match Candidate",
+                "Rejected",
+                [
+                    CreateInterview(reactCandidateId, "Completed", "Proceed", 4, 4, 4)
+                ],
+                skills: ["React"],
+                matchedSkills: ["React"],
+                missingSkills: ["Angular"]));
+        var agent = CreateAgent(new CapturingVectorStore(new Dictionary<Guid, decimal>
+        {
+            [backendOnHoldCandidateId] = 0.95m,
+            [reactCandidateId] = 0.45m
+        }));
+
+        var result = await agent.RankAsync(TenantId, context, CancellationToken.None);
+        var backendMatch = Assert.Single(result.Matches.Where(match => match.CandidateId == backendOnHoldCandidateId));
+
+        Assert.Equal("Low", backendMatch.Confidence);
+        Assert.True(backendMatch.Score <= 39m);
+        Assert.Equal(reactCandidateId, result.Matches[0].CandidateId);
+    }
+
+    [Fact]
+    public async Task RankAsync_ExcludesCandidatesWhoAlreadyJoinedOrWereHired()
+    {
+        var joinedCandidateId = Guid.Parse("33333333-3333-3333-3333-333333333339");
+        var activeCandidateId = Guid.Parse("33333333-3333-3333-3333-33333333333a");
+        var context = CreatePriorityContext(
+            CreateCandidate(
+                joinedCandidateId,
+                "Joined Candidate",
+                "Joined",
+                [
+                    CreateInterview(joinedCandidateId, "Completed", "Proceed", 4, 4, 4)
+                ]),
+            CreateCandidate(
+                activeCandidateId,
+                "Active Warm Candidate",
+                "Rejected",
+                [
+                    CreateInterview(activeCandidateId, "Completed", "Proceed", 4, 4, 4)
+                ]));
+        var agent = CreateAgent(new CapturingVectorStore(new Dictionary<Guid, decimal>
+        {
+            [joinedCandidateId] = 0.9m,
+            [activeCandidateId] = 0.6m
+        }));
+
+        var result = await agent.RankAsync(TenantId, context, CancellationToken.None);
+
+        Assert.DoesNotContain(result.Matches, match => match.CandidateId == joinedCandidateId);
+        Assert.Contains(result.Matches, match => match.CandidateId == activeCandidateId);
+    }
+
     private static OperationsTalentRediscoveryContext CreateContext()
     {
         var jobRequest = new OperationsJobRequest(
@@ -265,7 +379,13 @@ public sealed class TalentRediscoveryAgentTests
         Guid candidateId,
         string name,
         string applicationStatus,
-        IReadOnlyList<OperationsCandidateInterviewEvidence> interviews)
+        IReadOnlyList<OperationsCandidateInterviewEvidence> interviews,
+        IReadOnlyList<string>? skills = null,
+        IReadOnlyList<string>? matchedSkills = null,
+        IReadOnlyList<string>? missingSkills = null,
+        string designation = "Senior React Developer",
+        string jobTitle = "React Portal Engineer",
+        string? finalReason = null)
     {
         var applicationId = Guid.NewGuid();
         return new OperationsRediscoveryCandidate(
@@ -273,19 +393,19 @@ public sealed class TalentRediscoveryAgentTests
             name,
             $"{name.Replace(" ", ".", StringComparison.OrdinalIgnoreCase).ToLowerInvariant()}@example.com",
             "Active",
-            "Senior React Developer",
+            designation,
             "Product Studio",
             5.5m,
             15,
-            ["React", "Angular"],
-            ["React", "Angular"],
-            [],
+            skills ?? ["React", "Angular"],
+            matchedSkills ?? ["React", "Angular"],
+            missingSkills ?? [],
             [
                 new OperationsCandidateApplicationEvidence(
                     applicationId,
                     Guid.NewGuid(),
                     "TP-HIST-020",
-                    "React Portal Engineer",
+                    jobTitle,
                     "Relia",
                     "Engineering",
                     "Lahore",
@@ -293,9 +413,9 @@ public sealed class TalentRediscoveryAgentTests
                     "Referral",
                     DateTimeOffset.UtcNow.AddMonths(-3),
                     applicationStatus == "OnHold" ? null : DateTimeOffset.UtcNow.AddMonths(-2),
-                    applicationStatus == "OnHold"
+                    finalReason ?? (applicationStatus == "OnHold"
                         ? "Cleared interviews and kept warm for the next matching role."
-                        : "Client selected another profile; feedback stayed positive.")
+                        : "Client selected another profile; feedback stayed positive."))
             ],
             interviews.Select(interview => interview with { JobApplicationId = applicationId }).ToArray());
     }

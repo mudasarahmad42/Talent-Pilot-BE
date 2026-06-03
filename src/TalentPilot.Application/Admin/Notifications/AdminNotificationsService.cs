@@ -1,6 +1,5 @@
 using System.Text.Json;
 using System.Text.RegularExpressions;
-using System.Net;
 using System.Net.Mail;
 using TalentPilot.Application.Abstractions;
 using TalentPilot.Application.Notifications;
@@ -18,7 +17,7 @@ public sealed class AdminNotificationsService : IAdminNotificationsService
     private const string TestEmailBody = """
         Hello from Talent Pilot.
 
-        This is a real test email sent through Resend.
+        This is a real test email sent through the configured email provider.
         If this landed in your inbox, email delivery is connected and ready for workflow notifications.
 
         Tiny dashboard status: all systems are smiling.
@@ -80,6 +79,43 @@ public sealed class AdminNotificationsService : IAdminNotificationsService
         return Result<AdminNotificationTemplatesResponse>.Success(response);
     }
 
+    public async Task<Result<AdminNotificationOutboxResponse>> ListOutboxAsync(
+        AdminNotificationOutboxQuery query,
+        CancellationToken cancellationToken)
+    {
+        var normalized = query with
+        {
+            Status = NormalizeOutboxStatus(query.Status),
+            Page = Math.Max(1, query.Page),
+            PageSize = Math.Clamp(query.PageSize <= 0 ? 10 : query.PageSize, 1, 50)
+        };
+
+        var response = await _repository.ListOutboxAsync(_currentUser.TenantId, normalized, cancellationToken);
+        return Result<AdminNotificationOutboxResponse>.Success(response);
+    }
+
+    public async Task<Result<AdminNotificationOutboxItem>> RetryOutboxEmailAsync(
+        Guid outboxId,
+        CancellationToken cancellationToken)
+    {
+        var existing = await _repository.GetOutboxItemAsync(_currentUser.TenantId, outboxId, cancellationToken);
+        if (existing is null)
+        {
+            return Result<AdminNotificationOutboxItem>.Failure("notifications.outbox_not_found", "Email outbox row was not found.");
+        }
+
+        if (!string.Equals(existing.Channel, "Email", StringComparison.OrdinalIgnoreCase) ||
+            !string.Equals(existing.Status, "Failed", StringComparison.OrdinalIgnoreCase))
+        {
+            return Result<AdminNotificationOutboxItem>.Failure("notifications.outbox_retry_invalid", "Only failed email outbox rows can be retried.");
+        }
+
+        var requeued = await _repository.RequeueOutboxEmailAsync(_currentUser.TenantId, outboxId, cancellationToken);
+        return requeued is null
+            ? Result<AdminNotificationOutboxItem>.Failure("notifications.outbox_retry_invalid", "This email can no longer be retried.")
+            : Result<AdminNotificationOutboxItem>.Success(requeued);
+    }
+
     public async Task<Result<NotificationTemplateSummary>> UpdateTemplateAsync(
         Guid templateId,
         UpdateNotificationTemplateInput input,
@@ -125,6 +161,7 @@ public sealed class AdminNotificationsService : IAdminNotificationsService
         }
 
         var email = new NotificationEmailMessage(
+            _currentUser.TenantId,
             input.ToEmail.Trim(),
             TestEmailSubject,
             TestEmailBody,
@@ -266,15 +303,37 @@ public sealed class AdminNotificationsService : IAdminNotificationsService
         }
     }
 
+    private static string? NormalizeOutboxStatus(string? status)
+    {
+        if (string.IsNullOrWhiteSpace(status))
+        {
+            return null;
+        }
+
+        var trimmed = status.Trim();
+        if (string.Equals(trimmed, "Pending", StringComparison.OrdinalIgnoreCase))
+        {
+            return "Pending";
+        }
+
+        if (string.Equals(trimmed, "Processing", StringComparison.OrdinalIgnoreCase))
+        {
+            return "Processing";
+        }
+
+        if (string.Equals(trimmed, "Sent", StringComparison.OrdinalIgnoreCase))
+        {
+            return "Sent";
+        }
+
+        return string.Equals(trimmed, "Failed", StringComparison.OrdinalIgnoreCase) ? "Failed" : null;
+    }
+
     private static string BuildHtmlBody(string renderedBody)
     {
-        var encoded = WebUtility.HtmlEncode(renderedBody).Replace(Environment.NewLine, "<br>", StringComparison.Ordinal);
-        return $"""
-            <div style="font-family: Arial, sans-serif; color: #0f172a; line-height: 1.5;">
-              <p>{encoded}</p>
-              <hr style="border: 0; border-top: 1px solid #e2e8f0; margin: 24px 0;" />
-              <p style="color: #64748b; font-size: 13px;">This is a test email from Talent Pilot.</p>
-            </div>
-            """;
+        return TalentPilotEmailTemplate.Build(
+            "Email Test",
+            "Talent Pilot test email",
+            $"{renderedBody}\n\nThis is a test email from Talent Pilot.");
     }
 }
