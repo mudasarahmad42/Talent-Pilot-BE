@@ -94,14 +94,17 @@ app.UseCors("AngularDev");
 app.UseAuthentication();
 app.UseAuthorization();
 
-app.MapGet("/health", () => Results.Ok(new
-{
-    service = "Talent Pilot API",
-    status = "Healthy",
-    utc = DateTimeOffset.UtcNow
-})).AllowAnonymous();
+app.MapGet("/health", () => Results.Ok(BuildHealthResponse())).AllowAnonymous();
+app.MapGet("/api/health", () => Results.Ok(BuildHealthResponse())).AllowAnonymous();
 
 app.MapControllers();
 app.MapHub<NotificationsHub>("/hubs/notifications");
 
 app.Run();
+
+static object BuildHealthResponse() => new
+{
+    service = "Talent Pilot API",
+    status = "Healthy",
+    utc = DateTimeOffset.UtcNow
+};

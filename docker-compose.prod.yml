@@ -1,0 +1,111 @@
+services:
+  nginx:
+    image: nginx:1.27-alpine
+    depends_on:
+      - frontend
+      - api
+    ports:
+      - "80:80"
+    volumes:
+      - ./deploy/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ${FRONTEND_CONTEXT:-../frontend}
+      dockerfile: Dockerfile
+    expose:
+      - "80"
+    restart: unless-stopped
+
+  api:
+    build:
+      context: .
+      dockerfile: src/TalentPilot.Api/Dockerfile
+    environment:
+      ASPNETCORE_ENVIRONMENT: ${ASPNETCORE_ENVIRONMENT:-Production}
+      ASPNETCORE_URLS: http://+:8080
+      ConnectionStrings__TalentPilot: Server=sqlserver,1433;Database=TalentPilot;User ID=sa;Password=${SA_PASSWORD};Encrypt=False;TrustServerCertificate=True;Connection Timeout=30;
+      DataAccess__IdentityProvider: SqlServer
+      Jwt__SigningKey: ${JWT_SIGNING_KEY}
+      TalentPilotRuntime__Provider: Mock/Ollama
+      TalentPilotRuntime__LlmModel: ${OLLAMA_LLM_MODEL:-llama3.2:1b}
+      TalentPilotRuntime__EmbeddingModel: ${OLLAMA_EMBEDDING_MODEL:-nomic-embed-text}
+      TalentPilotRuntime__EmbeddingDimensions: "768"
+      TalentPilotRuntime__VectorStore: SqlServerVector
+      TalentPilotRuntime__OllamaBaseUrl: http://ollama:11434
+      TavilySearch__Enabled: "false"
+      GoogleSearch__Enabled: "false"
+      GitHubSearch__Enabled: "false"
+      GoogleCalendar__Enabled: "false"
+    depends_on:
+      sqlserver:
+        condition: service_healthy
+      db-migrate:
+        condition: service_completed_successfully
+      ollama:
+        condition: service_started
+    expose:
+      - "8080"
+    restart: unless-stopped
+
+  worker:
+    build:
+      context: .
+      dockerfile: src/TalentPilot.Worker/Dockerfile
+    environment:
+      DOTNET_ENVIRONMENT: ${DOTNET_ENVIRONMENT:-Production}
+      ConnectionStrings__TalentPilot: Server=sqlserver,1433;Database=TalentPilot;User ID=sa;Password=${SA_PASSWORD};Encrypt=False;TrustServerCertificate=True;Connection Timeout=30;
+      DataAccess__IdentityProvider: SqlServer
+      Jwt__SigningKey: ${JWT_SIGNING_KEY}
+      TalentPilotRuntime__Provider: Mock/Ollama
+      TalentPilotRuntime__LlmModel: ${OLLAMA_LLM_MODEL:-llama3.2:1b}
+      TalentPilotRuntime__EmbeddingModel: ${OLLAMA_EMBEDDING_MODEL:-nomic-embed-text}
+      TalentPilotRuntime__EmbeddingDimensions: "768"
+      TalentPilotRuntime__VectorStore: SqlServerVector
+      TalentPilotRuntime__OllamaBaseUrl: http://ollama:11434
+    depends_on:
+      sqlserver:
+        condition: service_healthy
+      db-migrate:
+        condition: service_completed_successfully
+      ollama:
+        condition: service_started
+    restart: unless-stopped
+
+  db-migrate:
+    build:
+      context: .
+      dockerfile: src/TalentPilot.Database/Dockerfile
+    environment:
+      ConnectionStrings__TalentPilot: Server=sqlserver,1433;Database=TalentPilot;User ID=sa;Password=${SA_PASSWORD};Encrypt=False;TrustServerCertificate=True;Connection Timeout=30;
+    depends_on:
+      sqlserver:
+        condition: service_healthy
+    restart: "no"
+
+  sqlserver:
+    image: mcr.microsoft.com/mssql/server:2025-latest
+    environment:
+      ACCEPT_EULA: "Y"
+      MSSQL_PID: Express
+      MSSQL_SA_PASSWORD: ${SA_PASSWORD}
+    volumes:
+      - sql_data:/var/opt/mssql
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/mssql-tools18/bin/sqlcmd -C -S localhost -U sa -P \"$$MSSQL_SA_PASSWORD\" -Q \"SELECT 1\" >/dev/null 2>&1"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
+    restart: unless-stopped
+
+  ollama:
+    image: ollama/ollama:0.30.5
+    volumes:
+      - ollama_data:/root/.ollama
+    restart: unless-stopped
+
+volumes:
+  sql_data:
+  ollama_data:
