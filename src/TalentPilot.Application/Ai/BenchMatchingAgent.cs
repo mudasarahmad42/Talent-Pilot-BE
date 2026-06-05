@@ -251,45 +251,32 @@ public sealed class BenchMatchingAgent : IBenchMatchingAgent
         string model,
         CancellationToken cancellationToken)
     {
-        var prompt = BuildExplanationPrompt(context, scored, webResearch);
-        var response = await _modelProvider.GenerateAsync(
-            new AiPromptRequest(
-                AgentId,
-                prompt,
-                new Dictionary<string, string>
-                {
-                    ["model"] = model,
-                    ["output"] = "json"
-                }),
-            cancellationToken);
-
-        if (string.IsNullOrWhiteSpace(response))
+        try
         {
-            throw new InvalidOperationException("The Bench Matching Agent returned an empty explanation response.");
+            var prompt = BuildExplanationPrompt(context, scored, webResearch);
+            var response = await _modelProvider.GenerateAsync(
+                new AiPromptRequest(
+                    AgentId,
+                    prompt,
+                    new Dictionary<string, string>
+                    {
+                        ["model"] = model,
+                        ["output"] = "json"
+                    }),
+                cancellationToken);
+
+            var explanations = ParseAiExplanations(response);
+            if (explanations.Count > 0)
+            {
+                return explanations;
+            }
+        }
+        catch
+        {
+            // The ranking itself is deterministic. A malformed/failed LLM explanation should not block PMO review.
         }
 
-        var normalized = response.Trim();
-        if (normalized.StartsWith("```", StringComparison.Ordinal))
-        {
-            normalized = normalized
-                .Replace("```json", string.Empty, StringComparison.OrdinalIgnoreCase)
-                .Replace("```", string.Empty, StringComparison.Ordinal)
-                .Trim();
-        }
-
-        var items = JsonSerializer.Deserialize<AiExplanationItem[]>(normalized, JsonOptions) ?? [];
-        var explanations = items
-            .Where(item => Guid.TryParse(item.EmployeeId, out _) && !string.IsNullOrWhiteSpace(item.Explanation))
-            .ToDictionary(
-                item => Guid.Parse(item.EmployeeId),
-                item => item.Explanation.Trim());
-
-        if (explanations.Count == 0 && scored.Count > 0)
-        {
-            throw new InvalidOperationException("The Bench Matching Agent did not return any usable LLM explanations.");
-        }
-
-        return explanations;
+        return BuildFallbackExplanations(scored, webResearch);
     }
 
     private static ScoredEmployee ScoreEmployee(
@@ -353,6 +340,127 @@ public sealed class BenchMatchingAgent : IBenchMatchingAgent
             gaps,
             BuildWebResearchSummary(context, webResearch),
             webResearch.Sources);
+    }
+
+    private static IReadOnlyDictionary<Guid, string> ParseAiExplanations(string? response)
+    {
+        if (string.IsNullOrWhiteSpace(response))
+        {
+            return new Dictionary<Guid, string>();
+        }
+
+        var normalized = NormalizeJsonResponse(response);
+        using var document = JsonDocument.Parse(normalized);
+        var items = ReadExplanationItems(document.RootElement);
+
+        return items
+            .Where(item => Guid.TryParse(item.EmployeeId, out _) && !string.IsNullOrWhiteSpace(item.Explanation))
+            .GroupBy(item => Guid.Parse(item.EmployeeId), item => item.Explanation.Trim())
+            .ToDictionary(group => group.Key, group => group.First());
+    }
+
+    private static string NormalizeJsonResponse(string response)
+    {
+        var normalized = response.Trim();
+        if (normalized.StartsWith("```", StringComparison.Ordinal))
+        {
+            normalized = normalized
+                .Replace("```json", string.Empty, StringComparison.OrdinalIgnoreCase)
+                .Replace("```", string.Empty, StringComparison.Ordinal)
+                .Trim();
+        }
+
+        return normalized;
+    }
+
+    private static IReadOnlyList<AiExplanationItem> ReadExplanationItems(JsonElement root)
+    {
+        if (root.ValueKind == JsonValueKind.Array)
+        {
+            return root.Deserialize<AiExplanationItem[]>(JsonOptions) ?? [];
+        }
+
+        if (root.ValueKind != JsonValueKind.Object)
+        {
+            return [];
+        }
+
+        if (TryReadSingleExplanation(root, out var single))
+        {
+            return [single];
+        }
+
+        foreach (var propertyName in new[] { "explanations", "items", "matches", "employees", "rankings", "results" })
+        {
+            if (root.TryGetProperty(propertyName, out var value) && value.ValueKind == JsonValueKind.Array)
+            {
+                return value.Deserialize<AiExplanationItem[]>(JsonOptions) ?? [];
+            }
+        }
+
+        var propertyMapped = new List<AiExplanationItem>();
+        foreach (var property in root.EnumerateObject())
+        {
+            if (Guid.TryParse(property.Name, out _) && property.Value.ValueKind == JsonValueKind.String)
+            {
+                propertyMapped.Add(new AiExplanationItem(property.Name, property.Value.GetString() ?? string.Empty));
+            }
+        }
+
+        return propertyMapped;
+    }
+
+    private static bool TryReadSingleExplanation(JsonElement root, out AiExplanationItem item)
+    {
+        item = new AiExplanationItem(string.Empty, string.Empty);
+        if (!TryReadString(root, "employeeId", out var employeeId) ||
+            !TryReadString(root, "explanation", out var explanation))
+        {
+            return false;
+        }
+
+        item = new AiExplanationItem(employeeId, explanation);
+        return true;
+    }
+
+    private static bool TryReadString(JsonElement root, string propertyName, out string value)
+    {
+        value = string.Empty;
+        if (!root.TryGetProperty(propertyName, out var property) || property.ValueKind != JsonValueKind.String)
+        {
+            return false;
+        }
+
+        value = property.GetString() ?? string.Empty;
+        return !string.IsNullOrWhiteSpace(value);
+    }
+
+    private static IReadOnlyDictionary<Guid, string> BuildFallbackExplanations(
+        IReadOnlyList<ScoredEmployee> scored,
+        WebResearchResult webResearch)
+    {
+        return scored.ToDictionary(
+            item => item.Employee.EmployeeId,
+            item => BuildFallbackExplanation(item, webResearch));
+    }
+
+    private static string BuildFallbackExplanation(ScoredEmployee scored, WebResearchResult webResearch)
+    {
+        var employee = scored.Employee;
+        var matchedSkills = employee.MatchedSkills.Count == 0
+            ? "no requested skills recorded as direct matches"
+            : $"matched skills: {string.Join(", ", employee.MatchedSkills)}";
+        var missingSkills = employee.MissingSkills.Count == 0
+            ? "no requested skill gaps in current tenant data"
+            : $"gaps to verify: {string.Join(", ", employee.MissingSkills)}";
+        var projects = employee.ProjectEvidence.Count == 0
+            ? "no project evidence is recorded"
+            : $"project evidence includes {string.Join(", ", employee.ProjectEvidence.Take(2).Select(project => project.ProjectName))}";
+        var webStatus = webResearch.Status.StartsWith("Skipped", StringComparison.OrdinalIgnoreCase)
+            ? "Public web context was not required for this request."
+            : $"Web research status: {webResearch.Status}.";
+
+        return $"{employee.DisplayName} is ranked from deterministic tenant evidence with score {scored.Score:0.##}: {matchedSkills}, {FormatYears(employee.ExperienceYears)} years of experience, {projects}, and {missingSkills}. {webStatus} PMO should still validate fit before recommendation.";
     }
 
     private static decimal ScoreExperience(decimal? experienceYears, decimal? minYears, decimal? maxYears)
