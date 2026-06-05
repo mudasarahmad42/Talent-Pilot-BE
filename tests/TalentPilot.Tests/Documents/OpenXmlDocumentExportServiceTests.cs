@@ -36,4 +36,34 @@ public sealed class OpenXmlDocumentExportServiceTests
         Assert.Contains("Mudasar Ahmad", xml);
         Assert.Contains("<v>3</v>", xml);
     }
+
+    [Fact]
+    public void CreateWordDocument_GeneratesDocxPackageFromParagraphs()
+    {
+        var service = new OpenXmlDocumentExportService();
+        var file = service.CreateWordDocument(
+            "interview-questions",
+            [
+                new WordParagraphData("Interview Questions", WordParagraphStyle.Title),
+                new WordParagraphData("Technical Interview", WordParagraphStyle.Heading1),
+                new WordParagraphData("How would you design a React component boundary?"),
+                new WordParagraphData("Look for maintainability trade-offs.", IsBullet: true)
+            ]);
+
+        Assert.Equal("interview-questions.docx", file.FileName);
+        Assert.Equal(OpenXmlDocumentExportService.WordContentType, file.ContentType);
+        Assert.NotEmpty(file.Content);
+
+        using var archive = new ZipArchive(new MemoryStream(file.Content), ZipArchiveMode.Read);
+        Assert.NotNull(archive.GetEntry("[Content_Types].xml"));
+        var document = archive.GetEntry("word/document.xml");
+        Assert.NotNull(document);
+
+        using var reader = new StreamReader(document.Open());
+        var xml = reader.ReadToEnd();
+        Assert.Contains("Interview Questions", xml);
+        Assert.Contains("Technical Interview", xml);
+        Assert.Contains("React component boundary", xml);
+        Assert.Contains("Look for maintainability trade-offs", xml);
+    }
 }

@@ -1,0 +1,288 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="4200" height="2600" viewBox="0 0 4200 2600" role="img" aria-labelledby="title desc">
+<title id="title">Talent Pilot System Design Flow</title>
+<desc id="desc">Expanded runtime architecture: frontend, backend API, hosted queue, worker process, Ollama, SQL, files, and providers</desc>
+<defs>
+  <marker id="arrow" markerWidth="12" markerHeight="12" refX="10" refY="4" orient="auto" markerUnits="strokeWidth">
+    <path d="M0,0 L0,8 L10,4 z" fill="#536273" />
+  </marker>
+  <style>
+    svg { background: #F6F8FB; }
+    text { font-family: "Segoe UI", Arial, sans-serif; dominant-baseline: alphabetic; }
+    .title { font-size: 45px; font-weight: 760; letter-spacing: 0; }
+    .subtitle { font-size: 21px; font-weight: 450; }
+    .tag { font-size: 15px; font-weight: 650; }
+    .section-title { font-size: 24px; font-weight: 760; fill: #172033; }
+    .box-title { font-size: 18px; font-weight: 760; }
+    .body { font-size: 16px; fill: #172033; }
+    .label { font-size: 15px; font-weight: 760; }
+    .tiny { font-size: 14px; }
+    .table-field { font-size: 15px; fill: #172033; }
+    .section { stroke-width: 1.8; }
+    .box { stroke-width: 1.5; filter: drop-shadow(0 2px 2px rgba(23,32,51,.08)); }
+  </style>
+</defs>
+<rect x="0" y="0" width="4200" height="130" rx="0" fill="#263C55" />
+<text x="58" y="58" class="title" fill="white">Talent Pilot System Design Flow</text>
+<text x="60" y="96" class="subtitle" fill="#D6E0EA">Expanded runtime architecture: frontend, backend API, hosted queue, worker process, Ollama, SQL, files, and providers</text>
+<rect x="3840" y="34" width="270" height="46" rx="23" fill="#405B78" />
+<text x="3975" y="63" class="tag" fill="#EDF4FA" text-anchor="middle">Generated June 5, 2026</text>
+<rect x="70" y="190" width="560" height="1540" rx="18" fill="#FFFFFF" stroke="#CAD4DF" class="section" />
+<text x="96" y="232" class="section-title">Clients</text>
+<line x1="96" y1="254" x2="604" y2="254" stroke="#CAD4DF" stroke-width="2" />
+<rect x="750" y="190" width="650" height="1540" rx="18" fill="#FFFFFF" stroke="#CAD4DF" class="section" />
+<text x="776" y="232" class="section-title">Frontend</text>
+<line x1="776" y1="254" x2="1374" y2="254" stroke="#CAD4DF" stroke-width="2" />
+<rect x="1530" y="190" width="870" height="1540" rx="18" fill="#FFFFFF" stroke="#CAD4DF" class="section" />
+<text x="1556" y="232" class="section-title">Backend API process</text>
+<line x1="1556" y1="254" x2="2374" y2="254" stroke="#CAD4DF" stroke-width="2" />
+<rect x="2530" y="190" width="620" height="1540" rx="18" fill="#FFFFFF" stroke="#CAD4DF" class="section" />
+<text x="2556" y="232" class="section-title">Async and workers</text>
+<line x1="2556" y1="254" x2="3124" y2="254" stroke="#CAD4DF" stroke-width="2" />
+<rect x="3310" y="190" width="820" height="1540" rx="18" fill="#FFFFFF" stroke="#CAD4DF" class="section" />
+<text x="3336" y="232" class="section-title">Data and providers</text>
+<line x1="3336" y1="254" x2="4104" y2="254" stroke="#CAD4DF" stroke-width="2" />
+<rect x="70" y="1860" width="4060" height="510" rx="18" fill="#FFFFFF" stroke="#CAD4DF" class="section" />
+<text x="96" y="1902" class="section-title">Main communication flow</text>
+<line x1="96" y1="1924" x2="4104" y2="1924" stroke="#CAD4DF" stroke-width="2" />
+<rect x="676" y="330" width="28" height="1180" rx="12" fill="#111827" />
+<text x="690" y="1560" class="tiny" fill="#536273" text-anchor="middle">browser boundary</text>
+<rect x="1451" y="330" width="28" height="1180" rx="12" fill="#111827" />
+<text x="1465" y="1560" class="tiny" fill="#536273" text-anchor="middle">HTTP boundary</text>
+<rect x="2456" y="330" width="28" height="1180" rx="12" fill="#111827" />
+<text x="2470" y="1560" class="tiny" fill="#536273" text-anchor="middle">async boundary</text>
+<rect x="3211" y="330" width="28" height="1180" rx="12" fill="#111827" />
+<text x="3225" y="1560" class="tiny" fill="#536273" text-anchor="middle">integration boundary</text>
+<rect x="130" y="350" width="440" height="140" rx="14" fill="#E8F3E8" stroke="#CAD4DF" class="box" />
+<rect x="130" y="350" width="440" height="60" rx="14" fill="#557B56" />
+<rect x="130" y="388" width="440" height="22" fill="#557B56" />
+<text x="152" y="387" class="box-title" fill="white">Internal staff UI</text>
+<text x="152" y="438" class="body" fill="#172033">Tenant Admin, Presales, PMO, Recruiter, Hiring</text>
+<text x="152" y="462" class="body" fill="#172033">Manager, Interviewer</text>
+<rect x="130" y="660" width="440" height="130" rx="14" fill="#E8F3E8" stroke="#CAD4DF" class="box" />
+<rect x="130" y="660" width="440" height="60" rx="14" fill="#557B56" />
+<rect x="130" y="698" width="440" height="22" fill="#557B56" />
+<text x="152" y="697" class="box-title" fill="white">Candidate portal UI</text>
+<text x="152" y="748" class="body" fill="#172033">Public jobs, authenticated apply, my</text>
+<text x="152" y="772" class="body" fill="#172033">applications</text>
+<rect x="130" y="970" width="440" height="130" rx="14" fill="#E8F3E8" stroke="#CAD4DF" class="box" />
+<rect x="130" y="970" width="440" height="60" rx="14" fill="#557B56" />
+<rect x="130" y="1008" width="440" height="22" fill="#557B56" />
+<text x="152" y="1007" class="box-title" fill="white">Browser session</text>
+<text x="152" y="1058" class="body" fill="#172033">Runs Angular SPA</text>
+<text x="152" y="1088" class="body" fill="#172033">JWT attached by auth interceptor</text>
+<rect x="820" y="350" width="510" height="150" rx="14" fill="#DDF0FA" stroke="#CAD4DF" class="box" />
+<rect x="820" y="350" width="510" height="60" rx="14" fill="#246A93" />
+<rect x="820" y="388" width="510" height="22" fill="#246A93" />
+<text x="842" y="387" class="box-title" fill="white">Angular dev server</text>
+<text x="842" y="438" class="body" fill="#172033">node.exe ng serve</text>
+<text x="842" y="468" class="body" fill="#172033">localhost:4200</text>
+<text x="842" y="498" class="body" fill="#172033">Serves SPA and HMR</text>
+<rect x="820" y="680" width="510" height="160" rx="14" fill="#DDF0FA" stroke="#CAD4DF" class="box" />
+<rect x="820" y="680" width="510" height="60" rx="14" fill="#246A93" />
+<rect x="820" y="718" width="510" height="22" fill="#246A93" />
+<text x="842" y="717" class="box-title" fill="white">Frontend services</text>
+<text x="842" y="768" class="body" fill="#172033">ApiService</text>
+<text x="842" y="798" class="body" fill="#172033">Auth interceptor</text>
+<text x="842" y="828" class="body" fill="#172033">RealtimeNotificationService</text>
+<rect x="820" y="1010" width="510" height="145" rx="14" fill="#DDF0FA" stroke="#CAD4DF" class="box" />
+<rect x="820" y="1010" width="510" height="60" rx="14" fill="#246A93" />
+<rect x="820" y="1048" width="510" height="22" fill="#246A93" />
+<text x="842" y="1047" class="box-title" fill="white">Route guards and stores</text>
+<text x="842" y="1098" class="body" fill="#172033">Role-aware routes</text>
+<text x="842" y="1128" class="body" fill="#172033">Feature state and DTO facades</text>
+<rect x="1620" y="320" width="690" height="155" rx="14" fill="#DDF0FA" stroke="#CAD4DF" class="box" />
+<rect x="1620" y="320" width="690" height="60" rx="14" fill="#246A93" />
+<rect x="1620" y="358" width="690" height="22" fill="#246A93" />
+<text x="1642" y="357" class="box-title" fill="white">ASP.NET Core API</text>
+<text x="1642" y="408" class="body" fill="#172033">TalentPilot.Api.exe</text>
+<text x="1642" y="438" class="body" fill="#172033">localhost:5058</text>
+<text x="1642" y="468" class="body" fill="#172033">Controllers + SignalR hub</text>
+<rect x="1620" y="650" width="310" height="165" rx="14" fill="#DDF0FA" stroke="#CAD4DF" class="box" />
+<rect x="1620" y="650" width="310" height="60" rx="14" fill="#246A93" />
+<rect x="1620" y="688" width="310" height="22" fill="#246A93" />
+<text x="1642" y="687" class="box-title" fill="white">Auth and tenant context</text>
+<text x="1642" y="738" class="body" fill="#172033">JWT validation</text>
+<text x="1642" y="768" class="body" fill="#172033">Refresh token lifecycle</text>
+<text x="1642" y="798" class="body" fill="#172033">Current user claims</text>
+<rect x="2000" y="650" width="310" height="165" rx="14" fill="#DDF0FA" stroke="#CAD4DF" class="box" />
+<rect x="2000" y="650" width="310" height="60" rx="14" fill="#246A93" />
+<rect x="2000" y="688" width="310" height="22" fill="#246A93" />
+<text x="2022" y="687" class="box-title" fill="white">Application services</text>
+<text x="2022" y="738" class="body" fill="#172033">Workflow use cases</text>
+<text x="2022" y="768" class="body" fill="#172033">Authorization decisions</text>
+<text x="2022" y="798" class="body" fill="#172033">Notification publishing</text>
+<rect x="1620" y="980" width="690" height="160" rx="14" fill="#E9E4FA" stroke="#CAD4DF" class="box" />
+<rect x="1620" y="980" width="690" height="60" rx="14" fill="#6751A9" />
+<rect x="1620" y="1018" width="690" height="22" fill="#6751A9" />
+<text x="1642" y="1017" class="box-title" fill="white">Code-owned AI agents</text>
+<text x="1642" y="1068" class="body" fill="#172033">JD draft, CV parse, matching, RAG, interview questions, headhunting</text>
+<rect x="1620" y="1290" width="690" height="150" rx="14" fill="#FFE5DF" stroke="#CAD4DF" class="box" />
+<rect x="1620" y="1290" width="690" height="60" rx="14" fill="#BA4C3B" />
+<rect x="1620" y="1328" width="690" height="22" fill="#BA4C3B" />
+<text x="1642" y="1327" class="box-title" fill="white">Dapper repositories</text>
+<text x="1642" y="1378" class="body" fill="#172033">Thin SQL access layer</text>
+<text x="1642" y="1408" class="body" fill="#172033">Transactions and stored procedures</text>
+<rect x="2600" y="335" width="480" height="150" rx="14" fill="#FFF2CF" stroke="#CAD4DF" class="box" />
+<rect x="2600" y="335" width="480" height="60" rx="14" fill="#A66A14" />
+<rect x="2600" y="373" width="480" height="22" fill="#A66A14" />
+<text x="2622" y="372" class="box-title" fill="white">In-memory channel</text>
+<text x="2622" y="423" class="body" fill="#172033">Online headhunting queue</text>
+<text x="2622" y="453" class="body" fill="#172033">Inside API process; not durable across restart</text>
+<rect x="2600" y="645" width="480" height="150" rx="14" fill="#E9E4FA" stroke="#CAD4DF" class="box" />
+<rect x="2600" y="645" width="480" height="60" rx="14" fill="#6751A9" />
+<rect x="2600" y="683" width="480" height="22" fill="#6751A9" />
+<text x="2622" y="682" class="box-title" fill="white">Hosted service</text>
+<text x="2622" y="733" class="body" fill="#172033">OnlineHeadhuntingBackgroundService</text>
+<text x="2622" y="763" class="body" fill="#172033">Consumes channel in API process</text>
+<rect x="2600" y="965" width="480" height="165" rx="14" fill="#E0F3EC" stroke="#CAD4DF" class="box" />
+<rect x="2600" y="965" width="480" height="60" rx="14" fill="#1F7A5C" />
+<rect x="2600" y="1003" width="480" height="22" fill="#1F7A5C" />
+<text x="2622" y="1002" class="box-title" fill="white">TalentPilot.Worker</text>
+<text x="2622" y="1053" class="body" fill="#172033">Separate dotnet process</text>
+<text x="2622" y="1083" class="body" fill="#172033">Polls NotificationOutbox every 30s</text>
+<text x="2622" y="1113" class="body" fill="#172033">No inbound port</text>
+<rect x="2600" y="1290" width="480" height="150" rx="14" fill="#FFF2CF" stroke="#CAD4DF" class="box" />
+<rect x="2600" y="1290" width="480" height="60" rx="14" fill="#A66A14" />
+<rect x="2600" y="1328" width="480" height="22" fill="#A66A14" />
+<text x="2622" y="1327" class="box-title" fill="white">NotificationOutbox</text>
+<text x="2622" y="1378" class="body" fill="#172033">SQL-backed durable email queue</text>
+<text x="2622" y="1408" class="body" fill="#172033">Pending, Processing, Sent, Failed</text>
+<rect x="3390" y="335" width="660" height="165" rx="14" fill="#FBE2E7" stroke="#CAD4DF" class="box" />
+<rect x="3390" y="335" width="660" height="60" rx="14" fill="#A33E52" />
+<rect x="3390" y="373" width="660" height="22" fill="#A33E52" />
+<text x="3412" y="372" class="box-title" fill="white">External providers</text>
+<text x="3412" y="423" class="body" fill="#172033">Resend or Microsoft Graph email</text>
+<text x="3412" y="453" class="body" fill="#172033">Tavily web search</text>
+<text x="3412" y="483" class="body" fill="#172033">Google Calendar OAuth/events</text>
+<rect x="3390" y="630" width="310" height="145" rx="14" fill="#FFE5DF" stroke="#CAD4DF" class="box" />
+<rect x="3390" y="630" width="310" height="60" rx="14" fill="#BA4C3B" />
+<rect x="3390" y="668" width="310" height="22" fill="#BA4C3B" />
+<text x="3412" y="667" class="box-title" fill="white">Local document store</text>
+<text x="3412" y="718" class="body" fill="#172033">Uploaded CV/application files</text>
+<text x="3412" y="748" class="body" fill="#172033">SQL stores metadata</text>
+<rect x="3740" y="845" width="310" height="145" rx="14" fill="#E9E4FA" stroke="#CAD4DF" class="box" />
+<rect x="3740" y="845" width="310" height="60" rx="14" fill="#6751A9" />
+<rect x="3740" y="883" width="310" height="22" fill="#6751A9" />
+<text x="3762" y="882" class="box-title" fill="white">Ollama</text>
+<text x="3762" y="933" class="body" fill="#172033">localhost:11434</text>
+<text x="3762" y="963" class="body" fill="#172033">/api/generate</text>
+<text x="3762" y="993" class="body" fill="#172033">/api/embeddings</text>
+<rect x="3390" y="1135" width="660" height="180" rx="14" fill="#FFE5DF" stroke="#CAD4DF" class="box" />
+<rect x="3390" y="1135" width="660" height="60" rx="14" fill="#BA4C3B" />
+<rect x="3390" y="1173" width="660" height="22" fill="#BA4C3B" />
+<text x="3412" y="1172" class="box-title" fill="white">SQL Server TalentPilot</text>
+<text x="3412" y="1223" class="body" fill="#172033">Tenant/Auth</text>
+<text x="3412" y="1253" class="body" fill="#172033">Recruiting/Workflow</text>
+<text x="3412" y="1283" class="body" fill="#172033">Notifications/Outbox</text>
+<text x="3412" y="1313" class="body" fill="#172033">AI logs + VECTOR(768)</text>
+<rect x="3390" y="1455" width="660" height="150" rx="14" fill="#FFFFFF" stroke="#CAD4DF" class="box" />
+<rect x="3390" y="1455" width="660" height="60" rx="14" fill="#263C55" />
+<rect x="3390" y="1493" width="660" height="22" fill="#263C55" />
+<text x="3412" y="1492" class="box-title" fill="white">Local process count</text>
+<text x="3412" y="1543" class="body" fill="#172033">6 OS processes observed: npm wrapper, Angular server, dotnet API wrapper,</text>
+<text x="3412" y="1567" class="body" fill="#172033">API host, worker, Ollama</text>
+<text x="3412" y="1597" class="body" fill="#172033">Plus 1 hosted service inside API</text>
+<path d="M570,420 L675,420 L820,425" stroke="#536273" stroke-width="3" fill="none" marker-end="url(#arrow)" />
+<rect x="637" y="372" width="86" height="34" rx="8" fill="white" stroke="#D9E0E8" />
+<text x="680" y="395" class="label" fill="#172033" text-anchor="middle">uses</text>
+<path d="M570,725 L675,725 L820,425" stroke="#536273" stroke-width="3" fill="none" marker-end="url(#arrow)" />
+<rect x="647" y="682" width="86" height="34" rx="8" fill="white" stroke="#D9E0E8" />
+<text x="690" y="705" class="label" fill="#172033" text-anchor="middle">uses</text>
+<path d="M570,1035 L675,1035 L820,760" stroke="#536273" stroke-width="3" fill="none" marker-end="url(#arrow)" />
+<rect x="637" y="982" width="127" height="34" rx="8" fill="white" stroke="#D9E0E8" />
+<text x="700" y="1005" class="label" fill="#172033" text-anchor="middle">SPA runtime</text>
+<path d="M1075,500 L1075,680" stroke="#536273" stroke-width="3" fill="none" marker-end="url(#arrow)" />
+<rect x="1032" y="567" width="86" height="34" rx="8" fill="white" stroke="#D9E0E8" />
+<text x="1075" y="590" class="label" fill="#172033" text-anchor="middle">assets</text>
+<path d="M1075,840 L1075,1010" stroke="#536273" stroke-width="3" fill="none" marker-end="url(#arrow)" />
+<rect x="1032" y="902" width="86" height="34" rx="8" fill="white" stroke="#D9E0E8" />
+<text x="1075" y="925" class="label" fill="#172033" text-anchor="middle">state</text>
+<path d="M1330,760 L1465,760 L1620,397" stroke="#536273" stroke-width="3" fill="none" marker-end="url(#arrow)" />
+<rect x="1379" y="702" width="163" height="34" rx="8" fill="white" stroke="#D9E0E8" />
+<text x="1460" y="725" class="label" fill="#172033" text-anchor="middle">REST JSON + JWT</text>
+<path d="M1330,760 L1465,840 L1465,430 L1620,397" stroke="#95A6BA" stroke-width="3" fill="none" marker-end="url(#arrow)" />
+<rect x="1443" y="447" width="91" height="34" rx="8" fill="white" stroke="#D9E0E8" />
+<text x="1488" y="470" class="label" fill="#172033" text-anchor="middle">SignalR</text>
+<path d="M1965,475 L1965,555 L1775,650" stroke="#536273" stroke-width="3" fill="none" marker-end="url(#arrow)" />
+<rect x="1797" y="542" width="86" height="34" rx="8" fill="white" stroke="#D9E0E8" />
+<text x="1840" y="565" class="label" fill="#172033" text-anchor="middle">auth</text>
+<path d="M1965,475 L1965,555 L2155,650" stroke="#536273" stroke-width="3" fill="none" marker-end="url(#arrow)" />
+<rect x="2077" y="542" width="86" height="34" rx="8" fill="white" stroke="#D9E0E8" />
+<text x="2120" y="565" class="label" fill="#172033" text-anchor="middle">DTO</text>
+<path d="M2155,815 L2155,905 L1965,980" stroke="#536273" stroke-width="3" fill="none" marker-end="url(#arrow)" />
+<rect x="2112" y="897" width="136" height="34" rx="8" fill="white" stroke="#D9E0E8" />
+<text x="2180" y="920" class="label" fill="#172033" text-anchor="middle">AI use cases</text>
+<path d="M2155,815 L2185,905 L2185,1220 L1965,1290" stroke="#536273" stroke-width="3" fill="none" marker-end="url(#arrow)" />
+<rect x="2138" y="1207" width="145" height="34" rx="8" fill="white" stroke="#D9E0E8" />
+<text x="2210" y="1230" class="label" fill="#172033" text-anchor="middle">SQL use cases</text>
+<path d="M2310,732 L2470,735 L2600,410" stroke="#536273" stroke-width="3" fill="none" marker-end="url(#arrow)" />
+<rect x="2418" y="677" width="154" height="34" rx="8" fill="white" stroke="#D9E0E8" />
+<text x="2495" y="700" class="label" fill="#172033" text-anchor="middle">enqueue search</text>
+<path d="M2840,485 L2840,645" stroke="#536273" stroke-width="3" fill="none" marker-end="url(#arrow)" />
+<rect x="2795" y="552" width="91" height="34" rx="8" fill="white" stroke="#D9E0E8" />
+<text x="2840" y="575" class="label" fill="#172033" text-anchor="middle">consume</text>
+<path d="M2310,732 L2470,735 L2470,1365 L2600,1365" stroke="#536273" stroke-width="3" fill="none" marker-end="url(#arrow)" />
+<rect x="2414" y="1207" width="172" height="34" rx="8" fill="white" stroke="#D9E0E8" />
+<text x="2500" y="1230" class="label" fill="#172033" text-anchor="middle">queue email rows</text>
+<path d="M2840,1130 L2840,1290" stroke="#536273" stroke-width="3" fill="none" marker-end="url(#arrow)" />
+<rect x="2797" y="1192" width="86" height="34" rx="8" fill="white" stroke="#D9E0E8" />
+<text x="2840" y="1215" class="label" fill="#172033" text-anchor="middle">poll</text>
+<path d="M3080,720 L3225,720 L3390,417" stroke="#536273" stroke-width="3" fill="none" marker-end="url(#arrow)" stroke-dasharray="14 12" />
+<rect x="3163" y="647" width="145" height="34" rx="8" fill="white" stroke="#D9E0E8" />
+<text x="3235" y="670" class="label" fill="#172033" text-anchor="middle">Tavily search</text>
+<path d="M3080,1047 L3225,1047 L3225,430 L3390,417" stroke="#536273" stroke-width="3" fill="none" marker-end="url(#arrow)" stroke-dasharray="14 12" />
+<rect x="3196" y="977" width="118" height="34" rx="8" fill="white" stroke="#D9E0E8" />
+<text x="3255" y="1000" class="label" fill="#172033" text-anchor="middle">send email</text>
+<path d="M2310,397 L2470,395 L2470,250 L3300,250 L3300,420 L3390,417" stroke="#536273" stroke-width="3" fill="none" marker-end="url(#arrow)" stroke-dasharray="14 12" />
+<rect x="2813" y="212" width="154" height="34" rx="8" fill="white" stroke="#D9E0E8" />
+<text x="2890" y="235" class="label" fill="#172033" text-anchor="middle">Calendar OAuth</text>
+<path d="M2310,1365 L3225,1365 L3225,1225 L3390,1225" stroke="#536273" stroke-width="3" fill="none" marker-end="url(#arrow)" />
+<rect x="3176" y="1302" width="118" height="34" rx="8" fill="white" stroke="#D9E0E8" />
+<text x="3235" y="1325" class="label" fill="#172033" text-anchor="middle">Dapper SQL</text>
+<path d="M2310,1060 L3225,1060 L3225,918 L3740,917" stroke="#536273" stroke-width="3" fill="none" marker-end="url(#arrow)" stroke-dasharray="14 12" />
+<rect x="3159" y="962" width="172" height="34" rx="8" fill="white" stroke="#D9E0E8" />
+<text x="3245" y="985" class="label" fill="#172033" text-anchor="middle">LLM + embeddings</text>
+<path d="M2310,1365 L3225,1365 L3225,702 L3390,702" stroke="#95A6BA" stroke-width="3" fill="none" marker-end="url(#arrow)" />
+<rect x="3191" y="722" width="109" height="34" rx="8" fill="white" stroke="#D9E0E8" />
+<text x="3245" y="745" class="label" fill="#172033" text-anchor="middle">documents</text>
+<rect x="135" y="1980" width="610" height="170" rx="14" fill="white" stroke="#CAD4DF" class="box" />
+<rect x="161" y="2018" width="48" height="48" rx="24" fill="#263C55" />
+<text x="185" y="2049" class="box-title" fill="white" text-anchor="middle">1</text>
+<text x="231" y="2048" class="section-title">Browser calls API</text>
+<text x="231" y="2085" class="body" fill="#536273">REST JSON requests carry JWT; SignalR uses the same</text>
+<text x="231" y="2109" class="body" fill="#536273">token.</text>
+<path d="M745,2065 L795,2065" stroke="#536273" stroke-width="3" fill="none" marker-end="url(#arrow)" />
+<rect x="790" y="1980" width="610" height="170" rx="14" fill="white" stroke="#CAD4DF" class="box" />
+<rect x="816" y="2018" width="48" height="48" rx="24" fill="#263C55" />
+<text x="840" y="2049" class="box-title" fill="white" text-anchor="middle">2</text>
+<text x="886" y="2048" class="section-title">API validates context</text>
+<text x="886" y="2085" class="body" fill="#536273">Controllers pass DTOs to services with tenant/user</text>
+<text x="886" y="2109" class="body" fill="#536273">context.</text>
+<path d="M1400,2065 L1450,2065" stroke="#536273" stroke-width="3" fill="none" marker-end="url(#arrow)" />
+<rect x="1445" y="1980" width="610" height="170" rx="14" fill="white" stroke="#CAD4DF" class="box" />
+<rect x="1471" y="2018" width="48" height="48" rx="24" fill="#263C55" />
+<text x="1495" y="2049" class="box-title" fill="white" text-anchor="middle">3</text>
+<text x="1541" y="2048" class="section-title">Services transact in SQL</text>
+<text x="1541" y="2085" class="body" fill="#536273">Dapper persists business records, audit,</text>
+<text x="1541" y="2109" class="body" fill="#536273">notifications, and AI logs.</text>
+<path d="M2055,2065 L2105,2065" stroke="#536273" stroke-width="3" fill="none" marker-end="url(#arrow)" />
+<rect x="2100" y="1980" width="610" height="170" rx="14" fill="white" stroke="#CAD4DF" class="box" />
+<rect x="2126" y="2018" width="48" height="48" rx="24" fill="#263C55" />
+<text x="2150" y="2049" class="box-title" fill="white" text-anchor="middle">4</text>
+<text x="2196" y="2048" class="section-title">Realtime path</text>
+<text x="2196" y="2085" class="body" fill="#536273">SignalR publishes NotificationReceived immediately.</text>
+<path d="M2710,2065 L2760,2065" stroke="#536273" stroke-width="3" fill="none" marker-end="url(#arrow)" />
+<rect x="2755" y="1980" width="610" height="170" rx="14" fill="white" stroke="#CAD4DF" class="box" />
+<rect x="2781" y="2018" width="48" height="48" rx="24" fill="#263C55" />
+<text x="2805" y="2049" class="box-title" fill="white" text-anchor="middle">5</text>
+<text x="2851" y="2048" class="section-title">Async email path</text>
+<text x="2851" y="2085" class="body" fill="#536273">Worker claims outbox rows and sends via provider.</text>
+<path d="M3365,2065 L3415,2065" stroke="#536273" stroke-width="3" fill="none" marker-end="url(#arrow)" />
+<rect x="3410" y="1980" width="610" height="170" rx="14" fill="white" stroke="#CAD4DF" class="box" />
+<rect x="3436" y="2018" width="48" height="48" rx="24" fill="#263C55" />
+<text x="3460" y="2049" class="box-title" fill="white" text-anchor="middle">6</text>
+<text x="3506" y="2048" class="section-title">AI path</text>
+<text x="3506" y="2085" class="body" fill="#536273">Agents call Ollama and persist runs plus vectors.</text>
+<line x1="55" y1="2530" x2="4145" y2="2530" stroke="#CAD4DF" stroke-width="2" />
+<text x="58" y="2562" class="tiny" fill="#536273">Expanded SVG layout: wider lanes, routed elbows, and separated labels to avoid card/arrow overlap.</text>
+</svg>

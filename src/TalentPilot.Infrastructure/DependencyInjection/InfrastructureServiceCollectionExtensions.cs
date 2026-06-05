@@ -15,6 +15,7 @@ using TalentPilot.Application.Admin.TenantProfiles;
 using TalentPilot.Application.Admin.Users;
 using TalentPilot.Application.Admin.Workflows;
 using TalentPilot.Application.Auth;
+using TalentPilot.Application.AiAssistant;
 using TalentPilot.Application.Calendar;
 using TalentPilot.Application.Documents;
 using TalentPilot.Application.Notifications;
@@ -69,13 +70,17 @@ public static class InfrastructureServiceCollectionExtensions
         services.AddScoped<IAiRuntimeSettingsResolver, DapperAiRuntimeSettingsResolver>();
         services.AddSingleton<IAiAgentRunLogger, DapperAiAgentRunLogger>();
         services.AddSingleton<IVectorStore, DapperVectorStore>();
-        services.AddSingleton<HttpClient>();
+        services.AddSingleton(_ => new HttpClient
+        {
+            Timeout = TimeSpan.FromMinutes(10)
+        });
         services.AddScoped<IAiModelProvider, OllamaAiModelProvider>();
         services.AddScoped<IAiModelHealthChecker, OllamaAiModelHealthChecker>();
         services.AddScoped<IEmbeddingProvider, OllamaEmbeddingProvider>();
         services.AddScoped<ISemanticSimilarityHealthChecker, SemanticSimilarityHealthChecker>();
         services.AddSingleton<IOptions<GoogleCustomSearchOptions>>(Options.Create(BuildGoogleCustomSearchOptions(configuration)));
         services.AddSingleton<IOptions<TavilySearchOptions>>(Options.Create(BuildTavilySearchOptions(configuration)));
+        services.AddSingleton<IOptions<GitHubCandidateSearchOptions>>(Options.Create(BuildGitHubCandidateSearchOptions(configuration)));
         services.AddSingleton<IWebResearchProvider>(provider =>
         {
             var configuredProvider = configuration["WebResearch:Provider"] ?? "Tavily";
@@ -86,6 +91,7 @@ public static class InfrastructureServiceCollectionExtensions
 
             return ActivatorUtilities.CreateInstance<TavilySearchWebResearchProvider>(provider);
         });
+        services.AddSingleton<IGitHubCandidateSearchProvider, GitHubCandidateSearchProvider>();
         services.AddNotificationEmailSenderServices(configuration);
 
         services.AddSingleton<IPasswordVerifier, BCryptPasswordVerifier>();
@@ -106,6 +112,7 @@ public static class InfrastructureServiceCollectionExtensions
         {
             services.AddSingleton<IAdminTenantProfileRepository, DapperAdminTenantProfileRepository>();
             services.AddSingleton<IOperationsRepository, DapperOperationsRepository>();
+            services.AddSingleton<IKnowledgeRepository, DapperKnowledgeRepository>();
             services.AddSingleton<DapperAdminCenterRepository>();
             services.AddSingleton<IAdminUsersRepository>(provider => provider.GetRequiredService<DapperAdminCenterRepository>());
             services.AddSingleton<IAdminAccessPoliciesRepository>(provider => provider.GetRequiredService<DapperAdminCenterRepository>());
@@ -130,6 +137,7 @@ public static class InfrastructureServiceCollectionExtensions
         {
             services.AddSingleton<IAdminTenantProfileRepository>(provider => provider.GetRequiredService<InMemoryTalentPilotRepository>());
             services.AddSingleton<IOperationsRepository, DapperOperationsRepository>();
+            services.AddSingleton<IKnowledgeRepository, DapperKnowledgeRepository>();
             services.AddSingleton<IAdminUsersRepository>(provider => provider.GetRequiredService<InMemoryTalentPilotRepository>());
             services.AddSingleton<IAdminAccessPoliciesRepository>(provider => provider.GetRequiredService<InMemoryTalentPilotRepository>());
             services.AddSingleton<IAdminDepartmentsRepository>(provider => provider.GetRequiredService<InMemoryTalentPilotRepository>());
@@ -246,6 +254,22 @@ public static class InfrastructureServiceCollectionExtensions
                 ? Math.Clamp(timeout, 5, 60)
                 : 20,
             SearchDepth = NormalizeTavilySearchDepth(configuration["TavilySearch:SearchDepth"] ?? "basic")
+        };
+    }
+
+    private static GitHubCandidateSearchOptions BuildGitHubCandidateSearchOptions(IConfiguration configuration)
+    {
+        return new GitHubCandidateSearchOptions
+        {
+            Enabled = !bool.TryParse(configuration["GitHubSearch:Enabled"], out var enabled) || enabled,
+            ApiBaseUrl = configuration["GitHubSearch:ApiBaseUrl"] ?? "https://api.github.com",
+            Token = configuration["GitHubSearch:Token"]
+                ?? Environment.GetEnvironmentVariable("GITHUB_TOKEN")
+                ?? Environment.GetEnvironmentVariable("GITHUB_API_TOKEN")
+                ?? string.Empty,
+            RequestTimeoutSeconds = int.TryParse(configuration["GitHubSearch:RequestTimeoutSeconds"], out var timeout)
+                ? Math.Clamp(timeout, 5, 60)
+                : 20
         };
     }
 

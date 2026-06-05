@@ -1,3 +1,5 @@
+using TalentPilot.Application.Ai;
+using TalentPilot.Application.Documents;
 using TalentPilot.Common.Results;
 
 namespace TalentPilot.Application.Operations;
@@ -85,6 +87,20 @@ public interface IOperationsService
 
     Task<Result<RankApplicantRankingsResult>> RankApplicantRankingsAsync(Guid jobPostId, CancellationToken cancellationToken);
 
+    Task<Result<OperationsOnlineHeadhuntingQueuedResult>> SearchOnlineCandidatesAsync(
+        Guid jobRequestId,
+        OnlineHeadhuntingSearchInput input,
+        CancellationToken cancellationToken);
+
+    Task RunOnlineCandidatesSearchAsync(
+        OnlineHeadhuntingBackgroundJob job,
+        CancellationToken cancellationToken);
+
+    Task<Result<OperationsOnlineCandidateLead>> UpdateOnlineCandidateLeadStatusAsync(
+        Guid onlineCandidateLeadId,
+        UpdateOnlineCandidateLeadStatusInput input,
+        CancellationToken cancellationToken);
+
     Task<Result<SendCandidateInvitationsResult>> SendCandidateInvitationsAsync(
         Guid jobRequestId,
         SendCandidateInvitationsInput input,
@@ -111,6 +127,19 @@ public interface IOperationsService
         CancellationToken cancellationToken);
 
     Task<Result<OperationsInterviewTaskList>> GetMyInterviewTasksAsync(CancellationToken cancellationToken);
+
+    Task<Result<InterviewQuestionRecommendationSet>> GetLatestInterviewQuestionRecommendationsAsync(
+        Guid interviewId,
+        CancellationToken cancellationToken);
+
+    Task<Result<InterviewQuestionRecommendationSet>> GenerateInterviewQuestionRecommendationsAsync(
+        Guid interviewId,
+        GenerateInterviewQuestionRecommendationsInput input,
+        CancellationToken cancellationToken);
+
+    Task<Result<DocumentExportFile>> DownloadInterviewQuestionRecommendationsDocxAsync(
+        Guid interviewId,
+        CancellationToken cancellationToken);
 
     Task<Result<SubmitInterviewFeedbackResult>> SubmitInterviewFeedbackAsync(
         Guid interviewId,
@@ -356,6 +385,39 @@ public interface IOperationsRepository
         IReadOnlyList<OperationsApplicantRankingMatch> matches,
         CancellationToken cancellationToken);
 
+    Task<OperationsOnlineHeadhuntingContext?> GetOnlineHeadhuntingContextAsync(
+        Guid tenantId,
+        Guid actorUserId,
+        Guid jobRequestId,
+        CancellationToken cancellationToken);
+
+    Task<int> CountOnlineHeadhuntingLeadsCreatedTodayAsync(
+        Guid tenantId,
+        Guid jobRequestId,
+        CancellationToken cancellationToken);
+
+    Task<OperationsOnlineHeadhuntingResult> SaveOnlineHeadhuntingResultAsync(
+        Guid tenantId,
+        Guid actorUserId,
+        OnlineHeadhuntingSearchInput input,
+        OperationsOnlineHeadhuntingContext context,
+        OnlineHeadhuntingAgentResult result,
+        int dailyLeadCountBeforeRun,
+        int dailyLeadLimit,
+        CancellationToken cancellationToken);
+
+    Task<OperationsOnlineHeadhuntingResult?> GetLatestOnlineHeadhuntingResultAsync(
+        Guid tenantId,
+        Guid jobRequestId,
+        CancellationToken cancellationToken);
+
+    Task<OperationsOnlineCandidateLead?> UpdateOnlineCandidateLeadStatusAsync(
+        Guid tenantId,
+        Guid actorUserId,
+        Guid onlineCandidateLeadId,
+        UpdateOnlineCandidateLeadStatusInput input,
+        CancellationToken cancellationToken);
+
     Task<SendCandidateInvitationsResult> SendCandidateInvitationsAsync(
         Guid tenantId,
         Guid actorUserId,
@@ -402,6 +464,36 @@ public interface IOperationsRepository
         Guid tenantId,
         Guid actorUserId,
         bool includeAllTenantTasks,
+        CancellationToken cancellationToken);
+
+    Task<OperationsInterviewQuestionRecommendationContext?> GetInterviewQuestionRecommendationContextAsync(
+        Guid tenantId,
+        Guid actorUserId,
+        bool includeAllTenantTasks,
+        Guid interviewId,
+        CancellationToken cancellationToken);
+
+    Task<InterviewQuestionRecommendationSet?> GetLatestInterviewQuestionRecommendationsAsync(
+        Guid tenantId,
+        Guid actorUserId,
+        bool includeAllTenantTasks,
+        Guid interviewId,
+        CancellationToken cancellationToken);
+
+    Task<IReadOnlyList<InterviewQuestionBankItem>> ListInterviewQuestionBankItemsAsync(
+        Guid tenantId,
+        IReadOnlyList<Guid> skillIds,
+        string roundType,
+        string jobFamily,
+        int take,
+        CancellationToken cancellationToken);
+
+    Task<InterviewQuestionRecommendationSet> SaveInterviewQuestionRecommendationsAsync(
+        Guid tenantId,
+        Guid actorUserId,
+        OperationsInterviewQuestionRecommendationContext context,
+        string? regenerateReason,
+        InterviewQuestionAgentResult result,
         CancellationToken cancellationToken);
 
     Task<OperationsMutationRepositoryResult<SubmitInterviewFeedbackResult>> SubmitInterviewFeedbackAsync(

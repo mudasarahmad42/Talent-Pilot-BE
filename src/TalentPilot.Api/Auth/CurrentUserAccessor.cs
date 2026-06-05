@@ -3,20 +3,44 @@ using TalentPilot.Application.Abstractions;
 
 namespace TalentPilot.Api.Auth;
 
-public sealed class CurrentUserAccessor : ICurrentUserAccessor
+public interface ICurrentUserContextOverride
+{
+    void Set(Guid tenantId, Guid userId, string email);
+
+    void Clear();
+}
+
+public sealed class CurrentUserAccessor : ICurrentUserAccessor, ICurrentUserContextOverride
 {
     private readonly IHttpContextAccessor _httpContextAccessor;
+    private Guid? _tenantIdOverride;
+    private Guid? _userIdOverride;
+    private string? _emailOverride;
 
     public CurrentUserAccessor(IHttpContextAccessor httpContextAccessor)
     {
         _httpContextAccessor = httpContextAccessor;
     }
 
-    public Guid UserId => ReadGuidClaim(ClaimTypes.NameIdentifier, "sub");
+    public Guid UserId => _userIdOverride ?? ReadGuidClaim(ClaimTypes.NameIdentifier, "sub");
 
-    public Guid TenantId => ReadGuidClaim("tenant_id");
+    public Guid TenantId => _tenantIdOverride ?? ReadGuidClaim("tenant_id");
 
-    public string Email => _httpContextAccessor.HttpContext?.User.FindFirstValue(ClaimTypes.Email) ?? string.Empty;
+    public string Email => _emailOverride ?? _httpContextAccessor.HttpContext?.User.FindFirstValue(ClaimTypes.Email) ?? string.Empty;
+
+    public void Set(Guid tenantId, Guid userId, string email)
+    {
+        _tenantIdOverride = tenantId;
+        _userIdOverride = userId;
+        _emailOverride = email;
+    }
+
+    public void Clear()
+    {
+        _tenantIdOverride = null;
+        _userIdOverride = null;
+        _emailOverride = null;
+    }
 
     private Guid ReadGuidClaim(params string[] claimTypes)
     {

@@ -81,8 +81,8 @@ Important boundary rules:
   - `CandidateSourceLabels`, `Candidates`, `CandidateSkills`, `CandidateProspects`, `CandidateProspectJobRequests`, `CandidateInvitations`, `JobApplications`, `JobApplicationStatusHistory`
   - Keeps sourced prospects, registered candidates, job-specific applications, invite token hashes (`CandidateInvitations.TokenHash`), re-apply history, and hired-candidate-to-employee traceability.
 - Hiring pipeline and interviews
-  - `InterviewTemplates`, `InterviewTemplateRounds`, `JobRequestInterviewRounds`, `Interviews`, `InterviewFeedback`
-  - Stores fixed job-post pipeline templates, required interview assignments, feedback, and audited skipped-interview reasons.
+  - `InterviewTemplates`, `InterviewTemplateRounds`, `JobRequestInterviewRounds`, `Interviews`, `InterviewFeedback`, `InterviewQuestionBankItems`, `InterviewQuestionRecommendationSets`, `InterviewQuestionRecommendations`
+  - Stores fixed job-post pipeline templates, required interview assignments, feedback, audited skipped-interview reasons, seeded interview question-bank RAG items, and versioned AI-generated question recommendation sets.
 - Offer and final outcome
   - `OfferLetters`, `OfferPresentationMeetings`
   - Stores editable Hiring Manager offer drafts and physical offer-presentation meetings linked to the candidate application, job post, and Job Request.
@@ -94,7 +94,7 @@ Important boundary rules:
   - Stores durable notification records, email template text, SignalR/email outbox rows, worker heartbeat status, and audit history.
 - AI, vector search, and external tool usage
   - `AiAgentDefinitions`, `AiAgentRuns`, `AiRecommendationLogs`, `VectorEmbeddings`, `ExternalToolDailyUsage`
-  - Stores advisory AI execution traces, recommendation explanations, model metadata, source hashes, 768-dimensional embeddings, and durable daily request counts for paid external tools such as Tavily web research.
+  - Stores advisory AI execution traces, recommendation explanations, model metadata, source hashes, 768-dimensional embeddings, and durable daily request counts for paid external tools such as Tavily web research. Interview question bank items are embedded as `InterviewQuestionBankItem` vectors for the Interview Question Recommender.
 
 ## Persistence Rules
 

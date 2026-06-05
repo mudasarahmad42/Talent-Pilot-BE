@@ -10,7 +10,9 @@ namespace TalentPilot.Infrastructure.Documents;
 public sealed partial class OpenXmlDocumentExportService : IDocumentExportService
 {
     public const string ExcelContentType = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+    public const string WordContentType = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
     private const string RelationshipNamespace = "http://schemas.openxmlformats.org/officeDocument/2006/relationships";
+    private const string WordprocessingNamespace = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
 
     public DocumentExportFile CreateExcelWorkbook(string fileName, IReadOnlyList<ExcelWorksheetData> worksheets)
     {
@@ -34,6 +36,135 @@ public sealed partial class OpenXmlDocumentExportService : IDocumentExportServic
         }
 
         return new DocumentExportFile(NormalizeFileName(fileName), ExcelContentType, stream.ToArray());
+    }
+
+    public DocumentExportFile CreateWordDocument(string fileName, IReadOnlyList<WordParagraphData> paragraphs)
+    {
+        if (paragraphs.Count == 0)
+        {
+            throw new ArgumentException("At least one paragraph is required.", nameof(paragraphs));
+        }
+
+        using var stream = new MemoryStream();
+        using (var archive = new ZipArchive(stream, ZipArchiveMode.Create, leaveOpen: true))
+        {
+            WriteWordContentTypes(archive);
+            WriteWordRootRelationships(archive);
+            WriteWordDocument(archive, paragraphs);
+        }
+
+        return new DocumentExportFile(NormalizeWordFileName(fileName), WordContentType, stream.ToArray());
+    }
+
+    private static void WriteWordContentTypes(ZipArchive archive)
+    {
+        using var writer = CreateXmlWriter(archive, "[Content_Types].xml");
+        writer.WriteStartDocument();
+        writer.WriteStartElement("Types", "http://schemas.openxmlformats.org/package/2006/content-types");
+        writer.WriteStartElement("Default");
+        writer.WriteAttributeString("Extension", "rels");
+        writer.WriteAttributeString("ContentType", "application/vnd.openxmlformats-package.relationships+xml");
+        writer.WriteEndElement();
+        writer.WriteStartElement("Default");
+        writer.WriteAttributeString("Extension", "xml");
+        writer.WriteAttributeString("ContentType", "application/xml");
+        writer.WriteEndElement();
+        writer.WriteStartElement("Override");
+        writer.WriteAttributeString("PartName", "/word/document.xml");
+        writer.WriteAttributeString("ContentType", "application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml");
+        writer.WriteEndElement();
+        writer.WriteEndElement();
+        writer.WriteEndDocument();
+    }
+
+    private static void WriteWordRootRelationships(ZipArchive archive)
+    {
+        using var writer = CreateXmlWriter(archive, "_rels/.rels");
+        writer.WriteStartDocument();
+        writer.WriteStartElement("Relationships", "http://schemas.openxmlformats.org/package/2006/relationships");
+        writer.WriteStartElement("Relationship");
+        writer.WriteAttributeString("Id", "rId1");
+        writer.WriteAttributeString("Type", "http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument");
+        writer.WriteAttributeString("Target", "word/document.xml");
+        writer.WriteEndElement();
+        writer.WriteEndElement();
+        writer.WriteEndDocument();
+    }
+
+    private static void WriteWordDocument(ZipArchive archive, IReadOnlyList<WordParagraphData> paragraphs)
+    {
+        using var writer = CreateXmlWriter(archive, "word/document.xml");
+        writer.WriteStartDocument();
+        writer.WriteStartElement("w", "document", WordprocessingNamespace);
+        writer.WriteStartElement("w", "body", WordprocessingNamespace);
+
+        foreach (var paragraph in paragraphs)
+        {
+            WriteWordParagraph(writer, paragraph);
+        }
+
+        writer.WriteStartElement("w", "sectPr", WordprocessingNamespace);
+        writer.WriteStartElement("w", "pgSz", WordprocessingNamespace);
+        writer.WriteAttributeString("w", "w", WordprocessingNamespace, "12240");
+        writer.WriteAttributeString("w", "h", WordprocessingNamespace, "15840");
+        writer.WriteEndElement();
+        writer.WriteStartElement("w", "pgMar", WordprocessingNamespace);
+        writer.WriteAttributeString("w", "top", WordprocessingNamespace, "1440");
+        writer.WriteAttributeString("w", "right", WordprocessingNamespace, "1440");
+        writer.WriteAttributeString("w", "bottom", WordprocessingNamespace, "1440");
+        writer.WriteAttributeString("w", "left", WordprocessingNamespace, "1440");
+        writer.WriteEndElement();
+        writer.WriteEndElement();
+
+        writer.WriteEndElement();
+        writer.WriteEndElement();
+        writer.WriteEndDocument();
+    }
+
+    private static void WriteWordParagraph(XmlWriter writer, WordParagraphData paragraph)
+    {
+        var text = RemoveInvalidXmlCharacters(paragraph.Text);
+        if (paragraph.IsBullet)
+        {
+            text = $"- {text}";
+        }
+
+        writer.WriteStartElement("w", "p", WordprocessingNamespace);
+        writer.WriteStartElement("w", "pPr", WordprocessingNamespace);
+        writer.WriteStartElement("w", "spacing", WordprocessingNamespace);
+        writer.WriteAttributeString("w", "after", WordprocessingNamespace, paragraph.Style is WordParagraphStyle.Title or WordParagraphStyle.Heading1 ? "180" : "100");
+        writer.WriteEndElement();
+        writer.WriteEndElement();
+
+        writer.WriteStartElement("w", "r", WordprocessingNamespace);
+        WriteWordRunProperties(writer, paragraph.Style);
+        writer.WriteStartElement("w", "t", WordprocessingNamespace);
+        writer.WriteAttributeString("xml", "space", null, "preserve");
+        writer.WriteString(text);
+        writer.WriteEndElement();
+        writer.WriteEndElement();
+        writer.WriteEndElement();
+    }
+
+    private static void WriteWordRunProperties(XmlWriter writer, WordParagraphStyle style)
+    {
+        writer.WriteStartElement("w", "rPr", WordprocessingNamespace);
+        if (style is WordParagraphStyle.Title or WordParagraphStyle.Heading1 or WordParagraphStyle.Heading2)
+        {
+            writer.WriteElementString("w", "b", WordprocessingNamespace, string.Empty);
+        }
+
+        var size = style switch
+        {
+            WordParagraphStyle.Title => "32",
+            WordParagraphStyle.Heading1 => "26",
+            WordParagraphStyle.Heading2 => "22",
+            _ => "22"
+        };
+        writer.WriteStartElement("w", "sz", WordprocessingNamespace);
+        writer.WriteAttributeString("w", "val", WordprocessingNamespace, size);
+        writer.WriteEndElement();
+        writer.WriteEndElement();
     }
 
     private static void WriteContentTypes(ZipArchive archive, int sheetCount)
@@ -271,6 +402,13 @@ public sealed partial class OpenXmlDocumentExportService : IDocumentExportServic
         var trimmed = string.IsNullOrWhiteSpace(fileName) ? "export.xlsx" : fileName.Trim();
         var safe = InvalidFileNameCharacterPattern().Replace(trimmed, "-");
         return safe.EndsWith(".xlsx", StringComparison.OrdinalIgnoreCase) ? safe : $"{safe}.xlsx";
+    }
+
+    private static string NormalizeWordFileName(string fileName)
+    {
+        var trimmed = string.IsNullOrWhiteSpace(fileName) ? "document.docx" : fileName.Trim();
+        var safe = InvalidFileNameCharacterPattern().Replace(trimmed, "-");
+        return safe.EndsWith(".docx", StringComparison.OrdinalIgnoreCase) ? safe : $"{safe}.docx";
     }
 
     private static string NormalizeWorksheetName(string name, int fallbackIndex)

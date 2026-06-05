@@ -23,9 +23,17 @@ public sealed class OllamaAiModelProvider : IAiModelProvider
             : settings.LlmModel;
 
         var endpoint = BuildEndpoint(settings.OllamaBaseUrl, "api/generate");
+        var expectsJson = request.Metadata.TryGetValue("output", out var output) &&
+            string.Equals(output, "json", StringComparison.OrdinalIgnoreCase);
+
         using var response = await _httpClient.PostAsJsonAsync(
             endpoint,
-            new OllamaGenerateRequest(model, request.Prompt, false),
+            new OllamaGenerateRequest(
+                model,
+                request.Prompt,
+                false,
+                expectsJson ? "json" : null,
+                expectsJson ? new OllamaGenerateOptions(0.1m, 5000) : null),
             cancellationToken);
 
         if (!response.IsSuccessStatusCode)
@@ -51,7 +59,17 @@ public sealed class OllamaAiModelProvider : IAiModelProvider
     private sealed record OllamaGenerateRequest(
         [property: JsonPropertyName("model")] string Model,
         [property: JsonPropertyName("prompt")] string Prompt,
-        [property: JsonPropertyName("stream")] bool Stream);
+        [property: JsonPropertyName("stream")] bool Stream,
+        [property: JsonPropertyName("format")]
+        [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+        string? Format,
+        [property: JsonPropertyName("options")]
+        [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+        OllamaGenerateOptions? Options);
+
+    private sealed record OllamaGenerateOptions(
+        [property: JsonPropertyName("temperature")] decimal Temperature,
+        [property: JsonPropertyName("num_predict")] int NumPredict);
 
     private sealed record OllamaGenerateResponse(
         [property: JsonPropertyName("response")] string? Response,

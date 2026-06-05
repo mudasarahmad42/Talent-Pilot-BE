@@ -1,0 +1,272 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="5400" height="2700" viewBox="0 0 5400 2700" role="img" aria-labelledby="title desc">
+<title id="title">Talent Pilot Recruiting Lifecycle System Flow</title>
+<desc id="desc">Expanded business workflow stages mapped to actors, UI, backend actions, SQL records, and async/AI side effects</desc>
+<defs>
+  <marker id="arrow" markerWidth="12" markerHeight="12" refX="10" refY="4" orient="auto" markerUnits="strokeWidth">
+    <path d="M0,0 L0,8 L10,4 z" fill="#536273" />
+  </marker>
+  <style>
+    svg { background: #F6F8FB; }
+    text { font-family: "Segoe UI", Arial, sans-serif; dominant-baseline: alphabetic; }
+    .title { font-size: 45px; font-weight: 760; letter-spacing: 0; }
+    .subtitle { font-size: 21px; font-weight: 450; }
+    .tag { font-size: 15px; font-weight: 650; }
+    .section-title { font-size: 24px; font-weight: 760; fill: #172033; }
+    .box-title { font-size: 18px; font-weight: 760; }
+    .body { font-size: 16px; fill: #172033; }
+    .label { font-size: 15px; font-weight: 760; }
+    .tiny { font-size: 14px; }
+    .table-field { font-size: 15px; fill: #172033; }
+    .section { stroke-width: 1.8; }
+    .box { stroke-width: 1.5; filter: drop-shadow(0 2px 2px rgba(23,32,51,.08)); }
+  </style>
+</defs>
+<rect x="0" y="0" width="5400" height="130" rx="0" fill="#263C55" />
+<text x="58" y="58" class="title" fill="white">Talent Pilot Recruiting Lifecycle System Flow</text>
+<text x="60" y="96" class="subtitle" fill="#D6E0EA">Expanded business workflow stages mapped to actors, UI, backend actions, SQL records, and async/AI side effects</text>
+<rect x="5040" y="34" width="270" height="46" rx="23" fill="#405B78" />
+<text x="5175" y="63" class="tag" fill="#EDF4FA" text-anchor="middle">Generated June 5, 2026</text>
+<rect x="70" y="180" width="5260" height="230" rx="16" fill="#FFFFFF" stroke="#CAD4DF" class="section" />
+<text x="95" y="222" class="section-title">Actors</text>
+<rect x="70" y="480" width="5260" height="240" rx="16" fill="#FFFFFF" stroke="#CAD4DF" class="section" />
+<text x="95" y="522" class="section-title">Angular UI</text>
+<rect x="70" y="790" width="5260" height="290" rx="16" fill="#FFFFFF" stroke="#CAD4DF" class="section" />
+<text x="95" y="832" class="section-title">Backend action</text>
+<rect x="70" y="1160" width="5260" height="290" rx="16" fill="#FFFFFF" stroke="#CAD4DF" class="section" />
+<text x="95" y="1202" class="section-title">Primary SQL records</text>
+<rect x="70" y="1530" width="5260" height="290" rx="16" fill="#FFFFFF" stroke="#CAD4DF" class="section" />
+<text x="95" y="1572" class="section-title">Async / AI side effects</text>
+<text x="160" y="160" class="section-title">Create request</text>
+<rect x="160" y="250" width="580" height="100" rx="14" fill="#E8F3E8" stroke="#CAD4DF" class="box" />
+<rect x="160" y="250" width="580" height="60" rx="14" fill="#557B56" />
+<rect x="160" y="288" width="580" height="22" fill="#557B56" />
+<text x="182" y="287" class="box-title" fill="white">Actor</text>
+<text x="182" y="338" class="body" fill="#172033">Presales / PMO</text>
+<rect x="160" y="550" width="580" height="110" rx="14" fill="#DDF0FA" stroke="#CAD4DF" class="box" />
+<rect x="160" y="550" width="580" height="60" rx="14" fill="#246A93" />
+<rect x="160" y="588" width="580" height="22" fill="#246A93" />
+<text x="182" y="587" class="box-title" fill="white">UI surface</text>
+<text x="182" y="638" class="body" fill="#172033">Create Job Request</text>
+<rect x="160" y="870" width="580" height="130" rx="14" fill="#DDF0FA" stroke="#CAD4DF" class="box" />
+<rect x="160" y="870" width="580" height="60" rx="14" fill="#246A93" />
+<rect x="160" y="908" width="580" height="22" fill="#246A93" />
+<text x="182" y="907" class="box-title" fill="white">Backend action</text>
+<text x="182" y="958" class="body" fill="#172033">POST job-requests</text>
+<rect x="160" y="1240" width="580" height="145" rx="14" fill="#FFE5DF" stroke="#CAD4DF" class="box" />
+<rect x="160" y="1240" width="580" height="60" rx="14" fill="#BA4C3B" />
+<rect x="160" y="1278" width="580" height="22" fill="#BA4C3B" />
+<text x="182" y="1277" class="box-title" fill="white">SQL records</text>
+<text x="182" y="1328" class="body" fill="#172033">JobRequests, JobRequestSkills, WorkflowAssignments</text>
+<rect x="160" y="1610" width="580" height="145" rx="14" fill="#FFF2CF" stroke="#CAD4DF" class="box" />
+<rect x="160" y="1610" width="580" height="60" rx="14" fill="#A66A14" />
+<rect x="160" y="1648" width="580" height="22" fill="#A66A14" />
+<text x="182" y="1647" class="box-title" fill="white">Side effects</text>
+<text x="182" y="1698" class="body" fill="#172033">Realtime + email outbox, requirement embedding</text>
+<text x="900" y="160" class="section-title">PMO review</text>
+<line x1="845" y1="190" x2="845" y2="1830" stroke="#E3EAF2" stroke-width="2" />
+<rect x="900" y="250" width="580" height="100" rx="14" fill="#E8F3E8" stroke="#CAD4DF" class="box" />
+<rect x="900" y="250" width="580" height="60" rx="14" fill="#557B56" />
+<rect x="900" y="288" width="580" height="22" fill="#557B56" />
+<text x="922" y="287" class="box-title" fill="white">Actor</text>
+<text x="922" y="338" class="body" fill="#172033">PMO</text>
+<rect x="900" y="550" width="580" height="110" rx="14" fill="#DDF0FA" stroke="#CAD4DF" class="box" />
+<rect x="900" y="550" width="580" height="60" rx="14" fill="#246A93" />
+<rect x="900" y="588" width="580" height="22" fill="#246A93" />
+<text x="922" y="587" class="box-title" fill="white">UI surface</text>
+<text x="922" y="638" class="body" fill="#172033">PMO Queue / PMO Review</text>
+<rect x="900" y="870" width="580" height="130" rx="14" fill="#DDF0FA" stroke="#CAD4DF" class="box" />
+<rect x="900" y="870" width="580" height="60" rx="14" fill="#246A93" />
+<rect x="900" y="908" width="580" height="22" fill="#246A93" />
+<text x="922" y="907" class="box-title" fill="white">Backend action</text>
+<text x="922" y="958" class="body" fill="#172033">claim, rank, refer or forward</text>
+<rect x="900" y="1240" width="580" height="145" rx="14" fill="#FFE5DF" stroke="#CAD4DF" class="box" />
+<rect x="900" y="1240" width="580" height="60" rx="14" fill="#BA4C3B" />
+<rect x="900" y="1278" width="580" height="22" fill="#BA4C3B" />
+<text x="922" y="1277" class="box-title" fill="white">SQL records</text>
+<text x="922" y="1328" class="body" fill="#172033">Employees, EmployeeSkills, Referrals, AiRecommendationLogs</text>
+<rect x="900" y="1610" width="580" height="145" rx="14" fill="#FFF2CF" stroke="#CAD4DF" class="box" />
+<rect x="900" y="1610" width="580" height="60" rx="14" fill="#A66A14" />
+<rect x="900" y="1648" width="580" height="22" fill="#A66A14" />
+<text x="922" y="1647" class="box-title" fill="white">Side effects</text>
+<text x="922" y="1698" class="body" fill="#172033">Bench Matching Agent, optional Tavily context</text>
+<text x="1640" y="160" class="section-title">Presales decision</text>
+<line x1="1585" y1="190" x2="1585" y2="1830" stroke="#E3EAF2" stroke-width="2" />
+<rect x="1640" y="250" width="580" height="100" rx="14" fill="#E8F3E8" stroke="#CAD4DF" class="box" />
+<rect x="1640" y="250" width="580" height="60" rx="14" fill="#557B56" />
+<rect x="1640" y="288" width="580" height="22" fill="#557B56" />
+<text x="1662" y="287" class="box-title" fill="white">Actor</text>
+<text x="1662" y="338" class="body" fill="#172033">Presales</text>
+<rect x="1640" y="550" width="580" height="110" rx="14" fill="#DDF0FA" stroke="#CAD4DF" class="box" />
+<rect x="1640" y="550" width="580" height="60" rx="14" fill="#246A93" />
+<rect x="1640" y="588" width="580" height="22" fill="#246A93" />
+<text x="1662" y="587" class="box-title" fill="white">UI surface</text>
+<text x="1662" y="638" class="body" fill="#172033">Job Request Detail</text>
+<rect x="1640" y="870" width="580" height="130" rx="14" fill="#DDF0FA" stroke="#CAD4DF" class="box" />
+<rect x="1640" y="870" width="580" height="60" rx="14" fill="#246A93" />
+<rect x="1640" y="908" width="580" height="22" fill="#246A93" />
+<text x="1662" y="907" class="box-title" fill="white">Backend action</text>
+<text x="1662" y="958" class="body" fill="#172033">accept/reject internal referral</text>
+<rect x="1640" y="1240" width="580" height="145" rx="14" fill="#FFE5DF" stroke="#CAD4DF" class="box" />
+<rect x="1640" y="1240" width="580" height="60" rx="14" fill="#BA4C3B" />
+<rect x="1640" y="1278" width="580" height="22" fill="#BA4C3B" />
+<text x="1662" y="1277" class="box-title" fill="white">SQL records</text>
+<text x="1662" y="1328" class="body" fill="#172033">JobRequestEmployeeReferrals, JobRequestFulfillments</text>
+<rect x="1640" y="1610" width="580" height="145" rx="14" fill="#FFF2CF" stroke="#CAD4DF" class="box" />
+<rect x="1640" y="1610" width="580" height="60" rx="14" fill="#A66A14" />
+<rect x="1640" y="1648" width="580" height="22" fill="#A66A14" />
+<text x="1662" y="1647" class="box-title" fill="white">Side effects</text>
+<text x="1662" y="1698" class="body" fill="#172033">Realtime + email decision notification</text>
+<text x="2380" y="160" class="section-title">Recruiter sourcing</text>
+<line x1="2325" y1="190" x2="2325" y2="1830" stroke="#E3EAF2" stroke-width="2" />
+<rect x="2380" y="250" width="580" height="100" rx="14" fill="#E8F3E8" stroke="#CAD4DF" class="box" />
+<rect x="2380" y="250" width="580" height="60" rx="14" fill="#557B56" />
+<rect x="2380" y="288" width="580" height="22" fill="#557B56" />
+<text x="2402" y="287" class="box-title" fill="white">Actor</text>
+<text x="2402" y="338" class="body" fill="#172033">Recruiter</text>
+<rect x="2380" y="550" width="580" height="110" rx="14" fill="#DDF0FA" stroke="#CAD4DF" class="box" />
+<rect x="2380" y="550" width="580" height="60" rx="14" fill="#246A93" />
+<rect x="2380" y="588" width="580" height="22" fill="#246A93" />
+<text x="2402" y="587" class="box-title" fill="white">UI surface</text>
+<text x="2402" y="638" class="body" fill="#172033">Recruitment Queue / Sourcing</text>
+<rect x="2380" y="870" width="580" height="130" rx="14" fill="#DDF0FA" stroke="#CAD4DF" class="box" />
+<rect x="2380" y="870" width="580" height="60" rx="14" fill="#246A93" />
+<rect x="2380" y="908" width="580" height="22" fill="#246A93" />
+<text x="2402" y="907" class="box-title" fill="white">Backend action</text>
+<text x="2402" y="958" class="body" fill="#172033">create/publish post, invite candidates</text>
+<rect x="2380" y="1240" width="580" height="145" rx="14" fill="#FFE5DF" stroke="#CAD4DF" class="box" />
+<rect x="2380" y="1240" width="580" height="60" rx="14" fill="#BA4C3B" />
+<rect x="2380" y="1278" width="580" height="22" fill="#BA4C3B" />
+<text x="2402" y="1277" class="box-title" fill="white">SQL records</text>
+<text x="2402" y="1328" class="body" fill="#172033">JobPosts, JobPostSkills, CandidateInvitations</text>
+<rect x="2380" y="1610" width="580" height="145" rx="14" fill="#FFF2CF" stroke="#CAD4DF" class="box" />
+<rect x="2380" y="1610" width="580" height="60" rx="14" fill="#A66A14" />
+<rect x="2380" y="1648" width="580" height="22" fill="#A66A14" />
+<text x="2402" y="1647" class="box-title" fill="white">Side effects</text>
+<text x="2402" y="1698" class="body" fill="#172033">Talent Rediscovery, Online Headhunting, CV Parser</text>
+<text x="3120" y="160" class="section-title">Candidate pipeline</text>
+<line x1="3065" y1="190" x2="3065" y2="1830" stroke="#E3EAF2" stroke-width="2" />
+<rect x="3120" y="250" width="580" height="100" rx="14" fill="#E8F3E8" stroke="#CAD4DF" class="box" />
+<rect x="3120" y="250" width="580" height="60" rx="14" fill="#557B56" />
+<rect x="3120" y="288" width="580" height="22" fill="#557B56" />
+<text x="3142" y="287" class="box-title" fill="white">Actor</text>
+<text x="3142" y="338" class="body" fill="#172033">Candidate + Recruiter + Interviewer</text>
+<rect x="3120" y="550" width="580" height="110" rx="14" fill="#DDF0FA" stroke="#CAD4DF" class="box" />
+<rect x="3120" y="550" width="580" height="60" rx="14" fill="#246A93" />
+<rect x="3120" y="588" width="580" height="22" fill="#246A93" />
+<text x="3142" y="587" class="box-title" fill="white">UI surface</text>
+<text x="3142" y="638" class="body" fill="#172033">Candidate portal + Interview tasks</text>
+<rect x="3120" y="870" width="580" height="130" rx="14" fill="#DDF0FA" stroke="#CAD4DF" class="box" />
+<rect x="3120" y="870" width="580" height="60" rx="14" fill="#246A93" />
+<rect x="3120" y="908" width="580" height="22" fill="#246A93" />
+<text x="3142" y="907" class="box-title" fill="white">Backend action</text>
+<text x="3142" y="958" class="body" fill="#172033">apply, screen, schedule, feedback</text>
+<rect x="3120" y="1240" width="580" height="145" rx="14" fill="#FFE5DF" stroke="#CAD4DF" class="box" />
+<rect x="3120" y="1240" width="580" height="60" rx="14" fill="#BA4C3B" />
+<rect x="3120" y="1278" width="580" height="22" fill="#BA4C3B" />
+<text x="3142" y="1277" class="box-title" fill="white">SQL records</text>
+<text x="3142" y="1328" class="body" fill="#172033">JobApplications, Interviews, InterviewFeedback</text>
+<rect x="3120" y="1610" width="580" height="145" rx="14" fill="#FFF2CF" stroke="#CAD4DF" class="box" />
+<rect x="3120" y="1610" width="580" height="60" rx="14" fill="#A66A14" />
+<rect x="3120" y="1648" width="580" height="22" fill="#A66A14" />
+<text x="3142" y="1647" class="box-title" fill="white">Side effects</text>
+<text x="3142" y="1698" class="body" fill="#172033">Calendar event, reminders, question recommender</text>
+<text x="3860" y="160" class="section-title">Hiring / offer</text>
+<line x1="3805" y1="190" x2="3805" y2="1830" stroke="#E3EAF2" stroke-width="2" />
+<rect x="3860" y="250" width="580" height="100" rx="14" fill="#E8F3E8" stroke="#CAD4DF" class="box" />
+<rect x="3860" y="250" width="580" height="60" rx="14" fill="#557B56" />
+<rect x="3860" y="288" width="580" height="22" fill="#557B56" />
+<text x="3882" y="287" class="box-title" fill="white">Actor</text>
+<text x="3882" y="338" class="body" fill="#172033">Hiring Manager</text>
+<rect x="3860" y="550" width="580" height="110" rx="14" fill="#DDF0FA" stroke="#CAD4DF" class="box" />
+<rect x="3860" y="550" width="580" height="60" rx="14" fill="#246A93" />
+<rect x="3860" y="588" width="580" height="22" fill="#246A93" />
+<text x="3882" y="587" class="box-title" fill="white">UI surface</text>
+<text x="3882" y="638" class="body" fill="#172033">Hiring Manager Review</text>
+<rect x="3860" y="870" width="580" height="130" rx="14" fill="#DDF0FA" stroke="#CAD4DF" class="box" />
+<rect x="3860" y="870" width="580" height="60" rx="14" fill="#246A93" />
+<rect x="3860" y="908" width="580" height="22" fill="#246A93" />
+<text x="3882" y="907" class="box-title" fill="white">Backend action</text>
+<text x="3882" y="958" class="body" fill="#172033">generate offer, meeting, outcome</text>
+<rect x="3860" y="1240" width="580" height="145" rx="14" fill="#FFE5DF" stroke="#CAD4DF" class="box" />
+<rect x="3860" y="1240" width="580" height="60" rx="14" fill="#BA4C3B" />
+<rect x="3860" y="1278" width="580" height="22" fill="#BA4C3B" />
+<text x="3882" y="1277" class="box-title" fill="white">SQL records</text>
+<text x="3882" y="1328" class="body" fill="#172033">OfferLetters, OfferPresentationMeetings</text>
+<rect x="3860" y="1610" width="580" height="145" rx="14" fill="#FFF2CF" stroke="#CAD4DF" class="box" />
+<rect x="3860" y="1610" width="580" height="60" rx="14" fill="#A66A14" />
+<rect x="3860" y="1648" width="580" height="22" fill="#A66A14" />
+<text x="3882" y="1647" class="box-title" fill="white">Side effects</text>
+<text x="3882" y="1698" class="body" fill="#172033">Offer email and final outcome notification</text>
+<text x="4600" y="160" class="section-title">Fulfillment</text>
+<line x1="4545" y1="190" x2="4545" y2="1830" stroke="#E3EAF2" stroke-width="2" />
+<rect x="4600" y="250" width="580" height="100" rx="14" fill="#E8F3E8" stroke="#CAD4DF" class="box" />
+<rect x="4600" y="250" width="580" height="60" rx="14" fill="#557B56" />
+<rect x="4600" y="288" width="580" height="22" fill="#557B56" />
+<text x="4622" y="287" class="box-title" fill="white">Actor</text>
+<text x="4622" y="338" class="body" fill="#172033">Backend closes request</text>
+<rect x="4600" y="550" width="580" height="110" rx="14" fill="#DDF0FA" stroke="#CAD4DF" class="box" />
+<rect x="4600" y="550" width="580" height="60" rx="14" fill="#246A93" />
+<rect x="4600" y="588" width="580" height="22" fill="#246A93" />
+<text x="4622" y="587" class="box-title" fill="white">UI surface</text>
+<text x="4622" y="638" class="body" fill="#172033">Dashboard / reporting</text>
+<rect x="4600" y="870" width="580" height="130" rx="14" fill="#DDF0FA" stroke="#CAD4DF" class="box" />
+<rect x="4600" y="870" width="580" height="60" rx="14" fill="#246A93" />
+<rect x="4600" y="908" width="580" height="22" fill="#246A93" />
+<text x="4622" y="907" class="box-title" fill="white">Backend action</text>
+<text x="4622" y="958" class="body" fill="#172033">insert fulfillment and close when filled</text>
+<rect x="4600" y="1240" width="580" height="145" rx="14" fill="#FFE5DF" stroke="#CAD4DF" class="box" />
+<rect x="4600" y="1240" width="580" height="60" rx="14" fill="#BA4C3B" />
+<rect x="4600" y="1278" width="580" height="22" fill="#BA4C3B" />
+<text x="4622" y="1277" class="box-title" fill="white">SQL records</text>
+<text x="4622" y="1328" class="body" fill="#172033">JobRequestFulfillments, status history</text>
+<rect x="4600" y="1610" width="580" height="145" rx="14" fill="#FFF2CF" stroke="#CAD4DF" class="box" />
+<rect x="4600" y="1610" width="580" height="60" rx="14" fill="#A66A14" />
+<rect x="4600" y="1648" width="580" height="22" fill="#A66A14" />
+<text x="4622" y="1647" class="box-title" fill="white">Side effects</text>
+<text x="4622" y="1698" class="body" fill="#172033">Dashboard and audit updates</text>
+<path d="M740,935 L810,935 L830,935 L900,935" stroke="#536273" stroke-width="3" fill="none" marker-end="url(#arrow)" />
+<rect x="777" y="872" width="86" height="34" rx="8" fill="white" stroke="#D9E0E8" />
+<text x="820" y="895" class="label" fill="#172033" text-anchor="middle">next</text>
+<path d="M740,1312 L900,1312" stroke="#95A6BA" stroke-width="3" fill="none" marker-end="url(#arrow)" />
+<rect x="743" y="1249" width="154" height="34" rx="8" fill="white" stroke="#D9E0E8" />
+<text x="820" y="1272" class="label" fill="#172033" text-anchor="middle">linked records</text>
+<path d="M1480,935 L1550,935 L1570,935 L1640,935" stroke="#536273" stroke-width="3" fill="none" marker-end="url(#arrow)" />
+<rect x="1517" y="872" width="86" height="34" rx="8" fill="white" stroke="#D9E0E8" />
+<text x="1560" y="895" class="label" fill="#172033" text-anchor="middle">next</text>
+<path d="M1480,1312 L1640,1312" stroke="#95A6BA" stroke-width="3" fill="none" marker-end="url(#arrow)" />
+<rect x="1483" y="1249" width="154" height="34" rx="8" fill="white" stroke="#D9E0E8" />
+<text x="1560" y="1272" class="label" fill="#172033" text-anchor="middle">linked records</text>
+<path d="M2220,935 L2290,935 L2310,935 L2380,935" stroke="#536273" stroke-width="3" fill="none" marker-end="url(#arrow)" />
+<rect x="2257" y="872" width="86" height="34" rx="8" fill="white" stroke="#D9E0E8" />
+<text x="2300" y="895" class="label" fill="#172033" text-anchor="middle">next</text>
+<path d="M2220,1312 L2380,1312" stroke="#95A6BA" stroke-width="3" fill="none" marker-end="url(#arrow)" />
+<rect x="2223" y="1249" width="154" height="34" rx="8" fill="white" stroke="#D9E0E8" />
+<text x="2300" y="1272" class="label" fill="#172033" text-anchor="middle">linked records</text>
+<path d="M2960,935 L3030,935 L3050,935 L3120,935" stroke="#536273" stroke-width="3" fill="none" marker-end="url(#arrow)" />
+<rect x="2997" y="872" width="86" height="34" rx="8" fill="white" stroke="#D9E0E8" />
+<text x="3040" y="895" class="label" fill="#172033" text-anchor="middle">next</text>
+<path d="M2960,1312 L3120,1312" stroke="#95A6BA" stroke-width="3" fill="none" marker-end="url(#arrow)" />
+<rect x="2963" y="1249" width="154" height="34" rx="8" fill="white" stroke="#D9E0E8" />
+<text x="3040" y="1272" class="label" fill="#172033" text-anchor="middle">linked records</text>
+<path d="M3700,935 L3770,935 L3790,935 L3860,935" stroke="#536273" stroke-width="3" fill="none" marker-end="url(#arrow)" />
+<rect x="3737" y="872" width="86" height="34" rx="8" fill="white" stroke="#D9E0E8" />
+<text x="3780" y="895" class="label" fill="#172033" text-anchor="middle">next</text>
+<path d="M3700,1312 L3860,1312" stroke="#95A6BA" stroke-width="3" fill="none" marker-end="url(#arrow)" />
+<rect x="3703" y="1249" width="154" height="34" rx="8" fill="white" stroke="#D9E0E8" />
+<text x="3780" y="1272" class="label" fill="#172033" text-anchor="middle">linked records</text>
+<path d="M4440,935 L4510,935 L4530,935 L4600,935" stroke="#536273" stroke-width="3" fill="none" marker-end="url(#arrow)" />
+<rect x="4477" y="872" width="86" height="34" rx="8" fill="white" stroke="#D9E0E8" />
+<text x="4520" y="895" class="label" fill="#172033" text-anchor="middle">next</text>
+<path d="M4440,1312 L4600,1312" stroke="#95A6BA" stroke-width="3" fill="none" marker-end="url(#arrow)" />
+<rect x="4443" y="1249" width="154" height="34" rx="8" fill="white" stroke="#D9E0E8" />
+<text x="4520" y="1272" class="label" fill="#172033" text-anchor="middle">linked records</text>
+<rect x="160" y="2080" width="4820" height="190" rx="14" fill="#FFFFFF" stroke="#CAD4DF" class="box" />
+<rect x="160" y="2080" width="4820" height="60" rx="14" fill="#263C55" />
+<rect x="160" y="2118" width="4820" height="22" fill="#263C55" />
+<text x="182" y="2117" class="box-title" fill="white">Workflow rules that matter</text>
+<text x="182" y="2168" class="body" fill="#172033">WorkflowAssignments move the Job Request baton. Interview tasks do not move the Job Request baton.</text>
+<text x="182" y="2198" class="body" fill="#172033">AI agents rank, summarize, parse, or draft. Humans still claim, approve, reject, schedule, and close.</text>
+<text x="182" y="2228" class="body" fill="#172033">NotificationRecipients support in-app/realtime state. NotificationOutbox supports asynchronous email.</text>
+<line x1="55" y1="2630" x2="5345" y2="2630" stroke="#CAD4DF" stroke-width="2" />
+<text x="58" y="2662" class="tiny" fill="#536273">Expanded lifecycle flow aligns with OperationsController endpoints and Dapper-backed SQL tables.</text>
+</svg>

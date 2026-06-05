@@ -97,7 +97,7 @@ public sealed class ApplicantRankingAgent : IApplicantRankingAgent
                 .ThenBy(item => item.Application.CandidateName, StringComparer.OrdinalIgnoreCase)
                 .ToArray();
 
-            var explanations = await TryGenerateExplanationsAsync(context, scored, documentTexts, settings.LlmModel, cancellationToken);
+            var explanations = await GenerateExplanationsAsync(context, scored, documentTexts, settings.LlmModel, cancellationToken);
             var ranked = scored
                 .Select((item, index) => ToRankedApplication(item, index + 1, explanations))
                 .ToArray();
@@ -235,46 +235,51 @@ public sealed class ApplicantRankingAgent : IApplicantRankingAgent
         return results;
     }
 
-    private async Task<IReadOnlyDictionary<Guid, string>> TryGenerateExplanationsAsync(
+    private async Task<IReadOnlyDictionary<Guid, string>> GenerateExplanationsAsync(
         OperationsApplicantRankingContext context,
         IReadOnlyList<ScoredApplication> scored,
         IReadOnlyDictionary<Guid, string> documentTexts,
         string model,
         CancellationToken cancellationToken)
     {
-        try
-        {
-            var response = await _modelProvider.GenerateAsync(
-                new AiPromptRequest(
-                    AgentId,
-                    BuildExplanationPrompt(context, scored, documentTexts),
-                    new Dictionary<string, string>
-                    {
-                        ["model"] = model,
-                        ["output"] = "json"
-                    }),
-                cancellationToken);
+        var response = await _modelProvider.GenerateAsync(
+            new AiPromptRequest(
+                AgentId,
+                BuildExplanationPrompt(context, scored, documentTexts),
+                new Dictionary<string, string>
+                {
+                    ["model"] = model,
+                    ["output"] = "json"
+                }),
+            cancellationToken);
 
-            var normalized = response.Trim();
-            if (normalized.StartsWith("```", StringComparison.Ordinal))
-            {
-                normalized = normalized
-                    .Replace("```json", string.Empty, StringComparison.OrdinalIgnoreCase)
-                    .Replace("```", string.Empty, StringComparison.Ordinal)
-                    .Trim();
-            }
-
-            var items = JsonSerializer.Deserialize<AiExplanationItem[]>(normalized, JsonOptions) ?? [];
-            return items
-                .Where(item => Guid.TryParse(item.JobApplicationId, out _))
-                .ToDictionary(
-                    item => Guid.Parse(item.JobApplicationId),
-                    item => string.IsNullOrWhiteSpace(item.Explanation) ? string.Empty : item.Explanation.Trim());
-        }
-        catch
+        if (string.IsNullOrWhiteSpace(response))
         {
-            return new Dictionary<Guid, string>();
+            throw new InvalidOperationException("The Applicant Ranking Agent returned an empty explanation response.");
         }
+
+        var normalized = response.Trim();
+        if (normalized.StartsWith("```", StringComparison.Ordinal))
+        {
+            normalized = normalized
+                .Replace("```json", string.Empty, StringComparison.OrdinalIgnoreCase)
+                .Replace("```", string.Empty, StringComparison.Ordinal)
+                .Trim();
+        }
+
+        var items = JsonSerializer.Deserialize<AiExplanationItem[]>(normalized, JsonOptions) ?? [];
+        var explanations = items
+            .Where(item => Guid.TryParse(item.JobApplicationId, out _) && !string.IsNullOrWhiteSpace(item.Explanation))
+            .ToDictionary(
+                item => Guid.Parse(item.JobApplicationId),
+                item => item.Explanation.Trim());
+
+        if (explanations.Count == 0 && scored.Count > 0)
+        {
+            throw new InvalidOperationException("The Applicant Ranking Agent did not return any usable LLM explanations.");
+        }
+
+        return explanations;
     }
 
     private static ScoredApplication ScoreApplication(
@@ -321,10 +326,7 @@ public sealed class ApplicantRankingAgent : IApplicantRankingAgent
         var gaps = BuildGaps(scored);
         var documentEvidence = BuildDocumentEvidence(scored.Application);
         var historicalEvidence = BuildHistoricalEvidence(scored.Application);
-        var explanation = aiExplanations.TryGetValue(scored.Application.JobApplicationId, out var aiExplanation) &&
-                          !string.IsNullOrWhiteSpace(aiExplanation)
-            ? aiExplanation
-            : BuildFallbackExplanation(scored);
+        var explanation = RequiredAiExplanation(aiExplanations, scored.Application.JobApplicationId, scored.Application.CandidateName);
 
         return new ApplicantRankingRankedApplication(
             scored.Application.JobApplicationId,
@@ -587,10 +589,19 @@ public sealed class ApplicantRankingAgent : IApplicantRankingAgent
         return evidenceItems.Length == 0 ? ["No prior application or interview evidence was found."] : evidenceItems;
     }
 
-    private static string BuildFallbackExplanation(ScoredApplication scored)
+    private static string RequiredAiExplanation(
+        IReadOnlyDictionary<Guid, string> explanations,
+        Guid jobApplicationId,
+        string candidateName)
     {
-        var application = scored.Application;
-        return $"{application.CandidateName} is ranked for this current application because their profile has a skill coverage score of {FormatPercent(scored.SkillCoverage)}, vector similarity score of {FormatPercent(scored.VectorSimilarity)}, experience/location/notice fit score of {FormatPercent(scored.Fit)}, historical signal score of {FormatPercent(scored.HistoricalSignal)}, evidence completeness score of {FormatPercent(scored.EvidenceCompleteness)}, and application recency score of {FormatPercent(scored.Recency)}. Recruiter should validate the listed gaps before shortlisting, scheduling, holding, or rejecting the applicant.";
+        if (explanations.TryGetValue(jobApplicationId, out var explanation) &&
+            !string.IsNullOrWhiteSpace(explanation))
+        {
+            return explanation;
+        }
+
+        throw new InvalidOperationException(
+            $"The Applicant Ranking Agent did not return an LLM explanation for {candidateName}.");
     }
 
     private static string BuildRunInputText(
@@ -674,7 +685,7 @@ public sealed class ApplicantRankingAgent : IApplicantRankingAgent
         builder.AppendLine();
         builder.AppendLine("Applications:");
 
-        foreach (var scoredApplication in scored.Take(8))
+        foreach (var scoredApplication in scored)
         {
             var application = scoredApplication.Application;
             documentTexts.TryGetValue(application.JobApplicationId, out var documentText);
@@ -705,9 +716,10 @@ public sealed class ApplicantRankingAgent : IApplicantRankingAgent
             await _runLogger.FailAsync(
                 tenantId,
                 runId,
-                "Applicant Ranking failed.",
+                exception.Message.Length <= 900 ? exception.Message : exception.Message[..900],
                 new Dictionary<string, string>
                 {
+                    ["errorType"] = exception.GetType().Name,
                     ["error"] = exception.Message
                 },
                 cancellationToken);

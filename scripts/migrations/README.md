@@ -44,6 +44,8 @@ Files are sorted by name inside each folder. Use numeric prefixes such as `001_`
 - `migrations/030_google_calendar_oauth_connections.sql` adds tables for future organizer-scoped Google Calendar OAuth connections.
 - `migrations/031_normalize_demo_seed_email_domains.sql` replaces old demo `@talentpilot.test` seed email addresses with the Microsoft tenant test domain.
 - `migrations/032_add_interview_participants.sql` stores meeting attendees for scheduled interview events and backfills existing interviews.
+- `migrations/035_interview_question_recommendations.sql` adds the Interview Question Recommender agent, question-bank RAG tables, and versioned interview question recommendation persistence.
+- `migrations/036_online_headhunting_agent.sql` adds Online Headhunting agent registration plus lead-only `OnlineCandidateSourcingRuns` and `OnlineCandidateLeads` persistence.
 - `seed/001_seed_initial_data.sql` seeds the TKXEL demo tenant, system roles, permissions, routing groups, notification events/templates, AI agent definitions, and demo users.
 - `stored-procedures/001_user_procedures.sql` creates simple auth/admin user helper procedures.
 

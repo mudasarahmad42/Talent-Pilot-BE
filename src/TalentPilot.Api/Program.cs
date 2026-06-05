@@ -3,17 +3,21 @@ using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.IdentityModel.Tokens;
 using TalentPilot.Api.Auth;
+using TalentPilot.Api.Background;
 using TalentPilot.Api.Hubs;
 using TalentPilot.Application.Abstractions;
 using TalentPilot.Application.DependencyInjection;
 using TalentPilot.Application.Notifications;
+using TalentPilot.Application.Operations;
 using TalentPilot.Infrastructure.Auth;
 using TalentPilot.Infrastructure.DependencyInjection;
 
 var builder = WebApplication.CreateBuilder(args);
 
 builder.Services.AddHttpContextAccessor();
-builder.Services.AddScoped<ICurrentUserAccessor, CurrentUserAccessor>();
+builder.Services.AddScoped<CurrentUserAccessor>();
+builder.Services.AddScoped<ICurrentUserAccessor>(services => services.GetRequiredService<CurrentUserAccessor>());
+builder.Services.AddScoped<ICurrentUserContextOverride>(services => services.GetRequiredService<CurrentUserAccessor>());
 builder.Services.AddApplicationServices();
 builder.Services.AddInfrastructureServices(builder.Configuration);
 builder.Services.AddControllers();
@@ -21,6 +25,9 @@ builder.Services.AddSignalR();
 builder.Services.AddSingleton<RealtimeConnectionTracker>();
 builder.Services.AddSingleton<IRealtimeConnectionCounter>(services => services.GetRequiredService<RealtimeConnectionTracker>());
 builder.Services.AddSingleton<IRealtimeNotificationPublisher, SignalRRealtimeNotificationPublisher>();
+builder.Services.AddSingleton<OnlineHeadhuntingBackgroundQueue>();
+builder.Services.AddSingleton<IOnlineHeadhuntingJobQueue>(services => services.GetRequiredService<OnlineHeadhuntingBackgroundQueue>());
+builder.Services.AddHostedService<OnlineHeadhuntingBackgroundService>();
 builder.Services.AddEndpointsApiExplorer();
 
 builder.Services.AddCors(options =>

@@ -19,6 +19,10 @@ public sealed class TalentRediscoveryAgentTests
               {
                 "candidateId": "{{StrongCandidateId:D}}",
                 "explanation": "Nida is a strong warm candidate because prior React portal feedback was positive and the current skills overlap is high. Recruiter should still validate availability before outreach."
+              },
+              {
+                "candidateId": "{{SecondaryCandidateId:D}}",
+                "explanation": "Omar is a secondary warm candidate because the LLM notes partial React and Angular overlap with an Azure caveat for recruiter review."
               }
             ]
             """);
@@ -85,7 +89,7 @@ public sealed class TalentRediscoveryAgentTests
         {
             [onHoldCandidateId] = 0.6m,
             [halfPassedCandidateId] = 0.6m
-        }));
+        }), onHoldCandidateId, halfPassedCandidateId);
 
         var result = await agent.RankAsync(TenantId, context, CancellationToken.None);
 
@@ -116,7 +120,7 @@ public sealed class TalentRediscoveryAgentTests
         {
             [halfPassedCandidateId] = 0.4m,
             [weakCandidateId] = 0.4m
-        }));
+        }), halfPassedCandidateId, weakCandidateId);
 
         var result = await agent.RankAsync(TenantId, context, CancellationToken.None);
 
@@ -153,7 +157,7 @@ public sealed class TalentRediscoveryAgentTests
         {
             [backendOnHoldCandidateId] = 0.6m,
             [reactCandidateId] = 0.6m
-        }));
+        }), backendOnHoldCandidateId, reactCandidateId);
 
         var result = await agent.RankAsync(TenantId, context, CancellationToken.None);
 
@@ -195,7 +199,7 @@ public sealed class TalentRediscoveryAgentTests
         {
             [backendOnHoldCandidateId] = 0.95m,
             [reactCandidateId] = 0.45m
-        }));
+        }), backendOnHoldCandidateId, reactCandidateId);
 
         var result = await agent.RankAsync(TenantId, context, CancellationToken.None);
         var backendMatch = Assert.Single(result.Matches.Where(match => match.CandidateId == backendOnHoldCandidateId));
@@ -229,12 +233,31 @@ public sealed class TalentRediscoveryAgentTests
         {
             [joinedCandidateId] = 0.9m,
             [activeCandidateId] = 0.6m
-        }));
+        }), activeCandidateId);
 
         var result = await agent.RankAsync(TenantId, context, CancellationToken.None);
 
         Assert.DoesNotContain(result.Matches, match => match.CandidateId == joinedCandidateId);
         Assert.Contains(result.Matches, match => match.CandidateId == activeCandidateId);
+    }
+
+    [Fact]
+    public async Task RankAsync_WhenModelDoesNotReturnExplanations_FailsClosed()
+    {
+        var logger = new CapturingRunLogger();
+        var agent = new TalentRediscoveryAgent(
+            new CapturingModelProvider("[]"),
+            new StaticEmbeddingProvider(),
+            new CapturingVectorStore(new Dictionary<Guid, decimal>()),
+            new StaticRuntimeSettingsResolver(),
+            logger);
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            agent.RankAsync(TenantId, CreateContext(), CancellationToken.None));
+
+        Assert.False(logger.Succeeded);
+        Assert.True(logger.Failed);
+        Assert.Contains("usable LLM explanations", logger.OutputSummary);
     }
 
     private static OperationsTalentRediscoveryContext CreateContext()
@@ -338,14 +361,20 @@ public sealed class TalentRediscoveryAgentTests
         return new OperationsTalentRediscoveryContext(jobRequest, null, "JobRequest", jobRequest.Skills, 4, 7, candidates);
     }
 
-    private static TalentRediscoveryAgent CreateAgent(CapturingVectorStore vectorStore)
+    private static TalentRediscoveryAgent CreateAgent(CapturingVectorStore vectorStore, params Guid[] candidateIds)
     {
         return new TalentRediscoveryAgent(
-            new CapturingModelProvider("[]"),
+            new CapturingModelProvider(CreateExplanationResponse(candidateIds)),
             new StaticEmbeddingProvider(),
             vectorStore,
             new StaticRuntimeSettingsResolver(),
             new CapturingRunLogger());
+    }
+
+    private static string CreateExplanationResponse(params Guid[] candidateIds)
+    {
+        return "[" + string.Join(",", candidateIds.Select((id, index) =>
+            $@"{{""candidateId"":""{id:D}"",""explanation"":""LLM explanation {index + 1} for recruiter rediscovery.""}}")) + "]";
     }
 
     private static OperationsTalentRediscoveryContext CreatePriorityContext(
@@ -523,6 +552,8 @@ public sealed class TalentRediscoveryAgentTests
     private sealed class CapturingRunLogger : IAiAgentRunLogger
     {
         public bool Succeeded { get; private set; }
+        public bool Failed { get; private set; }
+        public string OutputSummary { get; private set; } = string.Empty;
         public IReadOnlyDictionary<string, string> Metadata { get; private set; } =
             new Dictionary<string, string>();
 
@@ -539,6 +570,7 @@ public sealed class TalentRediscoveryAgentTests
             CancellationToken cancellationToken)
         {
             Succeeded = true;
+            OutputSummary = outputSummary;
             Metadata = metadata;
             return Task.CompletedTask;
         }
@@ -550,6 +582,8 @@ public sealed class TalentRediscoveryAgentTests
             IReadOnlyDictionary<string, string> metadata,
             CancellationToken cancellationToken)
         {
+            Failed = true;
+            OutputSummary = outputSummary;
             return Task.CompletedTask;
         }
     }

@@ -2,6 +2,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using TalentPilot.Application.Abstractions;
 using TalentPilot.Application.Ai;
+using TalentPilot.Application.AiAssistant;
 using TalentPilot.Application.Admin.AiSettings;
 using TalentPilot.Application.Admin.AuditLogs;
 using TalentPilot.Application.Admin.CandidateSources;
@@ -40,15 +41,23 @@ public static class ApplicationServiceCollectionExtensions
         services.AddScoped<IAdminWorkflowsService, AdminWorkflowsService>();
         services.AddScoped<IAdminHiringPipelinesService, AdminHiringPipelinesService>();
         services.AddScoped<IOperationsService, OperationsService>();
+        services.AddScoped<IAiAssistantService, AiAssistantService>();
+        services.AddScoped<IKnowledgeIndexingService, KnowledgeIndexingService>();
+        services.AddScoped<IKnowledgeRetrievalService, KnowledgeRetrievalService>();
+        services.AddScoped<IRagPromptBuilder, RagPromptBuilder>();
         services.AddSingleton<IApplicationDocumentTextExtractor, DocxApplicationDocumentTextExtractor>();
         services.AddScoped<IJobDescriptionDraftingAgent, JobDescriptionDraftingAgent>();
         services.AddScoped<ICvParserAgent, CvParserAgent>();
         services.AddScoped<IBenchMatchingAgent, BenchMatchingAgent>();
         services.AddScoped<ITalentRediscoveryAgent, TalentRediscoveryAgent>();
         services.AddScoped<IApplicantRankingAgent, ApplicantRankingAgent>();
+        services.AddScoped<OnlineHeadhuntingBooleanQueryBuilder>();
+        services.AddScoped<IOnlineHeadhuntingAgent, OnlineHeadhuntingAgent>();
+        services.AddScoped<IInterviewQuestionRecommendationAgent, InterviewQuestionRecommendationAgent>();
         services.TryAddSingleton<ICalendarMeetingService, NoOpCalendarMeetingService>();
         services.TryAddSingleton<IRealtimeNotificationPublisher, NoOpRealtimeNotificationPublisher>();
         services.TryAddSingleton<IRealtimeConnectionCounter, NoOpRealtimeNotificationPublisher>();
+        services.TryAddSingleton<IOnlineHeadhuntingJobQueue, NoOpOnlineHeadhuntingJobQueue>();
 
         return services;
     }

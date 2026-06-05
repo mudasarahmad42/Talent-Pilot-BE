@@ -327,7 +327,9 @@ public sealed record OperationsRecruiterSourcing(
     IReadOnlyList<OperationsInterviewTemplateOption> InterviewTemplates,
     IReadOnlyList<OperationsInterviewerOption> Interviewers,
     IReadOnlyList<OperationsLookupOption> HodInterviewers,
-    IReadOnlyList<OperationsLookupOption> Skills);
+    IReadOnlyList<OperationsLookupOption> Skills,
+    OperationsOnlineHeadhuntingResult? OnlineHeadhunting,
+    string? ConfiguredAiModel = null);
 
 public sealed record OperationsRecruiterApplication(
     Guid JobApplicationId,
@@ -437,6 +439,7 @@ public sealed record OperationsJobPostListItem(
     string Department,
     string Location,
     string Status,
+    int ApplicantCount,
     string RecruiterOwnerName,
     DateTimeOffset? PublishedAt,
     DateTimeOffset? ClosedAt,
@@ -744,6 +747,7 @@ public sealed record OperationsHistoricalApplicationSummary(
     DateTimeOffset AppliedAt,
     DateTimeOffset? FinalDecisionAt,
     string? FinalDecisionReason,
+    DateOnly? OfferStartDate,
     int InterviewsPassed,
     int InterviewsTotal,
     string InterviewPassSummary);
@@ -905,6 +909,107 @@ public sealed record RankApplicantRankingsResult(
     DateTimeOffset GeneratedAtUtc,
     string SemanticSimilarityStatus);
 
+public sealed record OnlineHeadhuntingSearchInput(
+    int? Limit,
+    IReadOnlyList<string>? SourceCodes,
+    Guid? SearchMoreFromRunId);
+
+public sealed record OperationsOnlineHeadhuntingContext(
+    OperationsJobRequest JobRequest,
+    OperationsJobPost? JobPost,
+    IReadOnlyList<string> RequiredSkills,
+    decimal? ExperienceMinYears,
+    decimal? ExperienceMaxYears,
+    IReadOnlyList<OperationsOnlineHeadhuntingDuplicateCandidate> CandidatePool,
+    IReadOnlyList<OperationsOnlineHeadhuntingExistingLead> ExistingLeads);
+
+public sealed record OperationsOnlineHeadhuntingDuplicateCandidate(
+    Guid CandidateId,
+    string DisplayName,
+    string Email,
+    string? Phone,
+    string? LinkedInUrl,
+    string? CurrentDesignation,
+    string? CurrentCompany,
+    decimal? ExperienceYears,
+    IReadOnlyList<string> Skills);
+
+public sealed record OperationsOnlineHeadhuntingExistingLead(
+    string SourceUrl,
+    string? ProfileUrl,
+    string? Email,
+    string? Phone,
+    string? DisplayName,
+    string? CurrentTitle,
+    string? CurrentCompany,
+    string? LocationText);
+
+public sealed record OperationsOnlineHeadhuntingRunSummary(
+    Guid OnlineCandidateSourcingRunId,
+    Guid JobRequestId,
+    Guid? JobPostId,
+    Guid? AiAgentRunId,
+    Guid? SearchMoreFromRunId,
+    int RequestedLimit,
+    int DailyLeadLimit,
+    int DailyLeadCountBeforeRun,
+    int LeadsReturned,
+    string SearchStatus,
+    string Model,
+    IReadOnlyList<string> SourceCodes,
+    IReadOnlyList<string> Queries,
+    DateTimeOffset CreatedAtUtc);
+
+public sealed record OperationsOnlineCandidateLead(
+    Guid OnlineCandidateLeadId,
+    Guid OnlineCandidateSourcingRunId,
+    Guid JobRequestId,
+    int Rank,
+    string SourceCode,
+    string SourceDisplayName,
+    string SourceUrl,
+    string? DisplayName,
+    string? CurrentTitle,
+    string? CurrentCompany,
+    string? LocationText,
+    string? Email,
+    string? Phone,
+    string? ProfileUrl,
+    string EvidenceSnippet,
+    decimal MatchScore,
+    string Confidence,
+    string FitSummary,
+    IReadOnlyList<string> Strengths,
+    IReadOnlyList<string> MatchedSkills,
+    IReadOnlyList<string> Gaps,
+    IReadOnlyList<string> MissingData,
+    string DuplicateStatus,
+    Guid? DuplicateCandidateId,
+    string? DuplicateCandidateName,
+    string? DuplicateExplanation,
+    string OutreachDraft,
+    string Status,
+    DateTimeOffset CreatedAtUtc);
+
+public sealed record OperationsOnlineHeadhuntingResult(
+    OperationsOnlineHeadhuntingRunSummary Run,
+    IReadOnlyList<OperationsOnlineCandidateLead> Leads);
+
+public sealed record OperationsOnlineHeadhuntingQueuedResult(
+    Guid RequestId,
+    Guid JobRequestId,
+    Guid RequestedByUserId,
+    string Status,
+    string Message,
+    int RequestedLimit,
+    int DailyLeadLimit,
+    int DailyLeadCountBeforeRun,
+    IReadOnlyList<string> SourceCodes,
+    DateTimeOffset QueuedAtUtc);
+
+public sealed record UpdateOnlineCandidateLeadStatusInput(
+    string Status);
+
 public sealed record SendCandidateInvitationsInput(
     IReadOnlyList<Guid> CandidateIds,
     Guid? JobPostId,
@@ -1016,6 +1121,7 @@ public sealed record PortalMyApplicationItem(
     DateTimeOffset AppliedAt,
     DateTimeOffset? FinalDecisionAt,
     string? FinalDecisionReason,
+    DateOnly? OfferStartDate,
     int InterviewsPassed,
     int InterviewsTotal,
     string InterviewPassSummary,
@@ -1083,7 +1189,8 @@ public sealed record AddManualCandidateInput(
     string? DegreeName,
     int? GraduationYear,
     string? InvitationMessage,
-    ParsedCandidateCvEvidenceInput? ParsedCvEvidence = null);
+    ParsedCandidateCvEvidenceInput? ParsedCvEvidence = null,
+    Guid? OnlineLeadId = null);
 
 public sealed record ParsedCandidateCvEvidenceInput(
     string FileName,
@@ -1219,6 +1326,131 @@ public sealed record OperationsInterviewTask(
     int? CultureScore,
     string? FeedbackText,
     DateTimeOffset? SubmittedAt);
+
+public sealed record GenerateInterviewQuestionRecommendationsInput(string? RegenerateReason);
+
+public sealed record InterviewQuestionRecommendationSet(
+    Guid RecommendationSetId,
+    Guid InterviewId,
+    Guid JobApplicationId,
+    Guid JobPostInterviewRoundId,
+    Guid AgentRunId,
+    string Model,
+    string PromptVersion,
+    int VersionNumber,
+    string Summary,
+    string? Rationale,
+    string? RegenerateReason,
+    InterviewQuestionCoverage Coverage,
+    string Status,
+    DateTimeOffset GeneratedAtUtc,
+    IReadOnlyList<InterviewQuestionRecommendation> Questions);
+
+public sealed record InterviewQuestionCoverage(
+    string RoundType,
+    int TargetQuestionCount,
+    int BankItemsUsed,
+    string SemanticSimilarityStatus,
+    IReadOnlyList<string> SkillsCovered,
+    IReadOnlyList<string> CandidateEvidenceUsed);
+
+public sealed record InterviewQuestionRecommendation(
+    Guid QuestionRecommendationId,
+    int SortOrder,
+    string QuestionText,
+    string QuestionType,
+    string RoundType,
+    string? SkillName,
+    string Difficulty,
+    string Rationale,
+    string ExpectedSignal,
+    IReadOnlyList<string> FollowUps,
+    IReadOnlyList<string> EvaluationRubric,
+    Guid? SourceBankItemId);
+
+public sealed record OperationsInterviewQuestionRecommendationContext(
+    Guid InterviewId,
+    Guid JobApplicationId,
+    Guid JobPostInterviewRoundId,
+    Guid JobRequestId,
+    Guid JobPostId,
+    Guid CandidateId,
+    string RequestCode,
+    string JobTitle,
+    string Client,
+    string Department,
+    string Location,
+    string RoundName,
+    string RoundType,
+    int DurationMinutes,
+    string Status,
+    DateTimeOffset StartsAt,
+    string InterviewerName,
+    Guid InterviewerUserId,
+    string CandidateName,
+    string CandidateEmail,
+    string? CurrentDesignation,
+    string? CurrentCompany,
+    decimal? ExperienceYears,
+    int? NoticePeriodDays,
+    string ApplicationStatus,
+    string? CoverLetterText,
+    string? RecruiterNotes,
+    string? ApplicationSnapshotJson,
+    string JobRequestDescription,
+    string JobPostDescription,
+    decimal? ExperienceMinYears,
+    decimal? ExperienceMaxYears,
+    IReadOnlyList<OperationsInterviewQuestionSkill> RequiredSkills,
+    IReadOnlyList<OperationsInterviewQuestionSkill> CandidateSkills,
+    IReadOnlyList<OperationsApplicantDocumentEvidence> DocumentEvidence,
+    IReadOnlyList<OperationsCandidateInterviewEvidence> PriorInterviewEvidence);
+
+public sealed record OperationsInterviewQuestionSkill(
+    Guid SkillId,
+    string Name,
+    string? Category);
+
+public sealed record InterviewQuestionBankItem(
+    Guid InterviewQuestionBankItemId,
+    Guid TenantId,
+    Guid? SkillId,
+    string? SkillName,
+    string? SkillCategory,
+    Guid? DepartmentId,
+    string? JobFamily,
+    string RoundType,
+    string Difficulty,
+    string QuestionText,
+    string ExpectedSignal,
+    IReadOnlyList<string> FollowUps,
+    IReadOnlyList<string> EvaluationRubric,
+    string? SourceTitle,
+    string? SourceUrl,
+    string ContentHashSha256);
+
+public sealed record InterviewQuestionAgentResult(
+    Guid AgentRunId,
+    string Model,
+    string PromptVersion,
+    DateTimeOffset GeneratedAtUtc,
+    string Summary,
+    string? Rationale,
+    InterviewQuestionCoverage Coverage,
+    IReadOnlyList<Guid> RetrievedBankItemIds,
+    IReadOnlyList<InterviewQuestionAgentQuestion> Questions);
+
+public sealed record InterviewQuestionAgentQuestion(
+    string QuestionText,
+    string QuestionType,
+    string RoundType,
+    string? SkillName,
+    string Difficulty,
+    string Rationale,
+    string ExpectedSignal,
+    IReadOnlyList<string> FollowUps,
+    IReadOnlyList<string> EvaluationRubric,
+    Guid? SourceBankItemId);
 
 public sealed record SubmitInterviewFeedbackInput(
     int TechnicalScore,
@@ -1391,13 +1623,15 @@ public sealed record ScheduleOfferPresentationMeetingInput(
 
 public sealed record HiringOutcomeInput(
     string Outcome,
-    string? Reason);
+    string? Reason,
+    DateOnly? JoiningDate);
 
 public sealed record HiringOutcomeResult(
     Guid JobApplicationId,
     Guid JobRequestId,
     string ApplicationStatus,
     string JobRequestStatus,
+    DateOnly? JoiningDate,
     int FulfilledPositions,
     int RequiredPositions);
 
