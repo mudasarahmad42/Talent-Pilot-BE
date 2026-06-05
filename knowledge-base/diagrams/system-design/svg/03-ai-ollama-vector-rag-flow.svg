@@ -1,0 +1,191 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="3900" height="2450" viewBox="0 0 3900 2450" role="img" aria-labelledby="title desc">
+<title id="title">Talent Pilot AI, Ollama, Vector, RAG, and Headhunting Flow</title>
+<desc id="desc">Expanded AI architecture with backend-owned agents, local Ollama, vector storage, RAG evidence, and human review boundaries</desc>
+<defs>
+  <marker id="arrow" markerWidth="12" markerHeight="12" refX="10" refY="4" orient="auto" markerUnits="strokeWidth">
+    <path d="M0,0 L0,8 L10,4 z" fill="#536273" />
+  </marker>
+  <style>
+    svg { background: #F6F8FB; }
+    text { font-family: "Segoe UI", Arial, sans-serif; dominant-baseline: alphabetic; }
+    .title { font-size: 45px; font-weight: 760; letter-spacing: 0; }
+    .subtitle { font-size: 21px; font-weight: 450; }
+    .tag { font-size: 15px; font-weight: 650; }
+    .section-title { font-size: 24px; font-weight: 760; fill: #172033; }
+    .box-title { font-size: 18px; font-weight: 760; }
+    .body { font-size: 16px; fill: #172033; }
+    .label { font-size: 15px; font-weight: 760; }
+    .tiny { font-size: 14px; }
+    .table-field { font-size: 15px; fill: #172033; }
+    .section { stroke-width: 1.8; }
+    .box { stroke-width: 1.5; filter: drop-shadow(0 2px 2px rgba(23,32,51,.08)); }
+  </style>
+</defs>
+<rect x="0" y="0" width="3900" height="130" rx="0" fill="#263C55" />
+<text x="58" y="58" class="title" fill="white">Talent Pilot AI, Ollama, Vector, RAG, and Headhunting Flow</text>
+<text x="60" y="96" class="subtitle" fill="#D6E0EA">Expanded AI architecture with backend-owned agents, local Ollama, vector storage, RAG evidence, and human review boundaries</text>
+<rect x="3540" y="34" width="270" height="46" rx="23" fill="#405B78" />
+<text x="3675" y="63" class="tag" fill="#EDF4FA" text-anchor="middle">Generated June 5, 2026</text>
+<rect x="70" y="190" width="520" height="1150" rx="18" fill="#FFFFFF" stroke="#CAD4DF" class="section" />
+<text x="96" y="232" class="section-title">Triggering UI actions</text>
+<line x1="96" y1="254" x2="564" y2="254" stroke="#CAD4DF" stroke-width="2" />
+<rect x="730" y="190" width="850" height="1150" rx="18" fill="#FFFFFF" stroke="#CAD4DF" class="section" />
+<text x="756" y="232" class="section-title">Backend AI orchestration</text>
+<line x1="756" y1="254" x2="1554" y2="254" stroke="#CAD4DF" stroke-width="2" />
+<rect x="1730" y="190" width="760" height="1150" rx="18" fill="#FFFFFF" stroke="#CAD4DF" class="section" />
+<text x="1756" y="232" class="section-title">Runtime providers</text>
+<line x1="1756" y1="254" x2="2464" y2="254" stroke="#CAD4DF" stroke-width="2" />
+<rect x="2640" y="190" width="1190" height="1150" rx="18" fill="#FFFFFF" stroke="#CAD4DF" class="section" />
+<text x="2666" y="232" class="section-title">Persistent AI evidence</text>
+<line x1="2666" y1="254" x2="3804" y2="254" stroke="#CAD4DF" stroke-width="2" />
+<rect x="70" y="1520" width="3760" height="560" rx="18" fill="#FFFFFF" stroke="#CAD4DF" class="section" />
+<text x="96" y="1562" class="section-title">Agent-specific flows</text>
+<line x1="96" y1="1584" x2="3804" y2="1584" stroke="#CAD4DF" stroke-width="2" />
+<rect x="120" y="350" width="420" height="220" rx="14" fill="#E8F3E8" stroke="#CAD4DF" class="box" />
+<rect x="120" y="350" width="420" height="60" rx="14" fill="#557B56" />
+<rect x="120" y="388" width="420" height="22" fill="#557B56" />
+<text x="142" y="387" class="box-title" fill="white">User action</text>
+<text x="142" y="438" class="body" fill="#172033">Draft JD, parse CV, rank bench, rediscover</text>
+<text x="142" y="462" class="body" fill="#172033">candidates, generate questions, ask RAG</text>
+<text x="142" y="486" class="body" fill="#172033">assistant, start online headhunting</text>
+<rect x="800" y="330" width="700" height="160" rx="14" fill="#DDF0FA" stroke="#CAD4DF" class="box" />
+<rect x="800" y="330" width="700" height="60" rx="14" fill="#246A93" />
+<rect x="800" y="368" width="700" height="22" fill="#246A93" />
+<text x="822" y="367" class="box-title" fill="white">Operations / AI Assistant API</text>
+<text x="822" y="418" class="body" fill="#172033">Receives structured input</text>
+<text x="822" y="448" class="body" fill="#172033">No open-ended workflow decision endpoint</text>
+<rect x="800" y="650" width="700" height="300" rx="14" fill="#E9E4FA" stroke="#CAD4DF" class="box" />
+<rect x="800" y="650" width="700" height="60" rx="14" fill="#6751A9" />
+<rect x="800" y="688" width="700" height="22" fill="#6751A9" />
+<text x="822" y="687" class="box-title" fill="white">Code-owned agents</text>
+<text x="822" y="738" class="body" fill="#172033">JobDescriptionDraftingAgent</text>
+<text x="822" y="768" class="body" fill="#172033">CvParserAgent</text>
+<text x="822" y="798" class="body" fill="#172033">BenchMatchingAgent</text>
+<text x="822" y="828" class="body" fill="#172033">TalentRediscoveryAgent</text>
+<text x="822" y="858" class="body" fill="#172033">ApplicantRankingAgent</text>
+<text x="822" y="888" class="body" fill="#172033">InterviewQuestionRecommendationAgent</text>
+<text x="822" y="918" class="body" fill="#172033">OnlineHeadhuntingAgent</text>
+<text x="822" y="948" class="body" fill="#172033">AiAssistantService</text>
+<rect x="800" y="1080" width="700" height="170" rx="14" fill="#FFFFFF" stroke="#CAD4DF" class="box" />
+<rect x="800" y="1080" width="700" height="60" rx="14" fill="#263C55" />
+<rect x="800" y="1118" width="700" height="22" fill="#263C55" />
+<text x="822" y="1117" class="box-title" fill="white">Guardrails</text>
+<text x="822" y="1168" class="body" fill="#172033">Tenant context</text>
+<text x="822" y="1198" class="body" fill="#172033">Human review required</text>
+<text x="822" y="1228" class="body" fill="#172033">No auto reject</text>
+<text x="822" y="1258" class="body" fill="#172033">No workflow movement by model output</text>
+<rect x="1790" y="330" width="310" height="170" rx="14" fill="#E9E4FA" stroke="#CAD4DF" class="box" />
+<rect x="1790" y="330" width="310" height="60" rx="14" fill="#6751A9" />
+<rect x="1790" y="368" width="310" height="22" fill="#6751A9" />
+<text x="1812" y="367" class="box-title" fill="white">Ollama runtime</text>
+<text x="1812" y="418" class="body" fill="#172033">localhost:11434</text>
+<text x="1812" y="448" class="body" fill="#172033">llama3.2 text generation</text>
+<text x="1812" y="478" class="body" fill="#172033">nomic-embed-text embeddings</text>
+<rect x="2140" y="330" width="310" height="170" rx="14" fill="#FBE2E7" stroke="#CAD4DF" class="box" />
+<rect x="2140" y="330" width="310" height="60" rx="14" fill="#A33E52" />
+<rect x="2140" y="368" width="310" height="22" fill="#A33E52" />
+<text x="2162" y="367" class="box-title" fill="white">Tavily search</text>
+<text x="2162" y="418" class="body" fill="#172033">Optional web research</text>
+<text x="2162" y="448" class="body" fill="#172033">Quota guarded in SQL</text>
+<text x="2162" y="478" class="body" fill="#172033">No private candidate search</text>
+<rect x="1790" y="730" width="660" height="160" rx="14" fill="#FFE5DF" stroke="#CAD4DF" class="box" />
+<rect x="1790" y="730" width="660" height="60" rx="14" fill="#BA4C3B" />
+<rect x="1790" y="768" width="660" height="22" fill="#BA4C3B" />
+<text x="1812" y="767" class="box-title" fill="white">SQL Server VECTOR(768)</text>
+<text x="1812" y="818" class="body" fill="#172033">VectorEmbeddings</text>
+<text x="1812" y="848" class="body" fill="#172033">Similarity search</text>
+<text x="1812" y="878" class="body" fill="#172033">Source text hashes</text>
+<rect x="2700" y="330" width="490" height="180" rx="14" fill="#FFE5DF" stroke="#CAD4DF" class="box" />
+<rect x="2700" y="330" width="490" height="60" rx="14" fill="#BA4C3B" />
+<rect x="2700" y="368" width="490" height="22" fill="#BA4C3B" />
+<text x="2722" y="367" class="box-title" fill="white">AI audit tables</text>
+<text x="2722" y="418" class="body" fill="#172033">AiAgentRuns</text>
+<text x="2722" y="448" class="body" fill="#172033">AiRecommendationLogs</text>
+<text x="2722" y="478" class="body" fill="#172033">OnlineCandidateSourcingRuns</text>
+<text x="2722" y="508" class="body" fill="#172033">OnlineCandidateLeads</text>
+<rect x="3280" y="330" width="490" height="180" rx="14" fill="#FFE5DF" stroke="#CAD4DF" class="box" />
+<rect x="3280" y="330" width="490" height="60" rx="14" fill="#BA4C3B" />
+<rect x="3280" y="368" width="490" height="22" fill="#BA4C3B" />
+<text x="3302" y="367" class="box-title" fill="white">RAG evidence</text>
+<text x="3302" y="418" class="body" fill="#172033">KnowledgeChunks</text>
+<text x="3302" y="448" class="body" fill="#172033">AiAssistantConversations</text>
+<text x="3302" y="478" class="body" fill="#172033">AiAssistantMessages</text>
+<text x="3302" y="508" class="body" fill="#172033">Citations and feedback</text>
+<rect x="2700" y="735" width="1070" height="170" rx="14" fill="#FFE5DF" stroke="#CAD4DF" class="box" />
+<rect x="2700" y="735" width="1070" height="60" rx="14" fill="#BA4C3B" />
+<rect x="2700" y="773" width="1070" height="22" fill="#BA4C3B" />
+<text x="2722" y="772" class="box-title" fill="white">Business tables</text>
+<text x="2722" y="823" class="body" fill="#172033">JobRequests</text>
+<text x="2722" y="853" class="body" fill="#172033">Employees</text>
+<text x="2722" y="883" class="body" fill="#172033">Candidates</text>
+<text x="2722" y="913" class="body" fill="#172033">Applications</text>
+<text x="2722" y="943" class="body" fill="#172033">Interviews</text>
+<text x="2722" y="973" class="body" fill="#172033">Question bank</text>
+<rect x="2700" y="1080" width="1070" height="140" rx="14" fill="#FFF2CF" stroke="#CAD4DF" class="box" />
+<rect x="2700" y="1080" width="1070" height="60" rx="14" fill="#A66A14" />
+<rect x="2700" y="1118" width="1070" height="22" fill="#A66A14" />
+<text x="2722" y="1117" class="box-title" fill="white">In-memory headhunting channel</text>
+<text x="2722" y="1168" class="body" fill="#172033">API hosted background service consumes queued search jobs</text>
+<path d="M540,460 L800,410" stroke="#536273" stroke-width="3" fill="none" marker-end="url(#arrow)" />
+<rect x="565" y="387" width="190" height="34" rx="8" fill="white" stroke="#D9E0E8" />
+<text x="660" y="410" class="label" fill="#172033" text-anchor="middle">structured request</text>
+<path d="M1150,490 L1150,650" stroke="#536273" stroke-width="3" fill="none" marker-end="url(#arrow)" />
+<rect x="1100" y="547" width="100" height="34" rx="8" fill="white" stroke="#D9E0E8" />
+<text x="1150" y="570" class="label" fill="#172033" text-anchor="middle">dispatch</text>
+<path d="M1150,950 L1150,1080" stroke="#536273" stroke-width="3" fill="none" marker-end="url(#arrow)" />
+<rect x="1105" y="997" width="91" height="34" rx="8" fill="white" stroke="#D9E0E8" />
+<text x="1150" y="1020" class="label" fill="#172033" text-anchor="middle">enforce</text>
+<path d="M1500,800 L1640,800 L1640,590 L1945,590 L1945,500" stroke="#536273" stroke-width="3" fill="none" marker-end="url(#arrow)" stroke-dasharray="14 12" />
+<rect x="1579" y="587" width="172" height="34" rx="8" fill="white" stroke="#D9E0E8" />
+<text x="1665" y="610" class="label" fill="#172033" text-anchor="middle">generate / embed</text>
+<path d="M1500,800 L1640,815 L1640,620 L2295,620 L2295,500" stroke="#536273" stroke-width="3" fill="none" marker-end="url(#arrow)" stroke-dasharray="14 12" />
+<rect x="1758" y="617" width="154" height="34" rx="8" fill="white" stroke="#D9E0E8" />
+<text x="1835" y="640" class="label" fill="#172033" text-anchor="middle">guarded search</text>
+<path d="M1945,500 L1945,620 L2120,730" stroke="#536273" stroke-width="3" fill="none" marker-end="url(#arrow)" />
+<rect x="1873" y="627" width="145" height="34" rx="8" fill="white" stroke="#D9E0E8" />
+<text x="1945" y="650" class="label" fill="#172033" text-anchor="middle">768-d vectors</text>
+<path d="M1500,800 L1625,785 L1625,270 L2700,270 L2700,420" stroke="#536273" stroke-width="3" fill="none" marker-end="url(#arrow)" />
+<rect x="2130" y="247" width="100" height="34" rx="8" fill="white" stroke="#D9E0E8" />
+<text x="2180" y="270" class="label" fill="#172033" text-anchor="middle">run logs</text>
+<path d="M1500,800 L1625,800 L1625,820 L2700,820" stroke="#536273" stroke-width="3" fill="none" marker-end="url(#arrow)" />
+<rect x="2393" y="797" width="145" height="34" rx="8" fill="white" stroke="#D9E0E8" />
+<text x="2465" y="820" class="label" fill="#172033" text-anchor="middle">read evidence</text>
+<path d="M1500,410 L1625,410 L1625,1150 L2700,1150" stroke="#536273" stroke-width="3" fill="none" marker-end="url(#arrow)" />
+<rect x="1891" y="1112" width="199" height="34" rx="8" fill="white" stroke="#D9E0E8" />
+<text x="1990" y="1135" class="label" fill="#172033" text-anchor="middle">queue online search</text>
+<path d="M2450,810 L2560,810 L2560,420 L3280,420" stroke="#536273" stroke-width="3" fill="none" marker-end="url(#arrow)" />
+<rect x="2860" y="397" width="181" height="34" rx="8" fill="white" stroke="#D9E0E8" />
+<text x="2950" y="420" class="label" fill="#172033" text-anchor="middle">retrieval context</text>
+<path d="M2700,1150 L1625,1150 L1625,800 L1500,800" stroke="#95A6BA" stroke-width="3" fill="none" marker-end="url(#arrow)" stroke-dasharray="14 12" />
+<rect x="1568" y="987" width="154" height="34" rx="8" fill="white" stroke="#D9E0E8" />
+<text x="1645" y="1010" class="label" fill="#172033" text-anchor="middle">background run</text>
+<rect x="130" y="1650" width="690" height="190" rx="14" fill="#FFFFFF" stroke="#CAD4DF" class="box" />
+<rect x="130" y="1650" width="690" height="60" rx="14" fill="#6751A9" />
+<rect x="130" y="1688" width="690" height="22" fill="#6751A9" />
+<text x="152" y="1687" class="box-title" fill="white">1. JD Draft</text>
+<text x="152" y="1738" class="body" fill="#172033">Intake fields -&gt; Ollama draft -&gt; human edits -&gt; AiAgentRuns logs metadata.</text>
+<rect x="870" y="1650" width="690" height="190" rx="14" fill="#FFFFFF" stroke="#CAD4DF" class="box" />
+<rect x="870" y="1650" width="690" height="60" rx="14" fill="#6751A9" />
+<rect x="870" y="1688" width="690" height="22" fill="#6751A9" />
+<text x="892" y="1687" class="box-title" fill="white">2. Ranking</text>
+<text x="892" y="1738" class="body" fill="#172033">Backend loads controlled candidates/employees -&gt; code score -&gt; Ollama</text>
+<text x="892" y="1762" class="body" fill="#172033">explains only.</text>
+<rect x="1610" y="1650" width="690" height="190" rx="14" fill="#FFFFFF" stroke="#CAD4DF" class="box" />
+<rect x="1610" y="1650" width="690" height="60" rx="14" fill="#6751A9" />
+<rect x="1610" y="1688" width="690" height="22" fill="#6751A9" />
+<text x="1632" y="1687" class="box-title" fill="white">3. RAG Assistant</text>
+<text x="1632" y="1738" class="body" fill="#172033">Embed query -&gt; retrieve KnowledgeChunks -&gt; answer with saved citations.</text>
+<rect x="2350" y="1650" width="690" height="190" rx="14" fill="#FFFFFF" stroke="#CAD4DF" class="box" />
+<rect x="2350" y="1650" width="690" height="60" rx="14" fill="#6751A9" />
+<rect x="2350" y="1688" width="690" height="22" fill="#6751A9" />
+<text x="2372" y="1687" class="box-title" fill="white">4. Online Headhunting</text>
+<text x="2372" y="1738" class="body" fill="#172033">Queue job -&gt; Tavily under quota -&gt; Ollama formats leads -&gt; SQL persists</text>
+<text x="2372" y="1762" class="body" fill="#172033">review state.</text>
+<rect x="3090" y="1650" width="690" height="190" rx="14" fill="#FFFFFF" stroke="#CAD4DF" class="box" />
+<rect x="3090" y="1650" width="690" height="60" rx="14" fill="#6751A9" />
+<rect x="3090" y="1688" width="690" height="22" fill="#6751A9" />
+<text x="3112" y="1687" class="box-title" fill="white">5. Interview Questions</text>
+<text x="3112" y="1738" class="body" fill="#172033">Question bank and job evidence -&gt; recommended set -&gt; interviewer decides.</text>
+<line x1="55" y1="2380" x2="3845" y2="2380" stroke="#CAD4DF" stroke-width="2" />
+<text x="58" y="2412" class="tiny" fill="#536273">AI output is advisory. Human users still claim, approve, reject, schedule, and close workflow decisions.</text>
+</svg>

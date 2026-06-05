@@ -60,7 +60,7 @@ public sealed class BenchMatchingAgentTests
     {
         var webResearch = new CapturingWebResearchProvider(new WebResearchResult("Unavailable", []));
         var agent = new BenchMatchingAgent(
-            new CapturingModelProvider("[]"),
+            new CapturingModelProvider(CreateExplanationResponse(HamzaEmployeeId, AminaEmployeeId)),
             new StaticEmbeddingProvider(),
             new CapturingVectorStore(new Dictionary<Guid, decimal>()),
             new StaticRuntimeSettingsResolver(),
@@ -84,7 +84,7 @@ public sealed class BenchMatchingAgentTests
             new WebResearchSource("query", "title", "https://example.com", "snippet")
         ]));
         var agent = new BenchMatchingAgent(
-            new CapturingModelProvider("[]"),
+            new CapturingModelProvider(CreateExplanationResponse(HamzaEmployeeId, AminaEmployeeId)),
             new StaticEmbeddingProvider(),
             new CapturingVectorStore(new Dictionary<Guid, decimal>()),
             new StaticRuntimeSettingsResolver(),
@@ -102,7 +102,7 @@ public sealed class BenchMatchingAgentTests
     public async Task RankAsync_PrioritizesRequestedLocationWhenOtherSignalsMatch()
     {
         var agent = new BenchMatchingAgent(
-            new CapturingModelProvider("[]"),
+            new CapturingModelProvider(CreateExplanationResponse(LahoreEmployeeId, KarachiEmployeeId)),
             new StaticEmbeddingProvider(),
             new CapturingVectorStore(new Dictionary<Guid, decimal>
             {
@@ -118,6 +118,26 @@ public sealed class BenchMatchingAgentTests
         Assert.Equal(LahoreEmployeeId, result.Matches[0].EmployeeId);
         Assert.True(result.Matches[0].Score > result.Matches[1].Score);
         Assert.Contains(result.Matches[0].Strengths, strength => strength.Contains("Location", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public async Task RankAsync_WhenModelDoesNotReturnExplanations_FailsClosed()
+    {
+        var logger = new CapturingRunLogger();
+        var agent = new BenchMatchingAgent(
+            new CapturingModelProvider("[]"),
+            new StaticEmbeddingProvider(),
+            new CapturingVectorStore(new Dictionary<Guid, decimal>()),
+            new StaticRuntimeSettingsResolver(),
+            logger,
+            new CapturingWebResearchProvider(new WebResearchResult("Skipped", [])));
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            agent.RankAsync(TenantId, CreateContext(), CancellationToken.None));
+
+        Assert.False(logger.Succeeded);
+        Assert.True(logger.Failed);
+        Assert.Contains("usable LLM explanations", logger.OutputSummary);
     }
 
     private static OperationsBenchMatchingContext CreateContext()
@@ -257,6 +277,12 @@ public sealed class BenchMatchingAgentTests
             []);
     }
 
+    private static string CreateExplanationResponse(params Guid[] employeeIds)
+    {
+        return "[" + string.Join(",", employeeIds.Select((id, index) =>
+            $@"{{""employeeId"":""{id:D}"",""explanation"":""LLM explanation {index + 1} for PMO review.""}}")) + "]";
+    }
+
     private sealed class CapturingModelProvider : IAiModelProvider
     {
         private readonly string _response;
@@ -357,6 +383,8 @@ public sealed class BenchMatchingAgentTests
     private sealed class CapturingRunLogger : IAiAgentRunLogger
     {
         public bool Succeeded { get; private set; }
+        public bool Failed { get; private set; }
+        public string OutputSummary { get; private set; } = string.Empty;
 
         public Task<Guid> StartAsync(AiAgentRunStart run, CancellationToken cancellationToken)
         {
@@ -371,6 +399,7 @@ public sealed class BenchMatchingAgentTests
             CancellationToken cancellationToken)
         {
             Succeeded = true;
+            OutputSummary = outputSummary;
             return Task.CompletedTask;
         }
 
@@ -381,6 +410,8 @@ public sealed class BenchMatchingAgentTests
             IReadOnlyDictionary<string, string> metadata,
             CancellationToken cancellationToken)
         {
+            Failed = true;
+            OutputSummary = outputSummary;
             return Task.CompletedTask;
         }
     }

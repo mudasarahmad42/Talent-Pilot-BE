@@ -2,6 +2,7 @@ using System.Security.Cryptography;
 using TalentPilot.Application.Abstractions;
 using TalentPilot.Application.Ai;
 using TalentPilot.Application.Calendar;
+using TalentPilot.Application.Documents;
 using TalentPilot.Application.Notifications;
 using TalentPilot.Common.Results;
 using TalentPilot.Domain.Access;
@@ -10,6 +11,8 @@ namespace TalentPilot.Application.Operations;
 
 public sealed class OperationsService : IOperationsService
 {
+    private static readonly TimeSpan InterviewQuestionGenerationTimeout = TimeSpan.FromMinutes(12);
+
     private readonly IOperationsRepository _repository;
     private readonly ICurrentUserAccessor _currentUser;
     private readonly IRealtimeNotificationPublisher _notificationPublisher;
@@ -18,6 +21,10 @@ public sealed class OperationsService : IOperationsService
     private readonly IBenchMatchingAgent _benchMatchingAgent;
     private readonly ITalentRediscoveryAgent _talentRediscoveryAgent;
     private readonly IApplicantRankingAgent _applicantRankingAgent;
+    private readonly IOnlineHeadhuntingAgent _onlineHeadhuntingAgent;
+    private readonly IOnlineHeadhuntingJobQueue _onlineHeadhuntingJobQueue;
+    private readonly IInterviewQuestionRecommendationAgent _interviewQuestionRecommendationAgent;
+    private readonly IDocumentExportService _documentExportService;
     private readonly IEmbeddingProvider _embeddingProvider;
     private readonly IVectorStore _vectorStore;
     private readonly IAiRuntimeSettingsResolver _aiRuntimeSettingsResolver;
@@ -35,6 +42,10 @@ public sealed class OperationsService : IOperationsService
         IBenchMatchingAgent benchMatchingAgent,
         ITalentRediscoveryAgent talentRediscoveryAgent,
         IApplicantRankingAgent applicantRankingAgent,
+        IOnlineHeadhuntingAgent onlineHeadhuntingAgent,
+        IOnlineHeadhuntingJobQueue onlineHeadhuntingJobQueue,
+        IInterviewQuestionRecommendationAgent interviewQuestionRecommendationAgent,
+        IDocumentExportService documentExportService,
         IEmbeddingProvider embeddingProvider,
         IVectorStore vectorStore,
         IAiRuntimeSettingsResolver aiRuntimeSettingsResolver,
@@ -51,6 +62,10 @@ public sealed class OperationsService : IOperationsService
         _benchMatchingAgent = benchMatchingAgent;
         _talentRediscoveryAgent = talentRediscoveryAgent;
         _applicantRankingAgent = applicantRankingAgent;
+        _onlineHeadhuntingAgent = onlineHeadhuntingAgent;
+        _onlineHeadhuntingJobQueue = onlineHeadhuntingJobQueue;
+        _interviewQuestionRecommendationAgent = interviewQuestionRecommendationAgent;
+        _documentExportService = documentExportService;
         _embeddingProvider = embeddingProvider;
         _vectorStore = vectorStore;
         _aiRuntimeSettingsResolver = aiRuntimeSettingsResolver;
@@ -220,9 +235,13 @@ public sealed class OperationsService : IOperationsService
             jobRequestId,
             cancellationToken);
 
-        return sourcing is null
-            ? Result<OperationsRecruiterSourcing>.Failure("recruiter_sourcing.not_found", "Recruiter sourcing work was not found or is not visible.")
-            : Result<OperationsRecruiterSourcing>.Success(sourcing);
+        if (sourcing is null)
+        {
+            return Result<OperationsRecruiterSourcing>.Failure("recruiter_sourcing.not_found", "Recruiter sourcing work was not found or is not visible.");
+        }
+
+        var settings = await _aiRuntimeSettingsResolver.GetCurrentAsync(cancellationToken);
+        return Result<OperationsRecruiterSourcing>.Success(sourcing with { ConfiguredAiModel = settings.LlmModel });
     }
 
     public async Task<Result<OperationsHistoricalApplicationDetail>> GetHistoricalApplicationAsync(
@@ -1323,6 +1342,264 @@ public sealed class OperationsService : IOperationsService
         }
     }
 
+    public async Task<Result<OperationsOnlineHeadhuntingQueuedResult>> SearchOnlineCandidatesAsync(
+        Guid jobRequestId,
+        OnlineHeadhuntingSearchInput input,
+        CancellationToken cancellationToken)
+    {
+        var roleCodes = await _repository.GetActorRoleCodesAsync(_currentUser.TenantId, _currentUser.UserId, cancellationToken);
+        if (!CanUseRecruiterSourcing(roleCodes))
+        {
+            return Result<OperationsOnlineHeadhuntingQueuedResult>.Failure(
+                "online_headhunting.forbidden",
+                "Only Recruiter or Tenant Admin users can run online headhunting.");
+        }
+
+        var normalizedInput = NormalizeOnlineHeadhuntingInput(input);
+        var context = await _repository.GetOnlineHeadhuntingContextAsync(
+            _currentUser.TenantId,
+            _currentUser.UserId,
+            jobRequestId,
+            cancellationToken);
+        if (context is null)
+        {
+            return Result<OperationsOnlineHeadhuntingQueuedResult>.Failure(
+                "online_headhunting.not_claimed",
+                "Claim the Recruiter Sourcing work item before running online headhunting.");
+        }
+
+        var dailyCount = await _repository.CountOnlineHeadhuntingLeadsCreatedTodayAsync(
+            _currentUser.TenantId,
+            jobRequestId,
+            cancellationToken);
+        const int dailyLimit = 100;
+        if (dailyCount >= dailyLimit)
+        {
+            return Result<OperationsOnlineHeadhuntingQueuedResult>.Failure(
+                "online_headhunting.daily_limit_reached",
+                "This job request has reached the 100 online lead daily limit.");
+        }
+
+        var allowedLimit = Math.Min(normalizedInput.Limit ?? 20, dailyLimit - dailyCount);
+        var sourceCodes = OnlineHeadhuntingSources.Normalize(normalizedInput.SourceCodes);
+        var queuedAtUtc = DateTimeOffset.UtcNow;
+        var requestId = Guid.NewGuid();
+        var queuedInput = normalizedInput with
+        {
+            Limit = allowedLimit,
+            SourceCodes = sourceCodes
+        };
+
+        if (!_onlineHeadhuntingJobQueue.TryEnqueue(new OnlineHeadhuntingBackgroundJob(
+            requestId,
+            _currentUser.TenantId,
+            _currentUser.UserId,
+            _currentUser.Email,
+            jobRequestId,
+            queuedInput,
+            queuedAtUtc)))
+        {
+            return Result<OperationsOnlineHeadhuntingQueuedResult>.Failure(
+                "online_headhunting.queue_unavailable",
+                "AI Headhunting is temporarily busy. Try again in a moment.");
+        }
+
+        return Result<OperationsOnlineHeadhuntingQueuedResult>.Success(new OperationsOnlineHeadhuntingQueuedResult(
+            requestId,
+            jobRequestId,
+            _currentUser.UserId,
+            "Queued",
+            "AI Headhunting is running in the background. You will be notified when lead-only results are ready.",
+            allowedLimit,
+            dailyLimit,
+            dailyCount,
+            sourceCodes,
+            queuedAtUtc));
+    }
+
+    public async Task RunOnlineCandidatesSearchAsync(
+        OnlineHeadhuntingBackgroundJob job,
+        CancellationToken cancellationToken)
+    {
+        Result<OperationsOnlineHeadhuntingResult> result;
+
+        try
+        {
+            result = await ExecuteOnlineCandidatesSearchAsync(job.JobRequestId, job.Input, cancellationToken);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch
+        {
+            result = Result<OperationsOnlineHeadhuntingResult>.Failure(
+                "online_headhunting.unavailable",
+                "The Online Headhunting Agent is unavailable. No candidates or applications were created.");
+        }
+
+        await PublishOnlineHeadhuntingCompletionNotificationAsync(job, result, cancellationToken);
+    }
+
+    private async Task<Result<OperationsOnlineHeadhuntingResult>> ExecuteOnlineCandidatesSearchAsync(
+        Guid jobRequestId,
+        OnlineHeadhuntingSearchInput input,
+        CancellationToken cancellationToken)
+    {
+        var roleCodes = await _repository.GetActorRoleCodesAsync(_currentUser.TenantId, _currentUser.UserId, cancellationToken);
+        if (!CanUseRecruiterSourcing(roleCodes))
+        {
+            return Result<OperationsOnlineHeadhuntingResult>.Failure(
+                "online_headhunting.forbidden",
+                "Only Recruiter or Tenant Admin users can run online headhunting.");
+        }
+
+        var normalizedInput = NormalizeOnlineHeadhuntingInput(input);
+        var context = await _repository.GetOnlineHeadhuntingContextAsync(
+            _currentUser.TenantId,
+            _currentUser.UserId,
+            jobRequestId,
+            cancellationToken);
+        if (context is null)
+        {
+            return Result<OperationsOnlineHeadhuntingResult>.Failure(
+                "online_headhunting.not_claimed",
+                "Claim the Recruiter Sourcing work item before running online headhunting.");
+        }
+
+        var dailyCount = await _repository.CountOnlineHeadhuntingLeadsCreatedTodayAsync(
+            _currentUser.TenantId,
+            jobRequestId,
+            cancellationToken);
+        const int dailyLimit = 100;
+        if (dailyCount >= dailyLimit)
+        {
+            return Result<OperationsOnlineHeadhuntingResult>.Failure(
+                "online_headhunting.daily_limit_reached",
+                "This job request has reached the 100 online lead daily limit.");
+        }
+
+        var allowedLimit = Math.Min(normalizedInput.Limit ?? 20, dailyLimit - dailyCount);
+        try
+        {
+            var result = await _onlineHeadhuntingAgent.SearchAsync(
+                _currentUser.TenantId,
+                context,
+                normalizedInput,
+                allowedLimit,
+                cancellationToken);
+
+            var saved = await _repository.SaveOnlineHeadhuntingResultAsync(
+                _currentUser.TenantId,
+                _currentUser.UserId,
+                normalizedInput with { Limit = allowedLimit },
+                context,
+                result,
+                dailyCount,
+                dailyLimit,
+                cancellationToken);
+
+            return Result<OperationsOnlineHeadhuntingResult>.Success(saved);
+        }
+        catch
+        {
+            return Result<OperationsOnlineHeadhuntingResult>.Failure(
+                "online_headhunting.unavailable",
+                "The Online Headhunting Agent is unavailable. No candidates or applications were created.");
+        }
+    }
+
+    private Task PublishOnlineHeadhuntingCompletionNotificationAsync(
+        OnlineHeadhuntingBackgroundJob job,
+        Result<OperationsOnlineHeadhuntingResult> result,
+        CancellationToken cancellationToken)
+    {
+        var metadata = new Dictionary<string, string>
+        {
+            ["route"] = $"/app/recruitment/sourcing/{job.JobRequestId:D}?tab=headhunting",
+            ["refreshEntityType"] = "RecruiterSourcing",
+            ["jobRequestId"] = job.JobRequestId.ToString("D"),
+            ["requestId"] = job.RequestId.ToString("D")
+        };
+
+        string title;
+        string message;
+        string severity;
+
+        if (result.Succeeded)
+        {
+            var saved = result.Value;
+            metadata["action"] = "online_headhunting_completed";
+            metadata["onlineCandidateSourcingRunId"] = saved.Run.OnlineCandidateSourcingRunId.ToString("D");
+            metadata["leadCount"] = saved.Leads.Count.ToString();
+            title = "AI Headhunting results ready";
+            message = $"{saved.Leads.Count} lead-only result(s) are ready for recruiter review.";
+            severity = "Info";
+        }
+        else
+        {
+            metadata["action"] = "online_headhunting_failed";
+            metadata["errorCode"] = result.Error.Code;
+            title = "AI Headhunting search failed";
+            message = result.Error.Message;
+            severity = "Warning";
+        }
+
+        var notification = new RealtimeNotificationMessage(
+            Guid.NewGuid(),
+            job.TenantId,
+            job.RequestedByUserId,
+            title,
+            message,
+            "OnlineHeadhunting",
+            severity,
+            "JobRequest",
+            job.JobRequestId.ToString("D"),
+            DateTimeOffset.UtcNow,
+            metadata);
+
+        return _notificationPublisher.PublishToUserAsync(
+            job.TenantId,
+            job.RequestedByUserId,
+            notification,
+            cancellationToken);
+    }
+
+    public async Task<Result<OperationsOnlineCandidateLead>> UpdateOnlineCandidateLeadStatusAsync(
+        Guid onlineCandidateLeadId,
+        UpdateOnlineCandidateLeadStatusInput input,
+        CancellationToken cancellationToken)
+    {
+        var roleCodes = await _repository.GetActorRoleCodesAsync(_currentUser.TenantId, _currentUser.UserId, cancellationToken);
+        if (!CanUseRecruiterSourcing(roleCodes))
+        {
+            return Result<OperationsOnlineCandidateLead>.Failure(
+                "online_headhunting.forbidden",
+                "Only Recruiter or Tenant Admin users can update online leads.");
+        }
+
+        var normalizedStatus = input.Status?.Trim() ?? string.Empty;
+        if (!new[] { "New", "Shortlisted", "Rejected" }.Contains(normalizedStatus, StringComparer.OrdinalIgnoreCase))
+        {
+            return Result<OperationsOnlineCandidateLead>.Failure(
+                "online_headhunting.invalid_status",
+                "Online lead status must be New, Shortlisted, or Rejected.");
+        }
+
+        var lead = await _repository.UpdateOnlineCandidateLeadStatusAsync(
+            _currentUser.TenantId,
+            _currentUser.UserId,
+            onlineCandidateLeadId,
+            new UpdateOnlineCandidateLeadStatusInput(ToLeadStatus(normalizedStatus)),
+            cancellationToken);
+
+        return lead is null
+            ? Result<OperationsOnlineCandidateLead>.Failure(
+                "online_headhunting.lead_not_found",
+                "Online lead was not found or recruiter sourcing is not claimed.")
+            : Result<OperationsOnlineCandidateLead>.Success(lead);
+    }
+
     public async Task<Result<SendCandidateInvitationsResult>> SendCandidateInvitationsAsync(
         Guid jobRequestId,
         SendCandidateInvitationsInput input,
@@ -1658,6 +1935,157 @@ public sealed class OperationsService : IOperationsService
         return Result<OperationsInterviewTaskList>.Success(tasks);
     }
 
+    public async Task<Result<InterviewQuestionRecommendationSet>> GetLatestInterviewQuestionRecommendationsAsync(
+        Guid interviewId,
+        CancellationToken cancellationToken)
+    {
+        var roleCodes = await _repository.GetActorRoleCodesAsync(_currentUser.TenantId, _currentUser.UserId, cancellationToken);
+        if (!CanUseInterviewFeedback(roleCodes))
+        {
+            return Result<InterviewQuestionRecommendationSet>.Failure(
+                "interview_questions.forbidden",
+                "Only assigned internal users or Tenant Admin users can view interview question recommendations.");
+        }
+
+        var recommendations = await _repository.GetLatestInterviewQuestionRecommendationsAsync(
+            _currentUser.TenantId,
+            _currentUser.UserId,
+            roleCodes.Contains(AccessConstants.TenantAdminRoleCode),
+            interviewId,
+            cancellationToken);
+
+        return recommendations is null
+            ? Result<InterviewQuestionRecommendationSet>.Failure(
+                "interview_questions.not_found",
+                "Interview question recommendations were not found for this interview.")
+            : Result<InterviewQuestionRecommendationSet>.Success(recommendations);
+    }
+
+    public async Task<Result<InterviewQuestionRecommendationSet>> GenerateInterviewQuestionRecommendationsAsync(
+        Guid interviewId,
+        GenerateInterviewQuestionRecommendationsInput input,
+        CancellationToken cancellationToken)
+    {
+        var roleCodes = await _repository.GetActorRoleCodesAsync(_currentUser.TenantId, _currentUser.UserId, cancellationToken);
+        if (!CanUseInterviewFeedback(roleCodes))
+        {
+            return Result<InterviewQuestionRecommendationSet>.Failure(
+                "interview_questions.forbidden",
+                "Only assigned internal users or Tenant Admin users can generate interview question recommendations.");
+        }
+
+        var context = await _repository.GetInterviewQuestionRecommendationContextAsync(
+            _currentUser.TenantId,
+            _currentUser.UserId,
+            roleCodes.Contains(AccessConstants.TenantAdminRoleCode),
+            interviewId,
+            cancellationToken);
+        if (context is null)
+        {
+            return Result<InterviewQuestionRecommendationSet>.Failure(
+                "interview_questions.not_found",
+                "Interview was not found or is not visible for question recommendations.");
+        }
+
+        if (!string.Equals(context.Status, "Scheduled", StringComparison.OrdinalIgnoreCase) &&
+            !string.Equals(context.Status, "Completed", StringComparison.OrdinalIgnoreCase))
+        {
+            return Result<InterviewQuestionRecommendationSet>.Failure(
+                "interview_questions.status_invalid",
+                "Question recommendations can only be generated for scheduled or completed interviews.");
+        }
+
+        var skillIds = context.RequiredSkills
+            .Select(skill => skill.SkillId)
+            .Where(skillId => skillId != Guid.Empty)
+            .Distinct()
+            .ToArray();
+        var bankItems = await _repository.ListInterviewQuestionBankItemsAsync(
+            _currentUser.TenantId,
+            skillIds,
+            context.RoundType,
+            context.Department,
+            160,
+            cancellationToken);
+        if (bankItems.Count == 0)
+        {
+            return Result<InterviewQuestionRecommendationSet>.Failure(
+                "interview_questions.bank_unavailable",
+                "The interview question bank has no active questions for this tenant.");
+        }
+
+        try
+        {
+            using var generationTimeout = new CancellationTokenSource(InterviewQuestionGenerationTimeout);
+            var agentResult = await _interviewQuestionRecommendationAgent.GenerateAsync(
+                _currentUser.TenantId,
+                context,
+                bankItems,
+                generationTimeout.Token);
+            var saved = await _repository.SaveInterviewQuestionRecommendationsAsync(
+                _currentUser.TenantId,
+                _currentUser.UserId,
+                context,
+                NormalizeRegenerateReason(input.RegenerateReason),
+                agentResult,
+                generationTimeout.Token);
+
+            return Result<InterviewQuestionRecommendationSet>.Success(saved);
+        }
+        catch
+        {
+            return Result<InterviewQuestionRecommendationSet>.Failure(
+                "interview_questions.ai_unavailable",
+                "AI question recommendations could not be generated because the configured LLM did not return valid structured output.");
+        }
+    }
+
+    public async Task<Result<DocumentExportFile>> DownloadInterviewQuestionRecommendationsDocxAsync(
+        Guid interviewId,
+        CancellationToken cancellationToken)
+    {
+        var roleCodes = await _repository.GetActorRoleCodesAsync(_currentUser.TenantId, _currentUser.UserId, cancellationToken);
+        if (!CanUseInterviewFeedback(roleCodes))
+        {
+            return Result<DocumentExportFile>.Failure(
+                "interview_questions.forbidden",
+                "Only assigned internal users or Tenant Admin users can download interview question recommendations.");
+        }
+
+        var includeAllTenantTasks = roleCodes.Contains(AccessConstants.TenantAdminRoleCode, StringComparer.OrdinalIgnoreCase);
+        var context = await _repository.GetInterviewQuestionRecommendationContextAsync(
+            _currentUser.TenantId,
+            _currentUser.UserId,
+            includeAllTenantTasks,
+            interviewId,
+            cancellationToken);
+        if (context is null)
+        {
+            return Result<DocumentExportFile>.Failure(
+                "interview_questions.not_found",
+                "Interview was not found or is not visible for question recommendation download.");
+        }
+
+        var recommendations = await _repository.GetLatestInterviewQuestionRecommendationsAsync(
+            _currentUser.TenantId,
+            _currentUser.UserId,
+            includeAllTenantTasks,
+            interviewId,
+            cancellationToken);
+        if (recommendations is null)
+        {
+            return Result<DocumentExportFile>.Failure(
+                "interview_questions.not_found",
+                "Interview question recommendations were not found for this interview.");
+        }
+
+        var fileName = SafeDownloadFileName($"{context.CandidateName}-{context.RoundName}-interview-questions-v{recommendations.VersionNumber}.docx");
+        var file = _documentExportService.CreateWordDocument(
+            fileName,
+            BuildInterviewQuestionWordParagraphs(context, recommendations));
+        return Result<DocumentExportFile>.Success(file);
+    }
+
     public async Task<Result<SubmitInterviewFeedbackResult>> SubmitInterviewFeedbackAsync(
         Guid interviewId,
         SubmitInterviewFeedbackInput input,
@@ -1916,7 +2344,22 @@ public sealed class OperationsService : IOperationsService
         {
             return Result<HiringOutcomeResult>.Failure(
                 "hiring_outcome.invalid",
-                "Outcome must be Offered, Rejected, On Hold, or Joined.");
+                "Outcome must be Offered, Offer Declined, Rejected, On Hold, Hired, or Joined.");
+        }
+
+        var reason = string.IsNullOrWhiteSpace(input.Reason) ? null : input.Reason.Trim();
+        if (RequiresHiringOutcomeReason(outcome) && reason is null)
+        {
+            return Result<HiringOutcomeResult>.Failure(
+                "hiring_outcome.reason_required",
+                "A reason is required for declined, rejected, or on-hold outcomes.");
+        }
+
+        if (RequiresJoiningDate(outcome) && input.JoiningDate is null)
+        {
+            return Result<HiringOutcomeResult>.Failure(
+                "hiring_outcome.joining_date_required",
+                "Joining date is required when the candidate is hired or joined.");
         }
 
         var result = await _repository.RecordHiringOutcomeAsync(
@@ -1927,7 +2370,7 @@ public sealed class OperationsService : IOperationsService
             input with
             {
                 Outcome = outcome,
-                Reason = string.IsNullOrWhiteSpace(input.Reason) ? null : input.Reason.Trim()
+                Reason = reason
             },
             cancellationToken);
 
@@ -2262,11 +2705,23 @@ public sealed class OperationsService : IOperationsService
         return outcome.Trim().ToLowerInvariant() switch
         {
             "offer" or "offered" => "Offered",
+            "decline" or "declined" or "offerdeclined" or "offer declined" => "OfferDeclined",
             "reject" or "rejected" => "Rejected",
             "hold" or "onhold" or "on hold" => "OnHold",
+            "hire" or "hired" or "accepted" or "offeraccepted" or "offer accepted" => "Hired",
             "join" or "joined" => "Joined",
             _ => null
         };
+    }
+
+    private static bool RequiresHiringOutcomeReason(string outcome)
+    {
+        return outcome is "Rejected" or "OnHold" or "OfferDeclined";
+    }
+
+    private static bool RequiresJoiningDate(string outcome)
+    {
+        return outcome is "Hired" or "Joined";
     }
 
     private static GenerateOfferLetterInput NormalizeOfferLetterInput(GenerateOfferLetterInput input)
@@ -2366,6 +2821,73 @@ public sealed class OperationsService : IOperationsService
         };
     }
 
+    private static IReadOnlyList<WordParagraphData> BuildInterviewQuestionWordParagraphs(
+        OperationsInterviewQuestionRecommendationContext context,
+        InterviewQuestionRecommendationSet recommendations)
+    {
+        var paragraphs = new List<WordParagraphData>
+        {
+            new("AI Interview Question Recommendations", WordParagraphStyle.Title),
+            new($"{context.CandidateName} - {context.RoundName}", WordParagraphStyle.Heading1),
+            new($"Job: {context.JobTitle}"),
+            new($"Request: {context.RequestCode}; Client: {context.Client}; Department: {context.Department}"),
+            new($"Interviewer: {context.InterviewerName}; Duration: {context.DurationMinutes} minutes"),
+            new($"Generated: {recommendations.GeneratedAtUtc.UtcDateTime:u}; Version: {recommendations.VersionNumber}; Model: {recommendations.Model}"),
+            new("Summary", WordParagraphStyle.Heading1),
+            new(recommendations.Summary)
+        };
+
+        if (!string.IsNullOrWhiteSpace(recommendations.Rationale))
+        {
+            paragraphs.Add(new WordParagraphData("Rationale", WordParagraphStyle.Heading1));
+            paragraphs.Add(new WordParagraphData(recommendations.Rationale));
+        }
+
+        paragraphs.Add(new WordParagraphData("Coverage", WordParagraphStyle.Heading1));
+        paragraphs.Add(new WordParagraphData($"Round type: {recommendations.Coverage.RoundType}; Bank items used: {recommendations.Coverage.BankItemsUsed}; Semantic similarity: {recommendations.Coverage.SemanticSimilarityStatus}"));
+        AddBulletParagraphs(paragraphs, "Skills covered", recommendations.Coverage.SkillsCovered);
+        AddBulletParagraphs(paragraphs, "Candidate evidence used", recommendations.Coverage.CandidateEvidenceUsed);
+
+        paragraphs.Add(new WordParagraphData("Recommended Questions", WordParagraphStyle.Heading1));
+        foreach (var question in recommendations.Questions.OrderBy(question => question.SortOrder))
+        {
+            paragraphs.Add(new WordParagraphData($"{question.SortOrder}. {question.QuestionText}", WordParagraphStyle.Heading2));
+            paragraphs.Add(new WordParagraphData($"Type: {question.QuestionType}; Round: {question.RoundType}; Skill: {question.SkillName ?? "General"}; Difficulty: {question.Difficulty}"));
+            paragraphs.Add(new WordParagraphData($"Expected signal: {question.ExpectedSignal}"));
+            paragraphs.Add(new WordParagraphData($"Rationale: {question.Rationale}"));
+            AddBulletParagraphs(paragraphs, "Follow-ups", question.FollowUps);
+            AddBulletParagraphs(paragraphs, "Evaluation rubric", question.EvaluationRubric);
+        }
+
+        paragraphs.Add(new WordParagraphData("Human interviewer owns the final assessment.", WordParagraphStyle.Heading2));
+        return paragraphs;
+    }
+
+    private static void AddBulletParagraphs(
+        ICollection<WordParagraphData> paragraphs,
+        string heading,
+        IReadOnlyList<string> values)
+    {
+        if (values.Count == 0)
+        {
+            return;
+        }
+
+        paragraphs.Add(new WordParagraphData(heading, WordParagraphStyle.Heading2));
+        foreach (var value in values.Where(value => !string.IsNullOrWhiteSpace(value)))
+        {
+            paragraphs.Add(new WordParagraphData(value.Trim(), IsBullet: true));
+        }
+    }
+
+    private static string SafeDownloadFileName(string value)
+    {
+        var invalidCharacters = Path.GetInvalidFileNameChars();
+        var safe = new string(value.Select(character => invalidCharacters.Contains(character) ? '-' : character).ToArray());
+        safe = string.Join(' ', safe.Split(' ', StringSplitOptions.RemoveEmptyEntries));
+        return string.IsNullOrWhiteSpace(safe) ? "interview-questions.docx" : safe;
+    }
+
     private static PortalCandidateProfileEducation? NormalizePortalCandidateProfileEducation(
         PortalCandidateProfileEducation? education)
     {
@@ -2400,6 +2922,11 @@ public sealed class OperationsService : IOperationsService
     private static string? NullIfBlank(string? value)
     {
         return string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+    }
+
+    private static string? NormalizeRegenerateReason(string? value)
+    {
+        return string.IsNullOrWhiteSpace(value) ? null : TrimToLength(value.Trim(), 500);
     }
 
     private static (string Code, string Message)? ValidateManualCandidateInput(AddManualCandidateInput input)
@@ -2474,6 +3001,32 @@ public sealed class OperationsService : IOperationsService
             DegreeName = string.IsNullOrWhiteSpace(input.DegreeName) ? null : input.DegreeName.Trim(),
             InvitationMessage = string.IsNullOrWhiteSpace(input.InvitationMessage) ? null : input.InvitationMessage.Trim(),
             ParsedCvEvidence = NormalizeParsedCvEvidence(input.ParsedCvEvidence)
+        };
+    }
+
+    private static OnlineHeadhuntingSearchInput NormalizeOnlineHeadhuntingInput(OnlineHeadhuntingSearchInput input)
+    {
+        var limit = Math.Clamp(input.Limit ?? 20, 1, 20);
+        var sourceCodes = input.SourceCodes?
+            .Where(source => !string.IsNullOrWhiteSpace(source))
+            .Select(source => source.Trim())
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+
+        return input with
+        {
+            Limit = limit,
+            SourceCodes = sourceCodes is { Length: > 0 } ? sourceCodes : null
+        };
+    }
+
+    private static string ToLeadStatus(string status)
+    {
+        return status.Trim().ToLowerInvariant() switch
+        {
+            "shortlisted" => "Shortlisted",
+            "rejected" => "Rejected",
+            _ => "New"
         };
     }
 

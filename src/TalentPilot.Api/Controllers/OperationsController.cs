@@ -261,6 +261,27 @@ public sealed class OperationsController : ApiControllerBase
         return FromResult(await _operationsService.RankApplicantRankingsAsync(jobPostId, cancellationToken));
     }
 
+    [HttpPost("job-requests/{entityId:guid}/online-headhunting/search")]
+    public async Task<ActionResult<OperationsOnlineHeadhuntingQueuedResult>> SearchOnlineCandidates(
+        Guid entityId,
+        OnlineHeadhuntingSearchInput input,
+        CancellationToken cancellationToken)
+    {
+        var result = await _operationsService.SearchOnlineCandidatesAsync(entityId, input, cancellationToken);
+        return result.Succeeded
+            ? Accepted(result.Value)
+            : FromResult(result);
+    }
+
+    [HttpPatch("online-headhunting/leads/{onlineCandidateLeadId:guid}/status")]
+    public async Task<ActionResult<OperationsOnlineCandidateLead>> UpdateOnlineCandidateLeadStatus(
+        Guid onlineCandidateLeadId,
+        UpdateOnlineCandidateLeadStatusInput input,
+        CancellationToken cancellationToken)
+    {
+        return FromResult(await _operationsService.UpdateOnlineCandidateLeadStatusAsync(onlineCandidateLeadId, input, cancellationToken));
+    }
+
     [HttpPost("job-requests/{entityId:guid}/candidate-invitations")]
     public async Task<ActionResult<SendCandidateInvitationsResult>> SendCandidateInvitations(
         Guid entityId,
@@ -322,6 +343,41 @@ public sealed class OperationsController : ApiControllerBase
     public async Task<ActionResult<OperationsInterviewTaskList>> MyInterviewTasks(CancellationToken cancellationToken)
     {
         return FromResult(await _operationsService.GetMyInterviewTasksAsync(cancellationToken));
+    }
+
+    [HttpGet("interviews/{interviewId:guid}/question-recommendations")]
+    public async Task<ActionResult<InterviewQuestionRecommendationSet>> GetInterviewQuestionRecommendations(
+        Guid interviewId,
+        CancellationToken cancellationToken)
+    {
+        return FromResult(await _operationsService.GetLatestInterviewQuestionRecommendationsAsync(interviewId, cancellationToken));
+    }
+
+    [HttpPost("interviews/{interviewId:guid}/question-recommendations/generate")]
+    public async Task<ActionResult<InterviewQuestionRecommendationSet>> GenerateInterviewQuestionRecommendations(
+        Guid interviewId,
+        GenerateInterviewQuestionRecommendationsInput input,
+        CancellationToken cancellationToken)
+    {
+        return FromResult(await _operationsService.GenerateInterviewQuestionRecommendationsAsync(interviewId, input, cancellationToken));
+    }
+
+    [HttpGet("interviews/{interviewId:guid}/question-recommendations/download")]
+    public async Task<IActionResult> DownloadInterviewQuestionRecommendations(
+        Guid interviewId,
+        CancellationToken cancellationToken)
+    {
+        var result = await _operationsService.DownloadInterviewQuestionRecommendationsDocxAsync(interviewId, cancellationToken);
+        if (result.Failed)
+        {
+            return FromResult(result).Result ?? BadRequest(new
+            {
+                error = result.Error.Code,
+                message = result.Error.Message
+            });
+        }
+
+        return File(result.Value.Content, result.Value.ContentType, result.Value.FileName);
     }
 
     [HttpPost("interviews/{interviewId:guid}/feedback")]

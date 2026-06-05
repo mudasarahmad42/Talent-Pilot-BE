@@ -1,0 +1,108 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="3300" height="2000" viewBox="0 0 3300 2000" role="img" aria-labelledby="title desc">
+<title id="title">Talent Pilot Request, Realtime, and Worker Flow</title>
+<desc id="desc">Expanded sequence flow through HTTP, SQL transaction, SignalR, durable outbox, and email delivery</desc>
+<defs>
+  <marker id="arrow" markerWidth="12" markerHeight="12" refX="10" refY="4" orient="auto" markerUnits="strokeWidth">
+    <path d="M0,0 L0,8 L10,4 z" fill="#536273" />
+  </marker>
+  <style>
+    svg { background: #F6F8FB; }
+    text { font-family: "Segoe UI", Arial, sans-serif; dominant-baseline: alphabetic; }
+    .title { font-size: 45px; font-weight: 760; letter-spacing: 0; }
+    .subtitle { font-size: 21px; font-weight: 450; }
+    .tag { font-size: 15px; font-weight: 650; }
+    .section-title { font-size: 24px; font-weight: 760; fill: #172033; }
+    .box-title { font-size: 18px; font-weight: 760; }
+    .body { font-size: 16px; fill: #172033; }
+    .label { font-size: 15px; font-weight: 760; }
+    .tiny { font-size: 14px; }
+    .table-field { font-size: 15px; fill: #172033; }
+    .section { stroke-width: 1.8; }
+    .box { stroke-width: 1.5; filter: drop-shadow(0 2px 2px rgba(23,32,51,.08)); }
+  </style>
+</defs>
+<rect x="0" y="0" width="3300" height="130" rx="0" fill="#263C55" />
+<text x="58" y="58" class="title" fill="white">Talent Pilot Request, Realtime, and Worker Flow</text>
+<text x="60" y="96" class="subtitle" fill="#D6E0EA">Expanded sequence flow through HTTP, SQL transaction, SignalR, durable outbox, and email delivery</text>
+<rect x="2940" y="34" width="270" height="46" rx="23" fill="#405B78" />
+<text x="3075" y="63" class="tag" fill="#EDF4FA" text-anchor="middle">Generated June 5, 2026</text>
+<rect x="45" y="200" width="330" height="90" rx="14" fill="#E8F3E8" stroke="#CAD4DF" class="box" />
+<rect x="45" y="200" width="330" height="60" rx="14" fill="#557B56" />
+<rect x="45" y="238" width="330" height="22" fill="#557B56" />
+<text x="67" y="237" class="box-title" fill="white">Angular UI</text>
+<line x1="210" y1="325" x2="210" y2="1500" stroke="#CAD4DF" stroke-width="2" stroke-dasharray="10 9" />
+<rect x="525" y="200" width="330" height="90" rx="14" fill="#DDF0FA" stroke="#CAD4DF" class="box" />
+<rect x="525" y="200" width="330" height="60" rx="14" fill="#246A93" />
+<rect x="525" y="238" width="330" height="22" fill="#246A93" />
+<text x="547" y="237" class="box-title" fill="white">API Controller</text>
+<line x1="690" y1="325" x2="690" y2="1500" stroke="#CAD4DF" stroke-width="2" stroke-dasharray="10 9" />
+<rect x="1005" y="200" width="330" height="90" rx="14" fill="#DDF0FA" stroke="#CAD4DF" class="box" />
+<rect x="1005" y="200" width="330" height="60" rx="14" fill="#246A93" />
+<rect x="1005" y="238" width="330" height="22" fill="#246A93" />
+<text x="1027" y="237" class="box-title" fill="white">Application Service</text>
+<line x1="1170" y1="325" x2="1170" y2="1500" stroke="#CAD4DF" stroke-width="2" stroke-dasharray="10 9" />
+<rect x="1485" y="200" width="330" height="90" rx="14" fill="#FFE5DF" stroke="#CAD4DF" class="box" />
+<rect x="1485" y="200" width="330" height="60" rx="14" fill="#BA4C3B" />
+<rect x="1485" y="238" width="330" height="22" fill="#BA4C3B" />
+<text x="1507" y="237" class="box-title" fill="white">SQL Server</text>
+<line x1="1650" y1="325" x2="1650" y2="1500" stroke="#CAD4DF" stroke-width="2" stroke-dasharray="10 9" />
+<rect x="1965" y="200" width="330" height="90" rx="14" fill="#DDF0FA" stroke="#CAD4DF" class="box" />
+<rect x="1965" y="200" width="330" height="60" rx="14" fill="#246A93" />
+<rect x="1965" y="238" width="330" height="22" fill="#246A93" />
+<text x="1987" y="237" class="box-title" fill="white">SignalR Hub</text>
+<line x1="2130" y1="325" x2="2130" y2="1500" stroke="#CAD4DF" stroke-width="2" stroke-dasharray="10 9" />
+<rect x="2445" y="200" width="330" height="90" rx="14" fill="#E0F3EC" stroke="#CAD4DF" class="box" />
+<rect x="2445" y="200" width="330" height="60" rx="14" fill="#1F7A5C" />
+<rect x="2445" y="238" width="330" height="22" fill="#1F7A5C" />
+<text x="2467" y="237" class="box-title" fill="white">Worker</text>
+<line x1="2610" y1="325" x2="2610" y2="1500" stroke="#CAD4DF" stroke-width="2" stroke-dasharray="10 9" />
+<rect x="2925" y="200" width="330" height="90" rx="14" fill="#FBE2E7" stroke="#CAD4DF" class="box" />
+<rect x="2925" y="200" width="330" height="60" rx="14" fill="#A33E52" />
+<rect x="2925" y="238" width="330" height="22" fill="#A33E52" />
+<text x="2947" y="237" class="box-title" fill="white">Email Provider</text>
+<line x1="3090" y1="325" x2="3090" y2="1500" stroke="#CAD4DF" stroke-width="2" stroke-dasharray="10 9" />
+<path d="M210,410 L690,410" stroke="#536273" stroke-width="3" fill="none" marker-end="url(#arrow)" />
+<rect x="346" y="369" width="208" height="34" rx="8" fill="white" stroke="#D9E0E8" />
+<text x="450" y="392" class="label" fill="#172033" text-anchor="middle">POST workflow action</text>
+<path d="M690,540 L1170,540" stroke="#536273" stroke-width="3" fill="none" marker-end="url(#arrow)" />
+<rect x="786" y="499" width="289" height="34" rx="8" fill="white" stroke="#D9E0E8" />
+<text x="930" y="522" class="label" fill="#172033" text-anchor="middle">Validate DTO and current user</text>
+<path d="M1170,670 L1650,670" stroke="#536273" stroke-width="3" fill="none" marker-end="url(#arrow)" />
+<rect x="1248" y="629" width="325" height="34" rx="8" fill="white" stroke="#D9E0E8" />
+<text x="1410" y="652" class="label" fill="#172033" text-anchor="middle">Transaction: business row + audit</text>
+<path d="M1170,800 L1650,800" stroke="#536273" stroke-width="3" fill="none" marker-end="url(#arrow)" />
+<rect x="1266" y="759" width="289" height="34" rx="8" fill="white" stroke="#D9E0E8" />
+<text x="1410" y="782" class="label" fill="#172033" text-anchor="middle">Insert NotificationRecipients</text>
+<path d="M1170,930 L2130,930" stroke="#536273" stroke-width="3" fill="none" marker-end="url(#arrow)" />
+<rect x="1510" y="889" width="280" height="34" rx="8" fill="white" stroke="#D9E0E8" />
+<text x="1650" y="912" class="label" fill="#172033" text-anchor="middle">Publish NotificationReceived</text>
+<path d="M2130,1060 L210,1060" stroke="#95A6BA" stroke-width="3" fill="none" marker-end="url(#arrow)" stroke-dasharray="14 12" />
+<rect x="1026" y="1019" width="289" height="34" rx="8" fill="white" stroke="#D9E0E8" />
+<text x="1170" y="1042" class="label" fill="#172033" text-anchor="middle">Realtime toast + store update</text>
+<path d="M1170,1190 L1650,1190" stroke="#536273" stroke-width="3" fill="none" marker-end="url(#arrow)" />
+<rect x="1234" y="1149" width="352" height="34" rx="8" fill="white" stroke="#D9E0E8" />
+<text x="1410" y="1172" class="label" fill="#172033" text-anchor="middle">Insert NotificationOutbox email rows</text>
+<path d="M2610,1320 L1650,1320" stroke="#95A6BA" stroke-width="3" fill="none" marker-end="url(#arrow)" stroke-dasharray="14 12" />
+<rect x="1950" y="1279" width="360" height="34" rx="8" fill="white" stroke="#D9E0E8" />
+<text x="2130" y="1302" class="label" fill="#172033" text-anchor="middle">Poll and claim pending rows every 30s</text>
+<path d="M2610,1450 L3090,1450" stroke="#536273" stroke-width="3" fill="none" marker-end="url(#arrow)" stroke-dasharray="14 12" />
+<rect x="2697" y="1409" width="307" height="34" rx="8" fill="white" stroke="#D9E0E8" />
+<text x="2850" y="1432" class="label" fill="#172033" text-anchor="middle">Send email and mark Sent/Failed</text>
+<rect x="120" y="1640" width="850" height="140" rx="14" fill="#FFFFFF" stroke="#CAD4DF" class="box" />
+<rect x="120" y="1640" width="850" height="60" rx="14" fill="#246A93" />
+<rect x="120" y="1678" width="850" height="22" fill="#246A93" />
+<text x="142" y="1677" class="box-title" fill="white">Synchronous HTTP path</text>
+<text x="142" y="1728" class="body" fill="#172033">Browser waits for controller/service/repository work to complete before the API response.</text>
+<rect x="1225" y="1640" width="850" height="140" rx="14" fill="#FFFFFF" stroke="#CAD4DF" class="box" />
+<rect x="1225" y="1640" width="850" height="60" rx="14" fill="#246A93" />
+<rect x="1225" y="1678" width="850" height="22" fill="#246A93" />
+<text x="1247" y="1677" class="box-title" fill="white">Realtime path</text>
+<text x="1247" y="1728" class="body" fill="#172033">SignalR is immediate. SQL NotificationRecipients remains durable read state after refresh/login.</text>
+<rect x="2330" y="1640" width="850" height="140" rx="14" fill="#FFFFFF" stroke="#CAD4DF" class="box" />
+<rect x="2330" y="1640" width="850" height="60" rx="14" fill="#1F7A5C" />
+<rect x="2330" y="1678" width="850" height="22" fill="#1F7A5C" />
+<text x="2352" y="1677" class="box-title" fill="white">Email path</text>
+<text x="2352" y="1728" class="body" fill="#172033">Email is asynchronous. Business actions do not depend on email provider availability.</text>
+<line x1="55" y1="1930" x2="3245" y2="1930" stroke="#CAD4DF" stroke-width="2" />
+<text x="58" y="1962" class="tiny" fill="#536273">TalentPilot.Worker has no inbound HTTP listener; it only polls the SQL-backed NotificationOutbox.</text>
+</svg>

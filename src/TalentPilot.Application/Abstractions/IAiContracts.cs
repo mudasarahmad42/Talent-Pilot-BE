@@ -122,6 +122,35 @@ public interface IWebResearchProvider
     Task<WebResearchResult> ResearchAsync(WebResearchRequest request, CancellationToken cancellationToken);
 }
 
+public sealed record GitHubCandidateSearchRequest(
+    Guid TenantId,
+    string AgentId,
+    string JobTitle,
+    IReadOnlyList<string> Skills,
+    string? Location,
+    int Limit);
+
+public sealed record GitHubCandidateSearchResult(
+    string Status,
+    IReadOnlyList<GitHubCandidateProfile> Profiles);
+
+public sealed record GitHubCandidateProfile(
+    string Login,
+    string? DisplayName,
+    string HtmlUrl,
+    string? Location,
+    string? Bio,
+    string? Company,
+    int PublicRepositoryCount,
+    string? Email = null);
+
+public interface IGitHubCandidateSearchProvider
+{
+    Task<GitHubCandidateSearchResult> SearchAsync(
+        GitHubCandidateSearchRequest request,
+        CancellationToken cancellationToken);
+}
+
 public interface IAiRuntimeSettingsResolver
 {
     Task<AiRuntimeSettingsSnapshot> GetCurrentAsync(CancellationToken cancellationToken);

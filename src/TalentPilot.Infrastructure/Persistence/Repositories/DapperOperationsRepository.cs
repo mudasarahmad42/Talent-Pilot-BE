@@ -6,6 +6,7 @@ using System.Text.Json;
 using Dapper;
 using Microsoft.Data.SqlClient;
 using Microsoft.Extensions.Configuration;
+using TalentPilot.Application.Ai;
 using TalentPilot.Application.Notifications;
 using TalentPilot.Application.Operations;
 using TalentPilot.Domain.Access;
@@ -1515,6 +1516,7 @@ public sealed class DapperOperationsRepository : IOperationsRepository
         var applicantRankings = jobPost is null
             ? []
             : await ListLatestApplicantRankingsAsync(connection, tenantId, jobPost.JobPostId, cancellationToken);
+        var onlineHeadhunting = await GetLatestOnlineHeadhuntingResultAsync(connection, tenantId, jobRequestId, cancellationToken);
         var templates = await ListInterviewTemplatesAsync(connection, tenantId, jobRequestId, cancellationToken);
         var interviewers = await ListInterviewerOptionsAsync(connection, tenantId, jobRequestId, cancellationToken);
         var hodInterviewers = await ListDepartmentHodInterviewersAsync(connection, tenantId, jobRequestId, cancellationToken);
@@ -1530,7 +1532,7 @@ public sealed class DapperOperationsRepository : IOperationsRepository
             .Select(ToManualCandidateSearchItem)
             .ToArray();
 
-        return new OperationsRecruiterSourcing(jobRequest, assignment, jobPost, applications, manualCandidateSearchItems, talentRediscoveryMatches, applicantRankings, templates, interviewers, hodInterviewers, skills);
+        return new OperationsRecruiterSourcing(jobRequest, assignment, jobPost, applications, manualCandidateSearchItems, talentRediscoveryMatches, applicantRankings, templates, interviewers, hodInterviewers, skills, onlineHeadhunting);
     }
 
     public async Task<OperationsHistoricalApplicationDetail?> GetHistoricalApplicationAsync(
@@ -1565,7 +1567,8 @@ public sealed class DapperOperationsRepository : IOperationsRepository
                 application.SourceLabel,
                 application.AppliedAtUtc AS AppliedAt,
                 application.FinalDecisionAtUtc AS FinalDecisionAt,
-                application.FinalDecisionReason
+                application.FinalDecisionReason,
+                latestOffer.StartDate AS OfferStartDate
             FROM dbo.JobApplications AS application
             INNER JOIN dbo.Candidates AS candidate
                 ON candidate.TenantId = application.TenantId
@@ -1582,6 +1585,14 @@ public sealed class DapperOperationsRepository : IOperationsRepository
             LEFT JOIN dbo.Locations AS location
                 ON location.TenantId = request.TenantId
                 AND location.LocationId = request.LocationId
+            OUTER APPLY
+            (
+                SELECT TOP (1) offer.StartDate
+                FROM dbo.OfferLetters AS offer
+                WHERE offer.TenantId = application.TenantId
+                  AND offer.JobApplicationId = application.JobApplicationId
+                ORDER BY offer.Version DESC, offer.UpdatedAtUtc DESC
+            ) AS latestOffer
             WHERE application.TenantId = @TenantId
               AND application.JobApplicationId = @JobApplicationId;
             """;
@@ -1632,6 +1643,7 @@ public sealed class DapperOperationsRepository : IOperationsRepository
                 Utc(row.AppliedAt),
                 ToUtc(row.FinalDecisionAt),
                 row.FinalDecisionReason,
+                row.OfferStartDate.HasValue ? DateOnly.FromDateTime(row.OfferStartDate.Value) : null,
                 summary.Passed,
                 summary.Total,
                 summary.DisplayText),
@@ -1733,6 +1745,12 @@ public sealed class DapperOperationsRepository : IOperationsRepository
                 COALESCE(department.Name, N'Unassigned') AS Department,
                 COALESCE(location.Name, N'Remote') AS Location,
                 post.Status,
+                (
+                    SELECT COUNT(*)
+                    FROM dbo.JobApplications AS application
+                    WHERE application.TenantId = post.TenantId
+                      AND application.JobPostId = post.JobPostId
+                ) AS ApplicantCount,
                 recruiter.DisplayName AS RecruiterOwnerName,
                 post.PublishedAtUtc AS PublishedAt,
                 post.ClosedAtUtc AS ClosedAt,
@@ -1816,6 +1834,7 @@ public sealed class DapperOperationsRepository : IOperationsRepository
                 row.Department,
                 row.Location,
                 row.Status,
+                row.ApplicantCount,
                 row.RecruiterOwnerName,
                 ToUtc(row.PublishedAt),
                 ToUtc(row.ClosedAt),
@@ -2459,6 +2478,7 @@ public sealed class DapperOperationsRepository : IOperationsRepository
                 application.AppliedAt,
                 application.FinalDecisionAt,
                 application.FinalDecisionReason,
+                application.OfferStartDate,
                 application.InterviewsPassed,
                 application.InterviewsTotal,
                 application.InterviewPassSummary,
@@ -3018,6 +3038,367 @@ public sealed class DapperOperationsRepository : IOperationsRepository
         await transaction.CommitAsync(cancellationToken);
     }
 
+    public async Task<OperationsOnlineHeadhuntingContext?> GetOnlineHeadhuntingContextAsync(
+        Guid tenantId,
+        Guid actorUserId,
+        Guid jobRequestId,
+        CancellationToken cancellationToken)
+    {
+        await using var connection = _connectionFactory.CreateConnection();
+
+        if (!await CanMutateRecruiterSourcingAsync(connection, null, tenantId, actorUserId, jobRequestId, cancellationToken))
+        {
+            return null;
+        }
+
+        var jobRequest = await GetJobRequestByIdAsync(connection, tenantId, actorUserId, jobRequestId, cancellationToken);
+        if (jobRequest is null)
+        {
+            return null;
+        }
+
+        var jobPost = await ReadJobPostByRequestIdAsync(connection, tenantId, jobRequestId, cancellationToken);
+        var requiredSkills = jobPost?.Skills.Select(skill => skill.Name).ToArray() ?? jobRequest.Skills;
+        var experience = jobPost is null
+            ? await ReadJobRequestExperienceAsync(connection, tenantId, jobRequestId, cancellationToken)
+            : new JobRequestExperienceRow(jobPost.ExperienceMinYears, jobPost.ExperienceMaxYears);
+        var candidatePool = await ListOnlineHeadhuntingDuplicateCandidatesAsync(connection, tenantId, cancellationToken);
+        var existingLeads = await ListOnlineHeadhuntingExistingLeadsAsync(connection, tenantId, jobRequestId, cancellationToken);
+
+        return new OperationsOnlineHeadhuntingContext(
+            jobRequest,
+            jobPost,
+            requiredSkills,
+            experience?.ExperienceMinYears,
+            experience?.ExperienceMaxYears,
+            candidatePool,
+            existingLeads);
+    }
+
+    public async Task<int> CountOnlineHeadhuntingLeadsCreatedTodayAsync(
+        Guid tenantId,
+        Guid jobRequestId,
+        CancellationToken cancellationToken)
+    {
+        await using var connection = _connectionFactory.CreateConnection();
+
+        const string sql = """
+            SELECT COUNT(1)
+            FROM dbo.OnlineCandidateLeads
+            WHERE TenantId = @TenantId
+              AND JobRequestId = @JobRequestId
+              AND CreatedAtUtc >= CONVERT(date, SYSUTCDATETIME())
+              AND CreatedAtUtc < DATEADD(day, 1, CONVERT(date, SYSUTCDATETIME()));
+            """;
+
+        return await connection.ExecuteScalarAsync<int>(new CommandDefinition(
+            sql,
+            new { TenantId = tenantId, JobRequestId = jobRequestId },
+            cancellationToken: cancellationToken));
+    }
+
+    public async Task<OperationsOnlineHeadhuntingResult> SaveOnlineHeadhuntingResultAsync(
+        Guid tenantId,
+        Guid actorUserId,
+        OnlineHeadhuntingSearchInput input,
+        OperationsOnlineHeadhuntingContext context,
+        OnlineHeadhuntingAgentResult result,
+        int dailyLeadCountBeforeRun,
+        int dailyLeadLimit,
+        CancellationToken cancellationToken)
+    {
+        await using var connection = _connectionFactory.CreateConnection();
+        await connection.OpenAsync(cancellationToken);
+        await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
+
+        var runId = Guid.NewGuid();
+        var now = DateTime.UtcNow;
+        var leadsToPersist = DistinctNewOnlineLeads(context.ExistingLeads, result.Leads);
+        const string insertRunSql = """
+            INSERT INTO dbo.OnlineCandidateSourcingRuns
+            (
+                OnlineCandidateSourcingRunId,
+                TenantId,
+                JobRequestId,
+                JobPostId,
+                RequestedByUserId,
+                AiAgentRunId,
+                SearchMoreFromRunId,
+                RequestedLimit,
+                DailyLeadLimit,
+                DailyLeadCountBeforeRun,
+                SourceCodesJson,
+                QueriesJson,
+                SearchStatus,
+                Model,
+                LeadsReturned,
+                CreatedAtUtc
+            )
+            VALUES
+            (
+                @RunId,
+                @TenantId,
+                @JobRequestId,
+                @JobPostId,
+                @RequestedByUserId,
+                @AiAgentRunId,
+                @SearchMoreFromRunId,
+                @RequestedLimit,
+                @DailyLeadLimit,
+                @DailyLeadCountBeforeRun,
+                @SourceCodesJson,
+                @QueriesJson,
+                @SearchStatus,
+                @Model,
+                @LeadsReturned,
+                @CreatedAtUtc
+            );
+            """;
+
+        await connection.ExecuteAsync(new CommandDefinition(
+            insertRunSql,
+            new
+            {
+                RunId = runId,
+                TenantId = tenantId,
+                JobRequestId = context.JobRequest.Id,
+                JobPostId = context.JobPost?.JobPostId,
+                RequestedByUserId = actorUserId,
+                AiAgentRunId = result.AgentRunId,
+                input.SearchMoreFromRunId,
+                RequestedLimit = input.Limit ?? 20,
+                DailyLeadLimit = dailyLeadLimit,
+                DailyLeadCountBeforeRun = dailyLeadCountBeforeRun,
+                SourceCodesJson = JsonSerializer.Serialize(result.SourceCodes),
+                QueriesJson = JsonSerializer.Serialize(result.Queries),
+                result.SearchStatus,
+                result.Model,
+                LeadsReturned = leadsToPersist.Count,
+                CreatedAtUtc = now
+            },
+            transaction,
+            cancellationToken: cancellationToken));
+
+        const string insertLeadSql = """
+            INSERT INTO dbo.OnlineCandidateLeads
+            (
+                OnlineCandidateLeadId,
+                OnlineCandidateSourcingRunId,
+                TenantId,
+                JobRequestId,
+                Rank,
+                SourceCode,
+                SourceDisplayName,
+                SourceUrl,
+                DisplayName,
+                CurrentTitle,
+                CurrentCompany,
+                LocationText,
+                Email,
+                Phone,
+                ProfileUrl,
+                EvidenceSnippet,
+                MatchScore,
+                Confidence,
+                FitSummary,
+                StrengthsJson,
+                MatchedSkillsJson,
+                GapsJson,
+                MissingDataJson,
+                DuplicateStatus,
+                DuplicateCandidateId,
+                DuplicateCandidateName,
+                DuplicateExplanation,
+                OutreachDraft,
+                Status,
+                CreatedAtUtc
+            )
+            VALUES
+            (
+                @OnlineCandidateLeadId,
+                @RunId,
+                @TenantId,
+                @JobRequestId,
+                @Rank,
+                @SourceCode,
+                @SourceDisplayName,
+                @SourceUrl,
+                @DisplayName,
+                @CurrentTitle,
+                @CurrentCompany,
+                @LocationText,
+                @Email,
+                @Phone,
+                @ProfileUrl,
+                @EvidenceSnippet,
+                @MatchScore,
+                @Confidence,
+                @FitSummary,
+                @StrengthsJson,
+                @MatchedSkillsJson,
+                @GapsJson,
+                @MissingDataJson,
+                @DuplicateStatus,
+                @DuplicateCandidateId,
+                @DuplicateCandidateName,
+                @DuplicateExplanation,
+                @OutreachDraft,
+                @Status,
+                @CreatedAtUtc
+            );
+            """;
+
+        var persistedLeads = new List<OperationsOnlineCandidateLead>();
+        foreach (var lead in leadsToPersist)
+        {
+            var leadId = Guid.NewGuid();
+            await connection.ExecuteAsync(new CommandDefinition(
+                insertLeadSql,
+                new
+                {
+                    OnlineCandidateLeadId = leadId,
+                    RunId = runId,
+                    TenantId = tenantId,
+                    JobRequestId = context.JobRequest.Id,
+                    lead.Rank,
+                    lead.SourceCode,
+                    lead.SourceDisplayName,
+                    lead.SourceUrl,
+                    lead.DisplayName,
+                    lead.CurrentTitle,
+                    lead.CurrentCompany,
+                    lead.LocationText,
+                    lead.Email,
+                    lead.Phone,
+                    lead.ProfileUrl,
+                    lead.EvidenceSnippet,
+                    lead.MatchScore,
+                    lead.Confidence,
+                    lead.FitSummary,
+                    StrengthsJson = JsonSerializer.Serialize(lead.Strengths),
+                    MatchedSkillsJson = JsonSerializer.Serialize(lead.MatchedSkills),
+                    GapsJson = JsonSerializer.Serialize(lead.Gaps),
+                    MissingDataJson = JsonSerializer.Serialize(lead.MissingData),
+                    lead.DuplicateStatus,
+                    lead.DuplicateCandidateId,
+                    lead.DuplicateCandidateName,
+                    lead.DuplicateExplanation,
+                    lead.OutreachDraft,
+                    Status = "New",
+                    CreatedAtUtc = now
+                },
+                transaction,
+                cancellationToken: cancellationToken));
+
+            persistedLeads.Add(ToPersistedLead(leadId, runId, context.JobRequest.Id, lead, "New", now));
+        }
+
+        await InsertAuditAsync(
+            connection,
+            transaction,
+            tenantId,
+            actorUserId,
+            "online_headhunting.search_run",
+            "JobRequest",
+            context.JobRequest.Id,
+            context.JobRequest.Code,
+            $"Online Headhunting found {persistedLeads.Count} lead(s) for recruiter review.",
+            "Recruiter Sourcing",
+            cancellationToken);
+
+        await transaction.CommitAsync(cancellationToken);
+
+        return new OperationsOnlineHeadhuntingResult(
+            new OperationsOnlineHeadhuntingRunSummary(
+                runId,
+                context.JobRequest.Id,
+                context.JobPost?.JobPostId,
+                result.AgentRunId,
+                input.SearchMoreFromRunId,
+                input.Limit ?? 20,
+                dailyLeadLimit,
+                dailyLeadCountBeforeRun,
+                persistedLeads.Count,
+                result.SearchStatus,
+                result.Model,
+                result.SourceCodes,
+                result.Queries,
+                Utc(now)),
+            persistedLeads);
+    }
+
+    public async Task<OperationsOnlineHeadhuntingResult?> GetLatestOnlineHeadhuntingResultAsync(
+        Guid tenantId,
+        Guid jobRequestId,
+        CancellationToken cancellationToken)
+    {
+        await using var connection = _connectionFactory.CreateConnection();
+        return await GetLatestOnlineHeadhuntingResultAsync(connection, tenantId, jobRequestId, cancellationToken);
+    }
+
+    public async Task<OperationsOnlineCandidateLead?> UpdateOnlineCandidateLeadStatusAsync(
+        Guid tenantId,
+        Guid actorUserId,
+        Guid onlineCandidateLeadId,
+        UpdateOnlineCandidateLeadStatusInput input,
+        CancellationToken cancellationToken)
+    {
+        await using var connection = _connectionFactory.CreateConnection();
+        await connection.OpenAsync(cancellationToken);
+        await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
+
+        var context = await connection.QuerySingleOrDefaultAsync<OnlineLeadActionContextRow>(new CommandDefinition(
+            """
+            SELECT TOP (1) JobRequestId
+            FROM dbo.OnlineCandidateLeads
+            WHERE TenantId = @TenantId
+              AND OnlineCandidateLeadId = @OnlineCandidateLeadId;
+            """,
+            new { TenantId = tenantId, OnlineCandidateLeadId = onlineCandidateLeadId },
+            transaction,
+            cancellationToken: cancellationToken));
+        if (context is null ||
+            !await CanMutateRecruiterSourcingAsync(connection, transaction, tenantId, actorUserId, context.JobRequestId, cancellationToken))
+        {
+            await transaction.RollbackAsync(cancellationToken);
+            return null;
+        }
+
+        await connection.ExecuteAsync(new CommandDefinition(
+            """
+            UPDATE dbo.OnlineCandidateLeads
+            SET Status = @Status,
+                RejectedAtUtc = CASE WHEN @Status = N'Rejected' THEN SYSUTCDATETIME() ELSE RejectedAtUtc END
+            WHERE TenantId = @TenantId
+              AND OnlineCandidateLeadId = @OnlineCandidateLeadId
+              AND Status <> N'Converted';
+            """,
+            new
+            {
+                TenantId = tenantId,
+                OnlineCandidateLeadId = onlineCandidateLeadId,
+                input.Status
+            },
+            transaction,
+            cancellationToken: cancellationToken));
+
+        await InsertAuditAsync(
+            connection,
+            transaction,
+            tenantId,
+            actorUserId,
+            "online_headhunting.lead_status_updated",
+            "OnlineCandidateLead",
+            onlineCandidateLeadId,
+            "Online candidate lead",
+            $"Recruiter marked online lead as {input.Status}.",
+            "Recruiter Sourcing",
+            cancellationToken);
+
+        await transaction.CommitAsync(cancellationToken);
+        return await ReadOnlineLeadAsync(connection, tenantId, onlineCandidateLeadId, cancellationToken);
+    }
+
     public async Task<SendCandidateInvitationsResult> SendCandidateInvitationsAsync(
         Guid tenantId,
         Guid actorUserId,
@@ -3429,6 +3810,18 @@ public sealed class DapperOperationsRepository : IOperationsRepository
             actorUserId,
             input.InvitationMessage,
             cancellationToken);
+
+        if (input.OnlineLeadId.HasValue)
+        {
+            await MarkOnlineHeadhuntingLeadConvertedAsync(
+                connection,
+                transaction,
+                tenantId,
+                input.OnlineLeadId.Value,
+                candidate.CandidateId,
+                applicationId,
+                cancellationToken);
+        }
 
         await InsertAuditAsync(
             connection,
@@ -3911,6 +4304,390 @@ public sealed class DapperOperationsRepository : IOperationsRepository
         return new OperationsInterviewTaskList(rows.Select(ToInterviewTask).ToArray());
     }
 
+    public async Task<OperationsInterviewQuestionRecommendationContext?> GetInterviewQuestionRecommendationContextAsync(
+        Guid tenantId,
+        Guid actorUserId,
+        bool includeAllTenantTasks,
+        Guid interviewId,
+        CancellationToken cancellationToken)
+    {
+        await using var connection = _connectionFactory.CreateConnection();
+        var row = await ReadInterviewQuestionContextAsync(
+            connection,
+            null,
+            tenantId,
+            actorUserId,
+            includeAllTenantTasks,
+            interviewId,
+            cancellationToken);
+        if (row is null)
+        {
+            return null;
+        }
+
+        var requiredSkills = await ListInterviewQuestionRequiredSkillsAsync(
+            connection,
+            null,
+            tenantId,
+            row.JobRequestId,
+            row.JobPostId,
+            cancellationToken);
+        var candidateSkills = await ListInterviewQuestionCandidateSkillsAsync(
+            connection,
+            null,
+            tenantId,
+            row.CandidateId,
+            cancellationToken);
+        var documentsByApplication = await ListApplicantDocumentEvidenceAsync(
+            connection,
+            tenantId,
+            [row.JobApplicationId],
+            cancellationToken);
+        var priorFeedback = await ListInterviewQuestionPriorFeedbackAsync(
+            connection,
+            null,
+            tenantId,
+            row.JobApplicationId,
+            row.InterviewId,
+            cancellationToken);
+
+        return ToInterviewQuestionContext(
+            row,
+            requiredSkills,
+            candidateSkills,
+            documentsByApplication.TryGetValue(row.JobApplicationId, out var documents) ? documents : [],
+            priorFeedback);
+    }
+
+    public async Task<InterviewQuestionRecommendationSet?> GetLatestInterviewQuestionRecommendationsAsync(
+        Guid tenantId,
+        Guid actorUserId,
+        bool includeAllTenantTasks,
+        Guid interviewId,
+        CancellationToken cancellationToken)
+    {
+        await using var connection = _connectionFactory.CreateConnection();
+
+        const string setSql = """
+            SELECT TOP (1)
+                recommendationSet.RecommendationSetId,
+                recommendationSet.InterviewId,
+                recommendationSet.JobApplicationId,
+                recommendationSet.JobPostInterviewRoundId,
+                recommendationSet.AiAgentRunId,
+                recommendationSet.ModelName AS Model,
+                recommendationSet.PromptVersion,
+                recommendationSet.VersionNumber,
+                recommendationSet.Summary,
+                recommendationSet.Rationale,
+                recommendationSet.RegenerateReason,
+                recommendationSet.CoverageJson,
+                recommendationSet.Status,
+                recommendationSet.GeneratedAtUtc AS GeneratedAt
+            FROM dbo.InterviewQuestionRecommendationSets AS recommendationSet
+            INNER JOIN dbo.Interviews AS interview
+                ON interview.TenantId = recommendationSet.TenantId
+                AND interview.InterviewId = recommendationSet.InterviewId
+            WHERE recommendationSet.TenantId = @TenantId
+              AND recommendationSet.InterviewId = @InterviewId
+              AND recommendationSet.Status = N'Active'
+              AND interview.Status IN (N'Scheduled', N'Completed')
+              AND (@IncludeAllTenantTasks = CAST(1 AS BIT) OR interview.InterviewerUserId = @ActorUserId)
+            ORDER BY recommendationSet.VersionNumber DESC, recommendationSet.GeneratedAtUtc DESC;
+            """;
+
+        var setRow = await connection.QuerySingleOrDefaultAsync<InterviewQuestionRecommendationSetRow>(new CommandDefinition(
+            setSql,
+            new { TenantId = tenantId, ActorUserId = actorUserId, IncludeAllTenantTasks = includeAllTenantTasks, InterviewId = interviewId },
+            cancellationToken: cancellationToken));
+        if (setRow is null)
+        {
+            return null;
+        }
+
+        var questions = await ReadInterviewQuestionRecommendationRowsAsync(
+            connection,
+            null,
+            tenantId,
+            setRow.RecommendationSetId,
+            cancellationToken);
+
+        return ToInterviewQuestionRecommendationSet(setRow, questions);
+    }
+
+    public async Task<IReadOnlyList<InterviewQuestionBankItem>> ListInterviewQuestionBankItemsAsync(
+        Guid tenantId,
+        IReadOnlyList<Guid> skillIds,
+        string roundType,
+        string jobFamily,
+        int take,
+        CancellationToken cancellationToken)
+    {
+        await using var connection = _connectionFactory.CreateConnection();
+
+        var normalizedRoundType = string.IsNullOrWhiteSpace(roundType) ? "Technical" : roundType.Trim();
+        var normalizedJobFamily = string.IsNullOrWhiteSpace(jobFamily) ? "Generic" : jobFamily.Trim();
+        var sqlSkillIds = skillIds.Where(skillId => skillId != Guid.Empty).Distinct().ToArray();
+        if (sqlSkillIds.Length == 0)
+        {
+            sqlSkillIds = [Guid.Empty];
+        }
+
+        const string sql = """
+            SELECT TOP (@Take)
+                item.InterviewQuestionBankItemId,
+                item.TenantId,
+                item.SkillId,
+                skill.Name AS SkillName,
+                skill.Category AS SkillCategory,
+                item.DepartmentId,
+                item.JobFamily,
+                item.RoundType,
+                item.Difficulty,
+                item.QuestionText,
+                item.ExpectedSignal,
+                item.FollowUpsJson,
+                item.EvaluationRubricJson,
+                item.SourceTitle,
+                item.SourceUrl,
+                item.ContentHashSha256
+            FROM dbo.InterviewQuestionBankItems AS item
+            LEFT JOIN dbo.Skills AS skill
+                ON skill.TenantId = item.TenantId
+                AND skill.SkillId = item.SkillId
+            WHERE item.TenantId = @TenantId
+              AND item.Status = N'Active'
+              AND (
+                    item.SkillId IS NULL
+                    OR item.SkillId IN @SkillIds
+                    OR item.RoundType = @RoundType
+                    OR item.JobFamily = @JobFamily
+                  )
+            ORDER BY
+                CASE
+                    WHEN item.RoundType = @RoundType AND item.JobFamily = @JobFamily THEN 0
+                    WHEN item.RoundType = @RoundType THEN 1
+                    WHEN item.SkillId IN @SkillIds THEN 2
+                    WHEN item.SkillId IS NULL THEN 3
+                    ELSE 4
+                END,
+                CASE item.Difficulty
+                    WHEN N'Basic' THEN 1
+                    WHEN N'Intermediate' THEN 2
+                    WHEN N'Advanced' THEN 3
+                    ELSE 4
+                END,
+                item.CreatedAtUtc ASC;
+            """;
+
+        var rows = await connection.QueryAsync<InterviewQuestionBankItemRow>(new CommandDefinition(
+            sql,
+            new
+            {
+                TenantId = tenantId,
+                SkillIds = sqlSkillIds,
+                RoundType = normalizedRoundType,
+                JobFamily = normalizedJobFamily,
+                Take = Math.Clamp(take, 20, 250)
+            },
+            cancellationToken: cancellationToken));
+
+        return rows.Select(ToInterviewQuestionBankItem).ToArray();
+    }
+
+    public async Task<InterviewQuestionRecommendationSet> SaveInterviewQuestionRecommendationsAsync(
+        Guid tenantId,
+        Guid actorUserId,
+        OperationsInterviewQuestionRecommendationContext context,
+        string? regenerateReason,
+        InterviewQuestionAgentResult result,
+        CancellationToken cancellationToken)
+    {
+        await using var connection = _connectionFactory.CreateConnection();
+        await connection.OpenAsync(cancellationToken);
+        await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
+
+        const string versionSql = """
+            SELECT COALESCE(MAX(VersionNumber), 0) + 1
+            FROM dbo.InterviewQuestionRecommendationSets
+            WHERE TenantId = @TenantId
+              AND InterviewId = @InterviewId;
+            """;
+        var versionNumber = await connection.ExecuteScalarAsync<int>(new CommandDefinition(
+            versionSql,
+            new { TenantId = tenantId, context.InterviewId },
+            transaction,
+            cancellationToken: cancellationToken));
+
+        var recommendationSetId = Guid.NewGuid();
+        const string insertSetSql = """
+            INSERT INTO dbo.InterviewQuestionRecommendationSets
+            (
+                RecommendationSetId,
+                TenantId,
+                InterviewId,
+                JobApplicationId,
+                JobPostInterviewRoundId,
+                AiAgentRunId,
+                ModelName,
+                PromptVersion,
+                VersionNumber,
+                Summary,
+                Rationale,
+                RegenerateReason,
+                CoverageJson,
+                RetrievedBankItemIdsJson,
+                Status,
+                GeneratedByUserId,
+                GeneratedAtUtc,
+                CreatedAtUtc,
+                UpdatedAtUtc
+            )
+            VALUES
+            (
+                @RecommendationSetId,
+                @TenantId,
+                @InterviewId,
+                @JobApplicationId,
+                @JobPostInterviewRoundId,
+                @AiAgentRunId,
+                @ModelName,
+                @PromptVersion,
+                @VersionNumber,
+                @Summary,
+                @Rationale,
+                @RegenerateReason,
+                @CoverageJson,
+                @RetrievedBankItemIdsJson,
+                N'Active',
+                @GeneratedByUserId,
+                @GeneratedAtUtc,
+                SYSUTCDATETIME(),
+                SYSUTCDATETIME()
+            );
+            """;
+
+        await connection.ExecuteAsync(new CommandDefinition(
+            insertSetSql,
+            new
+            {
+                RecommendationSetId = recommendationSetId,
+                TenantId = tenantId,
+                context.InterviewId,
+                context.JobApplicationId,
+                context.JobPostInterviewRoundId,
+                AiAgentRunId = result.AgentRunId,
+                ModelName = result.Model,
+                result.PromptVersion,
+                VersionNumber = versionNumber,
+                result.Summary,
+                result.Rationale,
+                RegenerateReason = regenerateReason,
+                CoverageJson = JsonSerializer.Serialize(result.Coverage),
+                RetrievedBankItemIdsJson = JsonSerializer.Serialize(result.RetrievedBankItemIds),
+                GeneratedByUserId = actorUserId,
+                GeneratedAtUtc = result.GeneratedAtUtc.UtcDateTime
+            },
+            transaction,
+            cancellationToken: cancellationToken));
+
+        const string insertQuestionSql = """
+            INSERT INTO dbo.InterviewQuestionRecommendations
+            (
+                QuestionRecommendationId,
+                RecommendationSetId,
+                TenantId,
+                SortOrder,
+                QuestionText,
+                QuestionType,
+                RoundType,
+                SkillName,
+                Difficulty,
+                Rationale,
+                ExpectedSignal,
+                FollowUpsJson,
+                EvaluationRubricJson,
+                SourceBankItemId,
+                CreatedAtUtc
+            )
+            VALUES
+            (
+                @QuestionRecommendationId,
+                @RecommendationSetId,
+                @TenantId,
+                @SortOrder,
+                @QuestionText,
+                @QuestionType,
+                @RoundType,
+                @SkillName,
+                @Difficulty,
+                @Rationale,
+                @ExpectedSignal,
+                @FollowUpsJson,
+                @EvaluationRubricJson,
+                @SourceBankItemId,
+                SYSUTCDATETIME()
+            );
+            """;
+
+        var questionRows = result.Questions.Select((question, index) => new
+        {
+            QuestionRecommendationId = Guid.NewGuid(),
+            RecommendationSetId = recommendationSetId,
+            TenantId = tenantId,
+            SortOrder = index + 1,
+            question.QuestionText,
+            question.QuestionType,
+            question.RoundType,
+            question.SkillName,
+            question.Difficulty,
+            question.Rationale,
+            question.ExpectedSignal,
+            FollowUpsJson = JsonSerializer.Serialize(question.FollowUps),
+            EvaluationRubricJson = JsonSerializer.Serialize(question.EvaluationRubric),
+            question.SourceBankItemId
+        }).ToArray();
+
+        await connection.ExecuteAsync(new CommandDefinition(
+            insertQuestionSql,
+            questionRows,
+            transaction,
+            cancellationToken: cancellationToken));
+
+        await transaction.CommitAsync(cancellationToken);
+
+        var setRow = new InterviewQuestionRecommendationSetRow(
+            recommendationSetId,
+            context.InterviewId,
+            context.JobApplicationId,
+            context.JobPostInterviewRoundId,
+            result.AgentRunId,
+            result.Model,
+            result.PromptVersion,
+            versionNumber,
+            result.Summary,
+            result.Rationale,
+            regenerateReason,
+            JsonSerializer.Serialize(result.Coverage),
+            "Active",
+            result.GeneratedAtUtc.UtcDateTime);
+        var savedQuestions = questionRows.Select(row => new InterviewQuestionRecommendationRow(
+            row.QuestionRecommendationId,
+            row.SortOrder,
+            row.QuestionText,
+            row.QuestionType,
+            row.RoundType,
+            row.SkillName,
+            row.Difficulty,
+            row.Rationale,
+            row.ExpectedSignal,
+            row.FollowUpsJson,
+            row.EvaluationRubricJson,
+            row.SourceBankItemId)).ToArray();
+
+        return ToInterviewQuestionRecommendationSet(setRow, savedQuestions);
+    }
+
     public async Task<OperationsMutationRepositoryResult<SubmitInterviewFeedbackResult>> SubmitInterviewFeedbackAsync(
         Guid tenantId,
         Guid actorUserId,
@@ -4266,7 +5043,7 @@ public sealed class DapperOperationsRepository : IOperationsRepository
                 ON hiringManager.TenantId = request.TenantId
                 AND hiringManager.UserId = request.HiringManagerUserId
             WHERE application.TenantId = @TenantId
-              AND application.CurrentStatus IN (N'HiringManagerReview', N'Offered', N'OnHold', N'Rejected', N'Joined')
+              AND application.CurrentStatus IN (N'HiringManagerReview', N'Offered', N'OnHold', N'Rejected', N'Hired', N'Joined')
               AND (@IncludeAllTenantReviews = CAST(1 AS BIT) OR request.HiringManagerUserId = @ActorUserId)
             ORDER BY application.UpdatedAtUtc DESC;
             """;
@@ -4394,13 +5171,14 @@ public sealed class DapperOperationsRepository : IOperationsRepository
             LEFT JOIN MeetingAgg AS meetingAgg
                 ON meetingAgg.JobApplicationId = application.JobApplicationId
             WHERE application.TenantId = @TenantId
-              AND application.CurrentStatus IN (N'HiringManagerReview', N'Offered', N'OnHold', N'Rejected', N'Joined')
+              AND application.CurrentStatus IN (N'HiringManagerReview', N'Offered', N'OnHold', N'Rejected', N'Hired', N'Joined')
               AND (@IncludeAllTenantReviews = CAST(1 AS BIT) OR request.HiringManagerUserId = @ActorUserId)
             ORDER BY
                 CASE
                     WHEN application.CurrentStatus = N'HiringManagerReview' THEN 0
                     WHEN application.CurrentStatus IN (N'Offered', N'OnHold') THEN 1
-                    ELSE 2
+                    WHEN application.CurrentStatus = N'Hired' THEN 2
+                    ELSE 3
                 END,
                 DATEDIFF(DAY, application.UpdatedAtUtc, SYSUTCDATETIME()) DESC,
                 application.UpdatedAtUtc DESC;
@@ -4416,6 +5194,7 @@ public sealed class DapperOperationsRepository : IOperationsRepository
             PendingReviews: rows.Count(row => IsDashboardStatus(row.Status, "HiringManagerReview")),
             OfferFollowUps: rows.Count(row =>
                 IsDashboardStatus(row.Status, "Offered") ||
+                IsDashboardStatus(row.Status, "Hired") ||
                 !string.IsNullOrWhiteSpace(row.OfferLetterStatus) ||
                 row.ScheduledMeetingCount > 0),
             OnHold: rows.Count(row => IsDashboardStatus(row.Status, "OnHold")),
@@ -4450,6 +5229,7 @@ public sealed class DapperOperationsRepository : IOperationsRepository
             new HiringManagerDashboardStatusBreakdownItem("Offer draft", rows.Count(row => !string.IsNullOrWhiteSpace(row.OfferLetterStatus))),
             new HiringManagerDashboardStatusBreakdownItem("Meeting scheduled", rows.Count(row => row.ScheduledMeetingCount > 0)),
             new HiringManagerDashboardStatusBreakdownItem("Offered", rows.Count(row => IsDashboardStatus(row.Status, "Offered"))),
+            new HiringManagerDashboardStatusBreakdownItem("Pending joining", rows.Count(row => IsDashboardStatus(row.Status, "Hired"))),
             new HiringManagerDashboardStatusBreakdownItem("On hold", rows.Count(row => IsDashboardStatus(row.Status, "OnHold"))),
             new HiringManagerDashboardStatusBreakdownItem("Joined", rows.Count(row => IsDashboardStatus(row.Status, "Joined"))),
             new HiringManagerDashboardStatusBreakdownItem("Rejected", rows.Count(row => IsDashboardStatus(row.Status, "Rejected")))
@@ -4458,6 +5238,7 @@ public sealed class DapperOperationsRepository : IOperationsRepository
         var outcomeSplit = new[]
         {
             new HiringManagerDashboardStatusBreakdownItem("Offered", rows.Count(row => IsDashboardStatus(row.Status, "Offered"))),
+            new HiringManagerDashboardStatusBreakdownItem("Pending joining", rows.Count(row => IsDashboardStatus(row.Status, "Hired"))),
             new HiringManagerDashboardStatusBreakdownItem("Rejected", rows.Count(row => IsDashboardStatus(row.Status, "Rejected"))),
             new HiringManagerDashboardStatusBreakdownItem("On hold", rows.Count(row => IsDashboardStatus(row.Status, "OnHold"))),
             new HiringManagerDashboardStatusBreakdownItem("Joined", rows.Count(row => IsDashboardStatus(row.Status, "Joined")))
@@ -4935,18 +5716,33 @@ public sealed class DapperOperationsRepository : IOperationsRepository
 
         var oldStatus = access.ApplicationStatus;
         var newStatus = input.Outcome;
+        var latestOffer = await ReadLatestOfferLetterAsync(connection, transaction, tenantId, jobApplicationId, cancellationToken);
+        if ((newStatus is "Hired" or "Joined") && latestOffer is null)
+        {
+            await transaction.RollbackAsync(cancellationToken);
+            return null;
+        }
+
+        await UpdateLatestOfferLetterOutcomeAsync(
+            connection,
+            transaction,
+            tenantId,
+            jobApplicationId,
+            newStatus,
+            input.JoiningDate,
+            cancellationToken);
         await UpdateApplicationStatusAsync(connection, transaction, tenantId, jobApplicationId, oldStatus, newStatus, actorUserId, input.Reason, cancellationToken);
         var requestAlreadyClosed = string.Equals(access.RequestStatus, "Closed", StringComparison.OrdinalIgnoreCase);
 
         var jobRequestStatus = newStatus switch
         {
             "Offered" => "Offer",
-            "Joined" => "Closed",
-            "Rejected" or "OnHold" => "Sourcing",
+            "Hired" or "Joined" => "Closed",
+            "OfferDeclined" or "Rejected" or "OnHold" => "Sourcing",
             _ => "HiringManagerReview"
         };
 
-        if (newStatus == "Joined")
+        if (newStatus is "Hired" or "Joined")
         {
             await InsertExternalFulfillmentAsync(connection, transaction, tenantId, access, actorUserId, cancellationToken);
             await RefreshJobRequestFulfilledPositionsAsync(connection, transaction, tenantId, access.JobRequestId, cancellationToken);
@@ -4957,13 +5753,18 @@ public sealed class DapperOperationsRepository : IOperationsRepository
         {
             jobRequestStatus = "Closed";
         }
-        else if (newStatus == "Joined" && progress.FulfilledPositions >= progress.RequiredPositions)
+        else if ((newStatus is "Hired" or "Joined") && progress.FulfilledPositions >= progress.RequiredPositions)
         {
             await CloseJobRequestAsync(connection, transaction, tenantId, access.JobRequestId, cancellationToken);
             await CloseJobPostsForRequestAsync(connection, transaction, tenantId, access.JobRequestId, cancellationToken);
             jobRequestStatus = "Closed";
         }
-        else if (newStatus is "Rejected" or "OnHold")
+        else if (newStatus is "Hired" or "Joined")
+        {
+            await ReturnJobRequestToSourcingAsync(connection, transaction, tenantId, access.JobRequestId, actorUserId, cancellationToken);
+            jobRequestStatus = "Sourcing";
+        }
+        else if (newStatus is "OfferDeclined" or "Rejected" or "OnHold")
         {
             await ReturnJobRequestToSourcingAsync(connection, transaction, tenantId, access.JobRequestId, actorUserId, cancellationToken);
             jobRequestStatus = "Sourcing";
@@ -4992,6 +5793,7 @@ public sealed class DapperOperationsRepository : IOperationsRepository
             access.JobRequestId,
             newStatus,
             jobRequestStatus,
+            input.JoiningDate,
             progress.FulfilledPositions,
             progress.RequiredPositions);
     }
@@ -7149,6 +7951,421 @@ public sealed class DapperOperationsRepository : IOperationsRepository
             ToUtc(row.SubmittedAt));
     }
 
+    private static OperationsInterviewQuestionRecommendationContext ToInterviewQuestionContext(
+        InterviewQuestionContextRow row,
+        IReadOnlyList<OperationsInterviewQuestionSkill> requiredSkills,
+        IReadOnlyList<OperationsInterviewQuestionSkill> candidateSkills,
+        IReadOnlyList<OperationsApplicantDocumentEvidence> documents,
+        IReadOnlyList<OperationsCandidateInterviewEvidence> priorFeedback)
+    {
+        return new OperationsInterviewQuestionRecommendationContext(
+            row.InterviewId,
+            row.JobApplicationId,
+            row.JobPostInterviewRoundId,
+            row.JobRequestId,
+            row.JobPostId,
+            row.CandidateId,
+            row.RequestCode,
+            row.JobTitle,
+            row.Client,
+            row.Department,
+            row.Location,
+            row.RoundName,
+            NormalizeInterviewRoundType(row.RoundName),
+            row.DurationMinutes,
+            row.Status,
+            Utc(row.StartsAt),
+            row.InterviewerName,
+            row.InterviewerUserId,
+            row.CandidateName,
+            row.CandidateEmail,
+            row.CurrentDesignation,
+            row.CurrentCompany,
+            row.ExperienceYears,
+            row.NoticePeriodDays,
+            row.ApplicationStatus,
+            row.CoverLetterText,
+            row.RecruiterNotes,
+            row.ApplicationSnapshotJson,
+            row.JobRequestDescription,
+            row.JobPostDescription,
+            row.ExperienceMinYears,
+            row.ExperienceMaxYears,
+            requiredSkills,
+            candidateSkills,
+            documents,
+            priorFeedback);
+    }
+
+    private static InterviewQuestionRecommendationSet ToInterviewQuestionRecommendationSet(
+        InterviewQuestionRecommendationSetRow row,
+        IReadOnlyList<InterviewQuestionRecommendationRow> questionRows)
+    {
+        return new InterviewQuestionRecommendationSet(
+            row.RecommendationSetId,
+            row.InterviewId,
+            row.JobApplicationId,
+            row.JobPostInterviewRoundId,
+            row.AiAgentRunId,
+            row.Model,
+            row.PromptVersion,
+            row.VersionNumber,
+            row.Summary,
+            row.Rationale,
+            row.RegenerateReason,
+            DeserializeInterviewQuestionCoverage(row.CoverageJson),
+            row.Status,
+            Utc(row.GeneratedAt),
+            questionRows.Select(ToInterviewQuestionRecommendation).ToArray());
+    }
+
+    private static InterviewQuestionRecommendation ToInterviewQuestionRecommendation(InterviewQuestionRecommendationRow row)
+    {
+        return new InterviewQuestionRecommendation(
+            row.QuestionRecommendationId,
+            row.SortOrder,
+            row.QuestionText,
+            row.QuestionType,
+            row.RoundType,
+            row.SkillName,
+            row.Difficulty,
+            row.Rationale,
+            row.ExpectedSignal,
+            DeserializeStringArray(row.FollowUpsJson),
+            DeserializeStringArray(row.EvaluationRubricJson),
+            row.SourceBankItemId);
+    }
+
+    private static InterviewQuestionBankItem ToInterviewQuestionBankItem(InterviewQuestionBankItemRow row)
+    {
+        return new InterviewQuestionBankItem(
+            row.InterviewQuestionBankItemId,
+            row.TenantId,
+            row.SkillId,
+            row.SkillName,
+            row.SkillCategory,
+            row.DepartmentId,
+            row.JobFamily,
+            row.RoundType,
+            row.Difficulty,
+            row.QuestionText,
+            row.ExpectedSignal,
+            DeserializeStringArray(row.FollowUpsJson),
+            DeserializeStringArray(row.EvaluationRubricJson),
+            row.SourceTitle,
+            row.SourceUrl,
+            row.ContentHashSha256);
+    }
+
+    private static async Task<InterviewQuestionContextRow?> ReadInterviewQuestionContextAsync(
+        SqlConnection connection,
+        IDbTransaction? transaction,
+        Guid tenantId,
+        Guid actorUserId,
+        bool includeAllTenantTasks,
+        Guid interviewId,
+        CancellationToken cancellationToken)
+    {
+        const string sql = """
+            SELECT TOP (1)
+                interview.InterviewId,
+                application.JobApplicationId,
+                postRound.JobPostInterviewRoundId,
+                application.JobRequestId,
+                post.JobPostId,
+                candidate.CandidateId,
+                request.RequestCode,
+                post.Title AS JobTitle,
+                COALESCE(request.ClientName, N'') AS Client,
+                COALESCE(postDepartment.Name, requestDepartment.Name, N'') AS Department,
+                COALESCE(postLocation.Name, requestLocation.Name, N'') AS Location,
+                postRound.Name AS RoundName,
+                interview.DurationMinutes,
+                interview.Status,
+                interview.StartsAtUtc AS StartsAt,
+                interviewer.DisplayName AS InterviewerName,
+                interview.InterviewerUserId,
+                candidate.DisplayName AS CandidateName,
+                candidate.Email AS CandidateEmail,
+                candidate.CurrentDesignation,
+                candidate.CurrentCompany,
+                candidate.ExperienceYears,
+                candidate.NoticePeriodDays,
+                application.CurrentStatus AS ApplicationStatus,
+                application.CoverLetterText,
+                application.RecruiterNotes,
+                application.ApplicationSnapshotJson,
+                request.Description AS JobRequestDescription,
+                post.Description AS JobPostDescription,
+                post.ExperienceMinYears,
+                post.ExperienceMaxYears
+            FROM dbo.Interviews AS interview
+            INNER JOIN dbo.JobApplications AS application
+                ON application.TenantId = interview.TenantId
+                AND application.JobApplicationId = interview.JobApplicationId
+            INNER JOIN dbo.JobRequests AS request
+                ON request.TenantId = application.TenantId
+                AND request.JobRequestId = application.JobRequestId
+            INNER JOIN dbo.JobPosts AS post
+                ON post.TenantId = application.TenantId
+                AND post.JobPostId = application.JobPostId
+            INNER JOIN dbo.Candidates AS candidate
+                ON candidate.TenantId = application.TenantId
+                AND candidate.CandidateId = application.CandidateId
+            INNER JOIN dbo.JobPostInterviewRounds AS postRound
+                ON postRound.TenantId = interview.TenantId
+                AND postRound.JobPostInterviewRoundId = interview.JobPostInterviewRoundId
+            INNER JOIN dbo.AppUsers AS interviewer
+                ON interviewer.TenantId = interview.TenantId
+                AND interviewer.UserId = interview.InterviewerUserId
+            LEFT JOIN dbo.Departments AS requestDepartment
+                ON requestDepartment.TenantId = request.TenantId
+                AND requestDepartment.DepartmentId = request.DepartmentId
+            LEFT JOIN dbo.Departments AS postDepartment
+                ON postDepartment.TenantId = post.TenantId
+                AND postDepartment.DepartmentId = post.DepartmentId
+            LEFT JOIN dbo.Locations AS requestLocation
+                ON requestLocation.TenantId = request.TenantId
+                AND requestLocation.LocationId = request.LocationId
+            LEFT JOIN dbo.Locations AS postLocation
+                ON postLocation.TenantId = post.TenantId
+                AND postLocation.LocationId = post.LocationId
+            WHERE interview.TenantId = @TenantId
+              AND interview.InterviewId = @InterviewId
+              AND interview.Status IN (N'Scheduled', N'Completed')
+              AND (@IncludeAllTenantTasks = CAST(1 AS BIT) OR interview.InterviewerUserId = @ActorUserId);
+            """;
+
+        return await connection.QuerySingleOrDefaultAsync<InterviewQuestionContextRow>(new CommandDefinition(
+            sql,
+            new { TenantId = tenantId, ActorUserId = actorUserId, IncludeAllTenantTasks = includeAllTenantTasks, InterviewId = interviewId },
+            transaction,
+            cancellationToken: cancellationToken));
+    }
+
+    private static async Task<IReadOnlyList<OperationsInterviewQuestionSkill>> ListInterviewQuestionRequiredSkillsAsync(
+        SqlConnection connection,
+        IDbTransaction? transaction,
+        Guid tenantId,
+        Guid jobRequestId,
+        Guid jobPostId,
+        CancellationToken cancellationToken)
+    {
+        const string sql = """
+            SELECT DISTINCT
+                skill.SkillId,
+                skill.Name,
+                skill.Category
+            FROM dbo.Skills AS skill
+            WHERE skill.TenantId = @TenantId
+              AND skill.Status = N'Active'
+              AND (
+                    skill.SkillId IN
+                    (
+                        SELECT postSkill.SkillId
+                        FROM dbo.JobPostSkills AS postSkill
+                        WHERE postSkill.TenantId = @TenantId
+                          AND postSkill.JobPostId = @JobPostId
+                    )
+                    OR skill.SkillId IN
+                    (
+                        SELECT requestSkill.SkillId
+                        FROM dbo.JobRequestSkills AS requestSkill
+                        WHERE requestSkill.TenantId = @TenantId
+                          AND requestSkill.JobRequestId = @JobRequestId
+                    )
+                  )
+            ORDER BY skill.Name;
+            """;
+
+        var rows = await connection.QueryAsync<OperationsInterviewQuestionSkill>(new CommandDefinition(
+            sql,
+            new { TenantId = tenantId, JobRequestId = jobRequestId, JobPostId = jobPostId },
+            transaction,
+            cancellationToken: cancellationToken));
+
+        return rows.ToArray();
+    }
+
+    private static async Task<IReadOnlyList<OperationsInterviewQuestionSkill>> ListInterviewQuestionCandidateSkillsAsync(
+        SqlConnection connection,
+        IDbTransaction? transaction,
+        Guid tenantId,
+        Guid candidateId,
+        CancellationToken cancellationToken)
+    {
+        const string sql = """
+            SELECT
+                skill.SkillId,
+                skill.Name,
+                skill.Category
+            FROM dbo.CandidateSkills AS candidateSkill
+            INNER JOIN dbo.Skills AS skill
+                ON skill.TenantId = candidateSkill.TenantId
+                AND skill.SkillId = candidateSkill.SkillId
+            WHERE candidateSkill.TenantId = @TenantId
+              AND candidateSkill.CandidateId = @CandidateId
+              AND skill.Status = N'Active'
+            ORDER BY candidateSkill.IsPrimary DESC, skill.Name;
+            """;
+
+        var rows = await connection.QueryAsync<OperationsInterviewQuestionSkill>(new CommandDefinition(
+            sql,
+            new { TenantId = tenantId, CandidateId = candidateId },
+            transaction,
+            cancellationToken: cancellationToken));
+
+        return rows.ToArray();
+    }
+
+    private static async Task<IReadOnlyList<OperationsCandidateInterviewEvidence>> ListInterviewQuestionPriorFeedbackAsync(
+        SqlConnection connection,
+        IDbTransaction? transaction,
+        Guid tenantId,
+        Guid jobApplicationId,
+        Guid currentInterviewId,
+        CancellationToken cancellationToken)
+    {
+        const string sql = """
+            SELECT
+                interview.InterviewId,
+                interview.JobApplicationId,
+                postRound.Name AS RoundName,
+                interview.Status,
+                feedback.Recommendation,
+                feedback.TechnicalScore,
+                feedback.CommunicationScore,
+                feedback.CultureScore,
+                feedback.FeedbackText AS FeedbackSummary,
+                feedback.SubmittedAtUtc AS SubmittedAt
+            FROM dbo.Interviews AS interview
+            INNER JOIN dbo.JobPostInterviewRounds AS postRound
+                ON postRound.TenantId = interview.TenantId
+                AND postRound.JobPostInterviewRoundId = interview.JobPostInterviewRoundId
+            LEFT JOIN dbo.InterviewFeedback AS feedback
+                ON feedback.TenantId = interview.TenantId
+                AND feedback.InterviewId = interview.InterviewId
+                AND feedback.IsSubmitted = CAST(1 AS BIT)
+            WHERE interview.TenantId = @TenantId
+              AND interview.JobApplicationId = @JobApplicationId
+              AND interview.InterviewId <> @CurrentInterviewId
+            ORDER BY interview.StartsAtUtc ASC;
+            """;
+
+        var rows = await connection.QueryAsync<InterviewQuestionPriorFeedbackRow>(new CommandDefinition(
+            sql,
+            new { TenantId = tenantId, JobApplicationId = jobApplicationId, CurrentInterviewId = currentInterviewId },
+            transaction,
+            cancellationToken: cancellationToken));
+
+        return rows.Select(row => new OperationsCandidateInterviewEvidence(
+            row.InterviewId,
+            row.JobApplicationId,
+            row.RoundName,
+            row.Status,
+            row.Recommendation,
+            row.TechnicalScore,
+            row.CommunicationScore,
+            row.CultureScore,
+            row.FeedbackSummary,
+            ToUtc(row.SubmittedAt))).ToArray();
+    }
+
+    private static async Task<IReadOnlyList<InterviewQuestionRecommendationRow>> ReadInterviewQuestionRecommendationRowsAsync(
+        SqlConnection connection,
+        IDbTransaction? transaction,
+        Guid tenantId,
+        Guid recommendationSetId,
+        CancellationToken cancellationToken)
+    {
+        const string questionSql = """
+            SELECT
+                QuestionRecommendationId,
+                SortOrder,
+                QuestionText,
+                QuestionType,
+                RoundType,
+                SkillName,
+                Difficulty,
+                Rationale,
+                ExpectedSignal,
+                FollowUpsJson,
+                EvaluationRubricJson,
+                SourceBankItemId
+            FROM dbo.InterviewQuestionRecommendations
+            WHERE TenantId = @TenantId
+              AND RecommendationSetId = @RecommendationSetId
+            ORDER BY SortOrder ASC;
+            """;
+
+        var rows = await connection.QueryAsync<InterviewQuestionRecommendationRow>(new CommandDefinition(
+            questionSql,
+            new { TenantId = tenantId, RecommendationSetId = recommendationSetId },
+            transaction,
+            cancellationToken: cancellationToken));
+
+        return rows.ToArray();
+    }
+
+    private static InterviewQuestionCoverage DeserializeInterviewQuestionCoverage(string? coverageJson)
+    {
+        try
+        {
+            var coverage = string.IsNullOrWhiteSpace(coverageJson)
+                ? null
+                : JsonSerializer.Deserialize<InterviewQuestionCoverage>(coverageJson);
+            return coverage ?? new InterviewQuestionCoverage("Technical", 0, 0, "Unavailable: coverage metadata missing", [], []);
+        }
+        catch
+        {
+            return new InterviewQuestionCoverage("Technical", 0, 0, "Unavailable: coverage metadata invalid", [], []);
+        }
+    }
+
+    private static IReadOnlyList<string> DeserializeStringArray(string? json)
+    {
+        try
+        {
+            return string.IsNullOrWhiteSpace(json)
+                ? []
+                : JsonSerializer.Deserialize<string[]>(json) ?? [];
+        }
+        catch
+        {
+            return [];
+        }
+    }
+
+    private static string NormalizeInterviewRoundType(string roundName)
+    {
+        var value = (roundName ?? string.Empty).Trim().ToLowerInvariant();
+        if (value.Contains("screen", StringComparison.Ordinal))
+        {
+            return "Screening";
+        }
+
+        if (value.Contains("hr", StringComparison.Ordinal) ||
+            value.Contains("human resource", StringComparison.Ordinal))
+        {
+            return "HR";
+        }
+
+        if (value.Contains("hod", StringComparison.Ordinal) ||
+            value.Contains("head", StringComparison.Ordinal) ||
+            value.Contains("department", StringComparison.Ordinal))
+        {
+            return "HOD";
+        }
+
+        if (value.Contains("behavior", StringComparison.Ordinal) ||
+            value.Contains("culture", StringComparison.Ordinal))
+        {
+            return "Behavioral";
+        }
+
+        return "Technical";
+    }
+
     private static async Task QueueInterviewScheduledEmailsAsync(
         SqlConnection connection,
         IDbTransaction transaction,
@@ -9264,7 +10481,8 @@ public sealed class DapperOperationsRepository : IOperationsRepository
                 application.CoverLetterText,
                 application.AppliedAtUtc AS AppliedAt,
                 application.FinalDecisionAtUtc AS FinalDecisionAt,
-                application.FinalDecisionReason
+                application.FinalDecisionReason,
+                latestOffer.StartDate AS OfferStartDate
             FROM dbo.JobApplications AS application
             INNER JOIN dbo.JobRequests AS request
                 ON request.TenantId = application.TenantId
@@ -9278,6 +10496,14 @@ public sealed class DapperOperationsRepository : IOperationsRepository
             LEFT JOIN dbo.Locations AS location
                 ON location.TenantId = request.TenantId
                 AND location.LocationId = request.LocationId
+            OUTER APPLY
+            (
+                SELECT TOP (1) offer.StartDate
+                FROM dbo.OfferLetters AS offer
+                WHERE offer.TenantId = application.TenantId
+                  AND offer.JobApplicationId = application.JobApplicationId
+                ORDER BY offer.Version DESC, offer.UpdatedAtUtc DESC
+            ) AS latestOffer
             WHERE application.TenantId = @TenantId
               AND application.CandidateId IN @CandidateIds
               AND application.JobRequestId <> @JobRequestId
@@ -9315,7 +10541,8 @@ public sealed class DapperOperationsRepository : IOperationsRepository
                 application.CoverLetterText,
                 application.AppliedAtUtc AS AppliedAt,
                 application.FinalDecisionAtUtc AS FinalDecisionAt,
-                application.FinalDecisionReason
+                application.FinalDecisionReason,
+                latestOffer.StartDate AS OfferStartDate
             FROM dbo.JobApplications AS application
             INNER JOIN dbo.JobRequests AS request
                 ON request.TenantId = application.TenantId
@@ -9329,6 +10556,14 @@ public sealed class DapperOperationsRepository : IOperationsRepository
             LEFT JOIN dbo.Locations AS location
                 ON location.TenantId = request.TenantId
                 AND location.LocationId = request.LocationId
+            OUTER APPLY
+            (
+                SELECT TOP (1) offer.StartDate
+                FROM dbo.OfferLetters AS offer
+                WHERE offer.TenantId = application.TenantId
+                  AND offer.JobApplicationId = application.JobApplicationId
+                ORDER BY offer.Version DESC, offer.UpdatedAtUtc DESC
+            ) AS latestOffer
             WHERE application.TenantId = @TenantId
               AND application.CandidateId = @CandidateId
             ORDER BY application.AppliedAtUtc DESC;
@@ -10197,6 +11432,7 @@ public sealed class DapperOperationsRepository : IOperationsRepository
             Utc(row.AppliedAt),
             ToUtc(row.FinalDecisionAt),
             row.FinalDecisionReason,
+            row.OfferStartDate.HasValue ? DateOnly.FromDateTime(row.OfferStartDate.Value) : null,
             summary.Passed,
             summary.Total,
             summary.DisplayText);
@@ -10271,15 +11507,25 @@ public sealed class DapperOperationsRepository : IOperationsRepository
             ? application.AppliedAt
             : items.Max(item => item.OccurredAt);
         var finalOccurredAt = application.FinalDecisionAt ?? latestOccurredAt;
+        var statusDescription = application.FinalDecisionReason
+            ?? (isTerminal
+                ? "The hiring team recorded this as the final application outcome."
+                : "The application is still moving through the hiring process.");
+        if (application.Status is "Hired" && application.OfferStartDate.HasValue)
+        {
+            statusDescription = $"Offer accepted. Joining date: {application.OfferStartDate.Value.ToString("MMMM d, yyyy", CultureInfo.InvariantCulture)}.";
+        }
+        else if (application.Status is "Joined" && application.OfferStartDate.HasValue)
+        {
+            statusDescription = $"Joining completed on {application.OfferStartDate.Value.ToString("MMMM d, yyyy", CultureInfo.InvariantCulture)}.";
+        }
+
         items.Add(new PortalApplicationTimelineItem(
             isTerminal ? "FinalOutcome" : "CurrentStatus",
             isTerminal
                 ? $"Final outcome: {PortalStatusLabel(application.Status)}"
                 : $"Current status: {PortalStatusLabel(application.Status)}",
-            application.FinalDecisionReason
-                ?? (isTerminal
-                    ? "The hiring team recorded this as the final application outcome."
-                    : "The application is still moving through the hiring process."),
+            statusDescription,
             finalOccurredAt,
             PortalStatusLabel(application.Status)));
 
@@ -12312,6 +13558,471 @@ public sealed class DapperOperationsRepository : IOperationsRepository
         return await connection.QuerySingleOrDefaultAsync<CandidateMutableRow>(new CommandDefinition(
             sql,
             new { TenantId = tenantId, CandidateId = candidateId },
+            transaction,
+            cancellationToken: cancellationToken));
+    }
+
+    private static async Task<IReadOnlyList<OperationsOnlineHeadhuntingDuplicateCandidate>> ListOnlineHeadhuntingDuplicateCandidatesAsync(
+        SqlConnection connection,
+        Guid tenantId,
+        CancellationToken cancellationToken)
+    {
+        const string sql = """
+            SELECT
+                candidate.CandidateId,
+                candidate.DisplayName,
+                candidate.Email,
+                candidate.Phone,
+                candidate.LinkedInUrl,
+                candidate.CurrentDesignation,
+                candidate.CurrentCompany,
+                candidate.ExperienceYears,
+                skill.Name AS SkillName
+            FROM dbo.Candidates AS candidate
+            LEFT JOIN dbo.CandidateSkills AS candidateSkill
+                ON candidateSkill.TenantId = candidate.TenantId
+                AND candidateSkill.CandidateId = candidate.CandidateId
+            LEFT JOIN dbo.Skills AS skill
+                ON skill.TenantId = candidateSkill.TenantId
+                AND skill.SkillId = candidateSkill.SkillId
+            WHERE candidate.TenantId = @TenantId
+              AND candidate.Status = N'Active'
+            ORDER BY candidate.DisplayName, skill.Name;
+            """;
+
+        var rows = (await connection.QueryAsync<OnlineHeadhuntingDuplicateCandidateRow>(new CommandDefinition(
+            sql,
+            new { TenantId = tenantId },
+            cancellationToken: cancellationToken))).ToArray();
+
+        return rows
+            .GroupBy(row => row.CandidateId)
+            .Select(group =>
+            {
+                var first = group.First();
+                return new OperationsOnlineHeadhuntingDuplicateCandidate(
+                    first.CandidateId,
+                    first.DisplayName,
+                    first.Email,
+                    first.Phone,
+                    first.LinkedInUrl,
+                    first.CurrentDesignation,
+                    first.CurrentCompany,
+                    first.ExperienceYears,
+                    group.Select(row => row.SkillName)
+                        .Where(skill => !string.IsNullOrWhiteSpace(skill))
+                        .Select(skill => skill!)
+                        .Distinct(StringComparer.OrdinalIgnoreCase)
+                        .ToArray());
+            })
+            .ToArray();
+    }
+
+    private static async Task<IReadOnlyList<OperationsOnlineHeadhuntingExistingLead>> ListOnlineHeadhuntingExistingLeadsAsync(
+        SqlConnection connection,
+        Guid tenantId,
+        Guid jobRequestId,
+        CancellationToken cancellationToken)
+    {
+        const string sql = """
+            SELECT
+                SourceUrl,
+                ProfileUrl,
+                Email,
+                Phone,
+                DisplayName,
+                CurrentTitle,
+                CurrentCompany,
+                LocationText
+            FROM dbo.OnlineCandidateLeads
+            WHERE TenantId = @TenantId
+              AND JobRequestId = @JobRequestId;
+            """;
+
+        return (await connection.QueryAsync<OperationsOnlineHeadhuntingExistingLead>(new CommandDefinition(
+            sql,
+            new { TenantId = tenantId, JobRequestId = jobRequestId },
+            cancellationToken: cancellationToken))).ToArray();
+    }
+
+    private static OperationsOnlineCandidateLead ToPersistedLead(
+        Guid leadId,
+        Guid runId,
+        Guid jobRequestId,
+        OnlineHeadhuntingAgentLead lead,
+        string status,
+        DateTime createdAtUtc)
+    {
+        return new OperationsOnlineCandidateLead(
+            leadId,
+            runId,
+            jobRequestId,
+            lead.Rank,
+            lead.SourceCode,
+            lead.SourceDisplayName,
+            lead.SourceUrl,
+            lead.DisplayName,
+            lead.CurrentTitle,
+            lead.CurrentCompany,
+            lead.LocationText,
+            lead.Email,
+            lead.Phone,
+            lead.ProfileUrl,
+            lead.EvidenceSnippet,
+            lead.MatchScore,
+            lead.Confidence,
+            lead.FitSummary,
+            lead.Strengths,
+            lead.MatchedSkills,
+            lead.Gaps,
+            lead.MissingData,
+            lead.DuplicateStatus,
+            lead.DuplicateCandidateId,
+            lead.DuplicateCandidateName,
+            lead.DuplicateExplanation,
+            lead.OutreachDraft,
+            status,
+            Utc(createdAtUtc));
+    }
+
+    private static IReadOnlyList<OnlineHeadhuntingAgentLead> DistinctNewOnlineLeads(
+        IReadOnlyList<OperationsOnlineHeadhuntingExistingLead> existingLeads,
+        IReadOnlyList<OnlineHeadhuntingAgentLead> leads)
+    {
+        var seen = existingLeads
+            .SelectMany(GetOnlineLeadIdentityKeys)
+            .Where(key => !string.IsNullOrWhiteSpace(key))
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        var distinct = new List<OnlineHeadhuntingAgentLead>();
+        foreach (var lead in leads)
+        {
+            var keys = GetOnlineLeadIdentityKeys(lead).ToArray();
+            if (keys.Length > 0 && keys.Any(seen.Contains))
+            {
+                continue;
+            }
+
+            foreach (var key in keys)
+            {
+                seen.Add(key);
+            }
+
+            distinct.Add(lead with { Rank = distinct.Count + 1 });
+        }
+
+        return distinct;
+    }
+
+    private static IEnumerable<string> GetOnlineLeadIdentityKeys(OperationsOnlineHeadhuntingExistingLead lead)
+    {
+        var sourceUrl = NormalizeOnlineLeadUrl(lead.SourceUrl);
+        if (!string.IsNullOrWhiteSpace(sourceUrl))
+        {
+            yield return $"url:{sourceUrl}";
+        }
+
+        var profileUrl = NormalizeOnlineLeadUrl(lead.ProfileUrl);
+        if (!string.IsNullOrWhiteSpace(profileUrl))
+        {
+            yield return $"url:{profileUrl}";
+        }
+
+        if (!string.IsNullOrWhiteSpace(lead.Email))
+        {
+            yield return $"email:{lead.Email.Trim().ToLowerInvariant()}";
+        }
+
+        if (!string.IsNullOrWhiteSpace(lead.Phone))
+        {
+            var phone = new string(lead.Phone.Where(char.IsDigit).ToArray());
+            if (!string.IsNullOrWhiteSpace(phone))
+            {
+                yield return $"phone:{phone}";
+            }
+        }
+    }
+
+    private static IEnumerable<string> GetOnlineLeadIdentityKeys(OnlineHeadhuntingAgentLead lead)
+    {
+        var sourceUrl = NormalizeOnlineLeadUrl(lead.SourceUrl);
+        if (!string.IsNullOrWhiteSpace(sourceUrl))
+        {
+            yield return $"url:{sourceUrl}";
+        }
+
+        var profileUrl = NormalizeOnlineLeadUrl(lead.ProfileUrl);
+        if (!string.IsNullOrWhiteSpace(profileUrl))
+        {
+            yield return $"url:{profileUrl}";
+        }
+
+        if (!string.IsNullOrWhiteSpace(lead.Email))
+        {
+            yield return $"email:{lead.Email.Trim().ToLowerInvariant()}";
+        }
+
+        if (!string.IsNullOrWhiteSpace(lead.Phone))
+        {
+            var phone = new string(lead.Phone.Where(char.IsDigit).ToArray());
+            if (!string.IsNullOrWhiteSpace(phone))
+            {
+                yield return $"phone:{phone}";
+            }
+        }
+    }
+
+    private static async Task<OperationsOnlineHeadhuntingResult?> GetLatestOnlineHeadhuntingResultAsync(
+        SqlConnection connection,
+        Guid tenantId,
+        Guid jobRequestId,
+        CancellationToken cancellationToken)
+    {
+        const string runSql = """
+            SELECT TOP (1)
+                OnlineCandidateSourcingRunId,
+                JobRequestId,
+                JobPostId,
+                AiAgentRunId,
+                SearchMoreFromRunId,
+                RequestedLimit,
+                DailyLeadLimit,
+                DailyLeadCountBeforeRun,
+                LeadsReturned,
+                SearchStatus,
+                Model,
+                SourceCodesJson,
+                QueriesJson,
+                CreatedAtUtc
+            FROM dbo.OnlineCandidateSourcingRuns
+            WHERE TenantId = @TenantId
+              AND JobRequestId = @JobRequestId
+            ORDER BY CreatedAtUtc DESC;
+            """;
+
+        var run = await connection.QuerySingleOrDefaultAsync<OnlineHeadhuntingRunRow>(new CommandDefinition(
+            runSql,
+            new { TenantId = tenantId, JobRequestId = jobRequestId },
+            cancellationToken: cancellationToken));
+        if (run is null)
+        {
+            return null;
+        }
+
+        const string leadSql = """
+            SELECT
+                OnlineCandidateLeadId,
+                OnlineCandidateSourcingRunId,
+                JobRequestId,
+                Rank,
+                SourceCode,
+                SourceDisplayName,
+                SourceUrl,
+                DisplayName,
+                CurrentTitle,
+                CurrentCompany,
+                LocationText,
+                Email,
+                Phone,
+                ProfileUrl,
+                EvidenceSnippet,
+                MatchScore,
+                Confidence,
+                FitSummary,
+                StrengthsJson,
+                MatchedSkillsJson,
+                GapsJson,
+                MissingDataJson,
+                DuplicateStatus,
+                DuplicateCandidateId,
+                DuplicateCandidateName,
+                DuplicateExplanation,
+                OutreachDraft,
+                Status,
+                CreatedAtUtc
+            FROM dbo.OnlineCandidateLeads
+            WHERE TenantId = @TenantId
+              AND JobRequestId = @JobRequestId
+            ORDER BY CreatedAtUtc DESC, Rank;
+            """;
+
+        var leads = (await connection.QueryAsync<OnlineHeadhuntingLeadRow>(new CommandDefinition(
+            leadSql,
+            new { TenantId = tenantId, JobRequestId = jobRequestId },
+            cancellationToken: cancellationToken)))
+            .Select(ToOnlineLead)
+            .GroupBy(GetOnlineLeadIdentity, StringComparer.OrdinalIgnoreCase)
+            .Select(group => group.First())
+            .ToArray();
+
+        return new OperationsOnlineHeadhuntingResult(
+            new OperationsOnlineHeadhuntingRunSummary(
+                run.OnlineCandidateSourcingRunId,
+                run.JobRequestId,
+                run.JobPostId,
+                run.AiAgentRunId,
+                run.SearchMoreFromRunId,
+                run.RequestedLimit,
+                run.DailyLeadLimit,
+                run.DailyLeadCountBeforeRun,
+                run.LeadsReturned,
+                run.SearchStatus,
+                run.Model,
+                DeserializeStringArray(run.SourceCodesJson),
+                DeserializeStringArray(run.QueriesJson),
+                Utc(run.CreatedAtUtc)),
+            leads);
+    }
+
+    private static OperationsOnlineCandidateLead ToOnlineLead(OnlineHeadhuntingLeadRow row)
+    {
+        return new OperationsOnlineCandidateLead(
+            row.OnlineCandidateLeadId,
+            row.OnlineCandidateSourcingRunId,
+            row.JobRequestId,
+            row.Rank,
+            row.SourceCode,
+            row.SourceDisplayName,
+            row.SourceUrl,
+            row.DisplayName,
+            row.CurrentTitle,
+            row.CurrentCompany,
+            row.LocationText,
+            row.Email,
+            row.Phone,
+            row.ProfileUrl,
+            row.EvidenceSnippet,
+            row.MatchScore,
+            row.Confidence,
+            row.FitSummary,
+            DeserializeStringArray(row.StrengthsJson),
+            DeserializeStringArray(row.MatchedSkillsJson),
+            DeserializeStringArray(row.GapsJson),
+            DeserializeStringArray(row.MissingDataJson),
+            row.DuplicateStatus,
+            row.DuplicateCandidateId,
+            row.DuplicateCandidateName,
+            row.DuplicateExplanation,
+            row.OutreachDraft,
+            row.Status,
+            Utc(row.CreatedAtUtc));
+    }
+
+    private static string GetOnlineLeadIdentity(OperationsOnlineCandidateLead lead)
+    {
+        var profileUrl = NormalizeOnlineLeadUrl(lead.ProfileUrl);
+        if (!string.IsNullOrWhiteSpace(profileUrl))
+        {
+            return $"url:{profileUrl}";
+        }
+
+        var sourceUrl = NormalizeOnlineLeadUrl(lead.SourceUrl);
+        if (!string.IsNullOrWhiteSpace(sourceUrl))
+        {
+            return $"url:{sourceUrl}";
+        }
+
+        if (!string.IsNullOrWhiteSpace(lead.Email))
+        {
+            return $"email:{lead.Email.Trim().ToLowerInvariant()}";
+        }
+
+        if (!string.IsNullOrWhiteSpace(lead.Phone))
+        {
+            var phone = new string(lead.Phone.Where(char.IsDigit).ToArray());
+            if (!string.IsNullOrWhiteSpace(phone))
+            {
+                return $"phone:{phone}";
+            }
+        }
+
+        return $"lead:{lead.OnlineCandidateLeadId:D}";
+    }
+
+    private static string NormalizeOnlineLeadUrl(string? url)
+    {
+        return string.IsNullOrWhiteSpace(url)
+            ? string.Empty
+            : url.Trim().TrimEnd('/').ToLowerInvariant();
+    }
+
+    private static async Task<OperationsOnlineCandidateLead?> ReadOnlineLeadAsync(
+        SqlConnection connection,
+        Guid tenantId,
+        Guid onlineCandidateLeadId,
+        CancellationToken cancellationToken)
+    {
+        const string sql = """
+            SELECT TOP (1)
+                OnlineCandidateLeadId,
+                OnlineCandidateSourcingRunId,
+                JobRequestId,
+                Rank,
+                SourceCode,
+                SourceDisplayName,
+                SourceUrl,
+                DisplayName,
+                CurrentTitle,
+                CurrentCompany,
+                LocationText,
+                Email,
+                Phone,
+                ProfileUrl,
+                EvidenceSnippet,
+                MatchScore,
+                Confidence,
+                FitSummary,
+                StrengthsJson,
+                MatchedSkillsJson,
+                GapsJson,
+                MissingDataJson,
+                DuplicateStatus,
+                DuplicateCandidateId,
+                DuplicateCandidateName,
+                DuplicateExplanation,
+                OutreachDraft,
+                Status,
+                CreatedAtUtc
+            FROM dbo.OnlineCandidateLeads
+            WHERE TenantId = @TenantId
+              AND OnlineCandidateLeadId = @OnlineCandidateLeadId;
+            """;
+
+        var row = await connection.QuerySingleOrDefaultAsync<OnlineHeadhuntingLeadRow>(new CommandDefinition(
+            sql,
+            new { TenantId = tenantId, OnlineCandidateLeadId = onlineCandidateLeadId },
+            cancellationToken: cancellationToken));
+        return row is null ? null : ToOnlineLead(row);
+    }
+
+    private static async Task MarkOnlineHeadhuntingLeadConvertedAsync(
+        SqlConnection connection,
+        IDbTransaction transaction,
+        Guid tenantId,
+        Guid onlineLeadId,
+        Guid candidateId,
+        Guid jobApplicationId,
+        CancellationToken cancellationToken)
+    {
+        const string sql = """
+            UPDATE dbo.OnlineCandidateLeads
+            SET Status = N'Converted',
+                ConvertedCandidateId = @CandidateId,
+                ConvertedJobApplicationId = @JobApplicationId,
+                ConvertedAtUtc = SYSUTCDATETIME()
+            WHERE TenantId = @TenantId
+              AND OnlineCandidateLeadId = @OnlineLeadId;
+            """;
+
+        await connection.ExecuteAsync(new CommandDefinition(
+            sql,
+            new
+            {
+                TenantId = tenantId,
+                OnlineLeadId = onlineLeadId,
+                CandidateId = candidateId,
+                JobApplicationId = jobApplicationId
+            },
             transaction,
             cancellationToken: cancellationToken));
     }
@@ -14455,7 +16166,7 @@ public sealed class DapperOperationsRepository : IOperationsRepository
                     ON candidate.TenantId = application.TenantId
                     AND candidate.CandidateId = application.CandidateId
                 WHERE application.TenantId = @TenantId
-                  AND application.CurrentStatus IN (N'HiringManagerReview', N'Offered', N'OnHold', N'Rejected', N'Joined')
+                  AND application.CurrentStatus IN (N'HiringManagerReview', N'Offered', N'OnHold', N'Rejected', N'Hired', N'Joined')
                   AND (@IncludeAllTenantReviews = CAST(1 AS BIT) OR request.HiringManagerUserId = @ActorUserId)
             )
             SELECT TOP (8)
@@ -14521,6 +16232,7 @@ public sealed class DapperOperationsRepository : IOperationsRepository
     {
         return IsDashboardStatus(status, "HiringManagerReview") ||
             IsDashboardStatus(status, "Offered") ||
+            IsDashboardStatus(status, "Hired") ||
             IsDashboardStatus(status, "OnHold");
     }
 
@@ -15436,8 +17148,8 @@ public sealed class DapperOperationsRepository : IOperationsRepository
         const string sql = """
             UPDATE dbo.JobApplications
             SET CurrentStatus = @NewStatus,
-                FinalDecisionAtUtc = CASE WHEN @NewStatus IN (N'Offered', N'Rejected', N'OnHold', N'Joined') THEN SYSUTCDATETIME() ELSE FinalDecisionAtUtc END,
-                FinalDecisionReason = CASE WHEN @NewStatus IN (N'Offered', N'Rejected', N'OnHold', N'Joined') THEN @Reason ELSE FinalDecisionReason END,
+                FinalDecisionAtUtc = CASE WHEN @NewStatus IN (N'Offered', N'OfferDeclined', N'Rejected', N'OnHold', N'Hired', N'Joined') THEN SYSUTCDATETIME() ELSE FinalDecisionAtUtc END,
+                FinalDecisionReason = CASE WHEN @NewStatus IN (N'Offered', N'OfferDeclined', N'Rejected', N'OnHold', N'Hired', N'Joined') THEN @Reason ELSE FinalDecisionReason END,
                 UpdatedAtUtc = SYSUTCDATETIME()
             WHERE TenantId = @TenantId
               AND JobApplicationId = @JobApplicationId;
@@ -15459,6 +17171,59 @@ public sealed class DapperOperationsRepository : IOperationsRepository
             actorUserId,
             reason ?? $"Hiring outcome changed to {newStatus}.",
             cancellationToken);
+    }
+
+    private static async Task UpdateLatestOfferLetterOutcomeAsync(
+        SqlConnection connection,
+        IDbTransaction transaction,
+        Guid tenantId,
+        Guid jobApplicationId,
+        string newStatus,
+        DateOnly? joiningDate,
+        CancellationToken cancellationToken)
+    {
+        var offerStatus = newStatus switch
+        {
+            "Offered" => "Presented",
+            "Hired" or "Joined" => "Accepted",
+            "OfferDeclined" or "Rejected" => "Declined",
+            _ => null
+        };
+
+        if (offerStatus is null && joiningDate is null)
+        {
+            return;
+        }
+
+        const string sql = """
+            UPDATE offer
+            SET Status = COALESCE(@OfferStatus, offer.Status),
+                StartDate = COALESCE(@JoiningDate, offer.StartDate),
+                UpdatedAtUtc = SYSUTCDATETIME()
+            FROM dbo.OfferLetters AS offer
+            INNER JOIN
+            (
+                SELECT TOP (1) latest.OfferLetterId
+                FROM dbo.OfferLetters AS latest
+                WHERE latest.TenantId = @TenantId
+                  AND latest.JobApplicationId = @JobApplicationId
+                ORDER BY latest.Version DESC, latest.UpdatedAtUtc DESC
+            ) AS latest
+                ON latest.OfferLetterId = offer.OfferLetterId
+            WHERE offer.TenantId = @TenantId;
+            """;
+
+        await connection.ExecuteAsync(new CommandDefinition(
+            sql,
+            new
+            {
+                TenantId = tenantId,
+                JobApplicationId = jobApplicationId,
+                OfferStatus = offerStatus,
+                JoiningDate = joiningDate?.ToDateTime(TimeOnly.MinValue)
+            },
+            transaction,
+            cancellationToken: cancellationToken));
     }
 
     private static async Task InsertExternalFulfillmentAsync(
@@ -15493,7 +17258,7 @@ public sealed class DapperOperationsRepository : IOperationsRepository
                 N'ExternalCandidate',
                 N'Completed',
                 SYSUTCDATETIME(),
-                N'Candidate joined from Hiring Manager outcome.'
+                N'Candidate hired or joined from Hiring Manager outcome.'
             WHERE NOT EXISTS
             (
                 SELECT 1
@@ -15636,7 +17401,7 @@ public sealed class DapperOperationsRepository : IOperationsRepository
 
     private static bool IsOfferEligibleStatus(string status)
     {
-        return status is "HiringManagerReview" or "Offered" or "OnHold";
+        return status is "HiringManagerReview" or "Offered" or "OfferDeclined" or "OnHold" or "Hired" or "Joined";
     }
 
     private static string BuildPmoOwnerState(
@@ -16290,6 +18055,66 @@ public sealed class DapperOperationsRepository : IOperationsRepository
         string PayloadJson,
         DateTime GeneratedAt);
 
+    private sealed record OnlineHeadhuntingDuplicateCandidateRow(
+        Guid CandidateId,
+        string DisplayName,
+        string Email,
+        string? Phone,
+        string? LinkedInUrl,
+        string? CurrentDesignation,
+        string? CurrentCompany,
+        decimal? ExperienceYears,
+        string? SkillName);
+
+    private sealed record OnlineHeadhuntingRunRow(
+        Guid OnlineCandidateSourcingRunId,
+        Guid JobRequestId,
+        Guid? JobPostId,
+        Guid? AiAgentRunId,
+        Guid? SearchMoreFromRunId,
+        int RequestedLimit,
+        int DailyLeadLimit,
+        int DailyLeadCountBeforeRun,
+        int LeadsReturned,
+        string SearchStatus,
+        string Model,
+        string SourceCodesJson,
+        string QueriesJson,
+        DateTime CreatedAtUtc);
+
+    private sealed record OnlineHeadhuntingLeadRow(
+        Guid OnlineCandidateLeadId,
+        Guid OnlineCandidateSourcingRunId,
+        Guid JobRequestId,
+        int Rank,
+        string SourceCode,
+        string SourceDisplayName,
+        string SourceUrl,
+        string? DisplayName,
+        string? CurrentTitle,
+        string? CurrentCompany,
+        string? LocationText,
+        string? Email,
+        string? Phone,
+        string? ProfileUrl,
+        string EvidenceSnippet,
+        decimal MatchScore,
+        string Confidence,
+        string FitSummary,
+        string StrengthsJson,
+        string MatchedSkillsJson,
+        string GapsJson,
+        string MissingDataJson,
+        string DuplicateStatus,
+        Guid? DuplicateCandidateId,
+        string? DuplicateCandidateName,
+        string? DuplicateExplanation,
+        string OutreachDraft,
+        string Status,
+        DateTime CreatedAtUtc);
+
+    private sealed record OnlineLeadActionContextRow(Guid JobRequestId);
+
     private sealed record BenchMatchPayload(
         int Rank,
         decimal Score,
@@ -16406,7 +18231,8 @@ public sealed class DapperOperationsRepository : IOperationsRepository
         string? CoverLetterText,
         DateTime AppliedAt,
         DateTime? FinalDecisionAt,
-        string? FinalDecisionReason);
+        string? FinalDecisionReason,
+        DateTime? OfferStartDate);
 
     private sealed record RediscoveryInterviewEvidenceRow(
         Guid CandidateId,
@@ -16453,7 +18279,8 @@ public sealed class DapperOperationsRepository : IOperationsRepository
         string SourceLabel,
         DateTime AppliedAt,
         DateTime? FinalDecisionAt,
-        string? FinalDecisionReason);
+        string? FinalDecisionReason,
+        DateTime? OfferStartDate);
 
     private sealed record HistoricalCandidateRow(
         Guid CandidateId,
@@ -16482,6 +18309,7 @@ public sealed class DapperOperationsRepository : IOperationsRepository
         string Department,
         string Location,
         string Status,
+        int ApplicantCount,
         string RecruiterOwnerName,
         DateTime? PublishedAt,
         DateTime? ClosedAt,
@@ -16743,6 +18571,99 @@ public sealed class DapperOperationsRepository : IOperationsRepository
         int? CultureScore,
         string? FeedbackText,
         DateTime? SubmittedAt);
+
+    private sealed record InterviewQuestionContextRow(
+        Guid InterviewId,
+        Guid JobApplicationId,
+        Guid JobPostInterviewRoundId,
+        Guid JobRequestId,
+        Guid JobPostId,
+        Guid CandidateId,
+        string RequestCode,
+        string JobTitle,
+        string Client,
+        string Department,
+        string Location,
+        string RoundName,
+        int DurationMinutes,
+        string Status,
+        DateTime StartsAt,
+        string InterviewerName,
+        Guid InterviewerUserId,
+        string CandidateName,
+        string CandidateEmail,
+        string? CurrentDesignation,
+        string? CurrentCompany,
+        decimal? ExperienceYears,
+        int? NoticePeriodDays,
+        string ApplicationStatus,
+        string? CoverLetterText,
+        string? RecruiterNotes,
+        string? ApplicationSnapshotJson,
+        string JobRequestDescription,
+        string JobPostDescription,
+        decimal? ExperienceMinYears,
+        decimal? ExperienceMaxYears);
+
+    private sealed record InterviewQuestionPriorFeedbackRow(
+        Guid InterviewId,
+        Guid JobApplicationId,
+        string RoundName,
+        string Status,
+        string? Recommendation,
+        int? TechnicalScore,
+        int? CommunicationScore,
+        int? CultureScore,
+        string? FeedbackSummary,
+        DateTime? SubmittedAt);
+
+    private sealed record InterviewQuestionBankItemRow(
+        Guid InterviewQuestionBankItemId,
+        Guid TenantId,
+        Guid? SkillId,
+        string? SkillName,
+        string? SkillCategory,
+        Guid? DepartmentId,
+        string? JobFamily,
+        string RoundType,
+        string Difficulty,
+        string QuestionText,
+        string ExpectedSignal,
+        string FollowUpsJson,
+        string EvaluationRubricJson,
+        string? SourceTitle,
+        string? SourceUrl,
+        string ContentHashSha256);
+
+    private sealed record InterviewQuestionRecommendationSetRow(
+        Guid RecommendationSetId,
+        Guid InterviewId,
+        Guid JobApplicationId,
+        Guid JobPostInterviewRoundId,
+        Guid AiAgentRunId,
+        string Model,
+        string PromptVersion,
+        int VersionNumber,
+        string Summary,
+        string? Rationale,
+        string? RegenerateReason,
+        string CoverageJson,
+        string Status,
+        DateTime GeneratedAt);
+
+    private sealed record InterviewQuestionRecommendationRow(
+        Guid QuestionRecommendationId,
+        int SortOrder,
+        string QuestionText,
+        string QuestionType,
+        string RoundType,
+        string? SkillName,
+        string Difficulty,
+        string Rationale,
+        string ExpectedSignal,
+        string FollowUpsJson,
+        string EvaluationRubricJson,
+        Guid? SourceBankItemId);
 
     private sealed record InterviewScheduleNotificationContextRow(
         Guid JobApplicationId,

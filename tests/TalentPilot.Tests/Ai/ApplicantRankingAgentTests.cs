@@ -20,6 +20,10 @@ public sealed class ApplicantRankingAgentTests
               {
                 "jobApplicationId": "{{StrongApplicationId:D}}",
                 "explanation": "Ayesha is a strong applicant because her cover letter, CV, and React/Azure profile match the current job post. Recruiter remains responsible for the decision."
+              },
+              {
+                "jobApplicationId": "{{WeakApplicationId:D}}",
+                "explanation": "Omar has partial React evidence but the LLM notes the missing Azure evidence and lower experience alignment for recruiter review."
               }
             ]
             """);
@@ -64,7 +68,7 @@ public sealed class ApplicantRankingAgentTests
     [Fact]
     public async Task RankAsync_WhenEmbeddingServiceIsUnavailable_RecordsActionableSemanticStatus()
     {
-        var modelProvider = new CapturingModelProvider("[]");
+        var modelProvider = new CapturingModelProvider(CreateExplanationResponse(StrongApplicationId, WeakApplicationId));
         var logger = new CapturingRunLogger();
         var agent = new ApplicantRankingAgent(
             modelProvider,
@@ -80,6 +84,25 @@ public sealed class ApplicantRankingAgentTests
         Assert.Contains("Ollama embedding service is not reachable", logger.Metadata["semanticSimilarityStatus"]);
         Assert.Contains("nomic-embed-text", logger.Metadata["semanticSimilarityStatus"]);
         Assert.DoesNotContain("actively refused", logger.Metadata["semanticSimilarityStatus"], StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task RankAsync_WhenModelDoesNotReturnExplanations_FailsClosed()
+    {
+        var logger = new CapturingRunLogger();
+        var agent = new ApplicantRankingAgent(
+            new CapturingModelProvider("[]"),
+            new StaticEmbeddingProvider(),
+            new CapturingVectorStore(new Dictionary<Guid, decimal>()),
+            new StaticRuntimeSettingsResolver(),
+            logger);
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            agent.RankAsync(TenantId, CreateContext(), CancellationToken.None));
+
+        Assert.False(logger.Succeeded);
+        Assert.True(logger.Failed);
+        Assert.Contains("usable LLM explanations", logger.OutputSummary);
     }
 
     private static OperationsApplicantRankingContext CreateContext()
@@ -170,6 +193,12 @@ public sealed class ApplicantRankingAgentTests
                     null,
                     [])
             ]);
+    }
+
+    private static string CreateExplanationResponse(params Guid[] jobApplicationIds)
+    {
+        return "[" + string.Join(",", jobApplicationIds.Select((id, index) =>
+            $@"{{""jobApplicationId"":""{id:D}"",""explanation"":""LLM explanation {index + 1} for recruiter review.""}}")) + "]";
     }
 
     private static OperationsApplicantRankingApplication CreateApplication(
@@ -303,6 +332,8 @@ public sealed class ApplicantRankingAgentTests
     private sealed class CapturingRunLogger : IAiAgentRunLogger
     {
         public bool Succeeded { get; private set; }
+        public bool Failed { get; private set; }
+        public string OutputSummary { get; private set; } = string.Empty;
         public IReadOnlyDictionary<string, string> Metadata { get; private set; } =
             new Dictionary<string, string>();
 
@@ -319,6 +350,7 @@ public sealed class ApplicantRankingAgentTests
             CancellationToken cancellationToken)
         {
             Succeeded = true;
+            OutputSummary = outputSummary;
             Metadata = metadata;
             return Task.CompletedTask;
         }
@@ -330,6 +362,8 @@ public sealed class ApplicantRankingAgentTests
             IReadOnlyDictionary<string, string> metadata,
             CancellationToken cancellationToken)
         {
+            Failed = true;
+            OutputSummary = outputSummary;
             return Task.CompletedTask;
         }
     }

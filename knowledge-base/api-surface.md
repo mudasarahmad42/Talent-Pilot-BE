@@ -104,10 +104,16 @@ Keep this file aligned when controllers or frontend contracts change.
 - `GET /api/talent-pilot/recruitment/queue`
   - Recruiter/Tenant Admin list of visible `Recruiter Sourcing` assignments, claim state, request summary, current job post status, and recruiter owner.
 - `GET /api/talent-pilot/job-requests/{entityId}/recruiter-sourcing`
-  - Recruiter/Tenant Admin workspace data for one sourcing assignment: request summary, current sourcing assignment, existing Job Post, latest Talent Rediscovery rankings, active interview templates, and active skills.
+  - Recruiter/Tenant Admin workspace data for one sourcing assignment: request summary, current sourcing assignment, existing Job Post, latest Talent Rediscovery rankings, latest Online Headhunting lead run, active interview templates, and active skills.
 - `POST /api/talent-pilot/job-requests/{entityId}/talent-rediscovery/rank`
   - Runs the code-owned `talent-rediscovery` agent after recruiter sourcing claim or Tenant Admin override. Scores active warm candidates with useful historical applications using skills, vectors, prior outcomes, interview feedback, similar role history, and experience/availability signal.
   - Uses draft Job Post requirements first when one exists; otherwise uses the Job Request profile. Does not use web search and never contacts candidates or moves workflow stages. Persists latest candidate rankings in `AiRecommendationLogs`.
+- `POST /api/talent-pilot/job-requests/{entityId}/online-headhunting/search`
+  - Queues the code-owned `online-headhunting` agent after recruiter sourcing claim or Tenant Admin override. Body: `{ limit?: number | null, sourceCodes?: string[] | null, searchMoreFromRunId?: Guid | null }`.
+  - Returns `202 Accepted` with queued run metadata: request id, requested limit, daily cap/count, source codes, and queued timestamp. The initiating user receives a realtime `OnlineHeadhunting` notification when the background run succeeds or fails; notification metadata includes `refreshEntityType=RecruiterSourcing`, `jobRequestId`, and a route back to the AI Headhunting tab.
+  - Persists `OnlineCandidateSourcingRuns` and `OnlineCandidateLeads` only. Default/max limit is 20 leads per run; total persisted leads are capped at 100 per Job Request per UTC day. LinkedIn is source-link/X-Ray only; the backend must not scrape LinkedIn pages or automate external platform messages. Indeed is not an active MVP source without official partner/API access.
+- `PATCH /api/talent-pilot/online-headhunting/leads/{onlineCandidateLeadId}/status`
+  - Updates an online lead review status to `New`, `Shortlisted`, or `Rejected`. `Converted` is set only by the manual candidate invite flow when `onlineLeadId` is supplied and application creation succeeds.
 - `GET /api/talent-pilot/job-posts`
   - Recruiter/Tenant Admin list of visible draft/published/closed Job Posts for Job Publishing.
 - `POST /api/talent-pilot/job-requests/{entityId}/job-posts`
@@ -119,7 +125,7 @@ Keep this file aligned when controllers or frontend contracts change.
 - `POST /api/talent-pilot/job-posts/{jobPostId}/close`
   - Marks a draft/published Job Post as `Closed` without closing the parent Job Request.
 - `POST /api/talent-pilot/job-posts/{jobPostId}/manual-candidates`
-  - Recruiter/Tenant Admin adds or reuses a manually sourced candidate for a published Job Post. Creates an invited `JobApplications` row linked to the Job Post and Job Request, stores source/education/work-history metadata, creates a per-recipient `CandidateInvitations` row, and queues the invitation email. When an `invitationMessage` is supplied, it is used as the invitation paragraph and the backend rewrites the concrete candidate portal job detail link into a tracked `inviteId` + `token` URL. When `parsedCvEvidence` is supplied from `cv-parse`, the backend stores the hidden CV summary/text in `JobApplicationDocuments` as extracted `CV` evidence and upserts a `JobApplicationEvidenceProfile` vector for downstream candidate context and ranking.
+  - Recruiter/Tenant Admin adds or reuses a manually sourced candidate for a published Job Post. Creates an invited `JobApplications` row linked to the Job Post and Job Request, stores source/education/work-history metadata, creates a per-recipient `CandidateInvitations` row, and queues the invitation email. Optional `onlineLeadId` marks a previously persisted Online Headhunting lead as `Converted` only after this conversion succeeds. When an `invitationMessage` is supplied, it is used as the invitation paragraph and the backend rewrites the concrete candidate portal job detail link into a tracked `inviteId` + `token` URL. When `parsedCvEvidence` is supplied from `cv-parse`, the backend stores the hidden CV summary/text in `JobApplicationDocuments` as extracted `CV` evidence and upserts a `JobApplicationEvidenceProfile` vector for downstream candidate context and ranking.
 - `POST /api/talent-pilot/candidates/cv-parse`
   - Recruiter/Tenant Admin uploads a DOCX resume for the code-owned `cv-parser` agent. The endpoint extracts candidate contact/profile/education/experience/skill evidence and returns editable prefill fields plus file/hash/parser metadata for recruiter review; it does not create candidates, applications, or workflow movement by itself. The parser summary is hidden context evidence, not visible form copy.
 - `POST /api/talent-pilot/job-applications/{jobApplicationId}/screening-decision`
@@ -128,6 +134,12 @@ Keep this file aligned when controllers or frontend contracts change.
   - Recruiter/Tenant Admin schedules a candidate interview task from a Job Post interview round. Uses the round default interviewer when no override is supplied, requires prior active rounds to be completed or skipped, and queues candidate/interviewer/hiring-manager email rows.
 - `GET /api/talent-pilot/interviews/my-tasks`
   - Interviewer/Tenant Admin loads scheduled/completed interview tasks assigned to them.
+- `GET /api/talent-pilot/interviews/{interviewId}/question-recommendations`
+  - Assigned interviewer/Tenant Admin loads the latest persisted AI interview question recommendation set for a visible scheduled/completed interview. Returns summary, coverage metadata, model/run version, and structured question objects.
+- `POST /api/talent-pilot/interviews/{interviewId}/question-recommendations/generate`
+  - Assigned interviewer/Tenant Admin explicitly generates or regenerates at least 10 AI interview questions using the code-owned `interview-question-recommender` agent. Requires seeded question-bank data and valid LLM JSON output; no deterministic question fallback is returned when AI output is unavailable.
+- `GET /api/talent-pilot/interviews/{interviewId}/question-recommendations/download`
+  - Assigned interviewer/Tenant Admin downloads the latest persisted AI interview question set as a `.docx` file with summary, coverage metadata, expected signals, follow-ups, and rubric details.
 - `POST /api/talent-pilot/interviews/{interviewId}/feedback`
   - Assigned interviewer/Tenant Admin submits scores, recommendation, and comments. Marks the interview completed and queues recruiter notification email.
 - `POST /api/talent-pilot/job-applications/{jobApplicationId}/forward-to-hiring-manager`

@@ -6,6 +6,14 @@ The backend owns authentication, authorization context, Admin Center APIs, Talen
 
 For cross-system request, email, realtime notification, worker, and AI flow diagrams, keep the root workspace architecture reference updated: `../../ARCHITECTURE.md`.
 
+## Product Snapshot
+
+![Talent Pilot login page](docs/assets/login-page.png)
+
+The backend powers the card-based MVP login screen through the same authentication API used by the Angular app. Role cards resolve real seeded users, permissions, workflow groups, tenant context, JWT access tokens, and refresh tokens.
+
+Recent MVP additions include conversational RAG assistant support, interview question recommendations, recruiter AI Headhunting with lead-only persistence, background headhunting runs with realtime notification records, hiring-manager outcome visibility for hired candidates pending joining, and joined/not-joined final outcome tracking. LinkedIn and Indeed remain source-link only for the AI Headhunting MVP; the backend does not scrape or automate messaging on those platforms.
+
 ## Stack
 
 - .NET 8
@@ -256,6 +264,7 @@ If the API is running and locks build outputs, stop the API before running a ful
 - `api/admin/integrations/status`
 - `api/admin/audit-logs`
 - `api/talent-pilot/*`
+- `api/ai-assistant/*`
 
 Detailed endpoint notes are in `knowledge-base/api-surface.md`.
 
@@ -281,6 +290,9 @@ When SQL mode is enabled, the backend uses Dapper repositories for:
 - workflow assignment claim
 - notification read/read-all
 - notification outbox processing
+- conversational AI assistant knowledge and citations
+- interview question recommendation data
+- online candidate sourcing runs and lead-only online headhunting results
 
 In-memory repositories remain only as local fallback/testing when SQL mode is disabled.
 

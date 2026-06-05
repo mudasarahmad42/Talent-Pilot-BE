@@ -99,7 +99,7 @@ public sealed class TalentRediscoveryAgent : ITalentRediscoveryAgent
                 .ThenBy(item => item.Candidate.DisplayName, StringComparer.OrdinalIgnoreCase)
                 .ToArray();
 
-            var explanations = await TryGenerateExplanationsAsync(rankingContext, scored, settings.LlmModel, cancellationToken);
+            var explanations = await GenerateExplanationsAsync(rankingContext, scored, settings.LlmModel, cancellationToken);
             var ranked = scored
                 .Select((item, index) => ToRankedCandidate(item, index + 1, explanations))
                 .ToArray();
@@ -279,45 +279,50 @@ public sealed class TalentRediscoveryAgent : ITalentRediscoveryAgent
         }
     }
 
-    private async Task<IReadOnlyDictionary<Guid, string>> TryGenerateExplanationsAsync(
+    private async Task<IReadOnlyDictionary<Guid, string>> GenerateExplanationsAsync(
         OperationsTalentRediscoveryContext context,
         IReadOnlyList<ScoredCandidate> scored,
         string model,
         CancellationToken cancellationToken)
     {
-        try
-        {
-            var response = await _modelProvider.GenerateAsync(
-                new AiPromptRequest(
-                    AgentId,
-                    BuildExplanationPrompt(context, scored),
-                    new Dictionary<string, string>
-                    {
-                        ["model"] = model,
-                        ["output"] = "json"
-                    }),
-                cancellationToken);
+        var response = await _modelProvider.GenerateAsync(
+            new AiPromptRequest(
+                AgentId,
+                BuildExplanationPrompt(context, scored),
+                new Dictionary<string, string>
+                {
+                    ["model"] = model,
+                    ["output"] = "json"
+                }),
+            cancellationToken);
 
-            var normalized = response.Trim();
-            if (normalized.StartsWith("```", StringComparison.Ordinal))
-            {
-                normalized = normalized
-                    .Replace("```json", string.Empty, StringComparison.OrdinalIgnoreCase)
-                    .Replace("```", string.Empty, StringComparison.Ordinal)
-                    .Trim();
-            }
-
-            var items = JsonSerializer.Deserialize<AiExplanationItem[]>(normalized, JsonOptions) ?? [];
-            return items
-                .Where(item => Guid.TryParse(item.CandidateId, out _))
-                .ToDictionary(
-                    item => Guid.Parse(item.CandidateId),
-                    item => string.IsNullOrWhiteSpace(item.Explanation) ? string.Empty : item.Explanation.Trim());
-        }
-        catch
+        if (string.IsNullOrWhiteSpace(response))
         {
-            return new Dictionary<Guid, string>();
+            throw new InvalidOperationException("The Talent Rediscovery Agent returned an empty explanation response.");
         }
+
+        var normalized = response.Trim();
+        if (normalized.StartsWith("```", StringComparison.Ordinal))
+        {
+            normalized = normalized
+                .Replace("```json", string.Empty, StringComparison.OrdinalIgnoreCase)
+                .Replace("```", string.Empty, StringComparison.Ordinal)
+                .Trim();
+        }
+
+        var items = JsonSerializer.Deserialize<AiExplanationItem[]>(normalized, JsonOptions) ?? [];
+        var explanations = items
+            .Where(item => Guid.TryParse(item.CandidateId, out _) && !string.IsNullOrWhiteSpace(item.Explanation))
+            .ToDictionary(
+                item => Guid.Parse(item.CandidateId),
+                item => item.Explanation.Trim());
+
+        if (explanations.Count == 0 && scored.Count > 0)
+        {
+            throw new InvalidOperationException("The Talent Rediscovery Agent did not return any usable LLM explanations.");
+        }
+
+        return explanations;
     }
 
     private static ScoredCandidate ScoreCandidate(
@@ -373,10 +378,7 @@ public sealed class TalentRediscoveryAgent : ITalentRediscoveryAgent
     {
         var strengths = BuildStrengths(scored);
         var gaps = BuildGaps(scored);
-        var explanation = aiExplanations.TryGetValue(scored.Candidate.CandidateId, out var aiExplanation) &&
-                          !string.IsNullOrWhiteSpace(aiExplanation)
-            ? aiExplanation
-            : BuildFallbackExplanation(scored);
+        var explanation = RequiredAiExplanation(aiExplanations, scored.Candidate.CandidateId, scored.Candidate.DisplayName);
 
         return new TalentRediscoveryRankedCandidate(
             scored.Candidate.CandidateId,
@@ -709,20 +711,19 @@ public sealed class TalentRediscoveryAgent : ITalentRediscoveryAgent
         return gaps.Count == 0 ? ["No major rediscovery caveats were found in current candidate history."] : gaps;
     }
 
-    private static string BuildFallbackExplanation(ScoredCandidate scored)
+    private static string RequiredAiExplanation(
+        IReadOnlyDictionary<Guid, string> explanations,
+        Guid candidateId,
+        string displayName)
     {
-        var candidate = scored.Candidate;
-        var lastApplication = candidate.ApplicationEvidence
-            .OrderByDescending(application => application.AppliedAt)
-            .FirstOrDefault();
-        var history = lastApplication is null
-            ? "No application history summary is available."
-            : $"Most recent relevant application was {lastApplication.RequestCode} ({lastApplication.JobTitle}) with status {lastApplication.Status}.";
-        var capWarning = scored.SkillCoverage == 0m
-            ? " Direct skill coverage is 0%, so the score is intentionally capped at low fit even when warm-history or semantic signals exist."
-            : string.Empty;
+        if (explanations.TryGetValue(candidateId, out var explanation) &&
+            !string.IsNullOrWhiteSpace(explanation))
+        {
+            return explanation;
+        }
 
-        return $"{candidate.DisplayName} is ranked for recruiter rediscovery because their profile has a skill coverage score of {FormatPercent(scored.SkillCoverage)}, vector similarity score of {FormatPercent(scored.VectorSimilarity)}, historical outcome score of {FormatPercent(scored.HistoricalOutcomeFit)}, similar-role score of {FormatPercent(scored.SimilarRoleFit)}, and experience/availability score of {FormatPercent(scored.ExperienceAvailabilityFit)}.{capWarning} {history} Recruiter should validate the listed gaps before contacting the candidate.";
+        throw new InvalidOperationException(
+            $"The Talent Rediscovery Agent did not return an LLM explanation for {displayName}.");
     }
 
     private static string BuildRunInputText(OperationsTalentRediscoveryContext context)
@@ -839,7 +840,7 @@ public sealed class TalentRediscoveryAgent : ITalentRediscoveryAgent
         builder.AppendLine();
         builder.AppendLine("Candidates:");
 
-        foreach (var scoredCandidate in scored.Take(8))
+        foreach (var scoredCandidate in scored)
         {
             var candidate = scoredCandidate.Candidate;
             builder.AppendLine($"CandidateId: {candidate.CandidateId}");
@@ -867,9 +868,10 @@ public sealed class TalentRediscoveryAgent : ITalentRediscoveryAgent
             await _runLogger.FailAsync(
                 tenantId,
                 runId,
-                "Talent Rediscovery failed.",
+                exception.Message.Length <= 900 ? exception.Message : exception.Message[..900],
                 new Dictionary<string, string>
                 {
+                    ["errorType"] = exception.GetType().Name,
                     ["error"] = exception.Message
                 },
                 cancellationToken);

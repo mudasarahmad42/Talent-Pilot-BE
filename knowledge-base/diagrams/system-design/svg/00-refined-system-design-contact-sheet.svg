@@ -1,0 +1,64 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="2300" height="1650" viewBox="0 0 2300 1650" role="img" aria-labelledby="title desc">
+<title id="title">Talent Pilot Expanded Vector Diagram Set</title>
+<desc id="desc">Open the linked SVG files for the refined, expanded, zoomable architecture and ERD diagrams</desc>
+<defs>
+  <marker id="arrow" markerWidth="12" markerHeight="12" refX="10" refY="4" orient="auto" markerUnits="strokeWidth">
+    <path d="M0,0 L0,8 L10,4 z" fill="#536273" />
+  </marker>
+  <style>
+    svg { background: #F6F8FB; }
+    text { font-family: "Segoe UI", Arial, sans-serif; dominant-baseline: alphabetic; }
+    .title { font-size: 45px; font-weight: 760; letter-spacing: 0; }
+    .subtitle { font-size: 21px; font-weight: 450; }
+    .tag { font-size: 15px; font-weight: 650; }
+    .section-title { font-size: 24px; font-weight: 760; fill: #172033; }
+    .box-title { font-size: 18px; font-weight: 760; }
+    .body { font-size: 16px; fill: #172033; }
+    .label { font-size: 15px; font-weight: 760; }
+    .tiny { font-size: 14px; }
+    .table-field { font-size: 15px; fill: #172033; }
+    .section { stroke-width: 1.8; }
+    .box { stroke-width: 1.5; filter: drop-shadow(0 2px 2px rgba(23,32,51,.08)); }
+  </style>
+</defs>
+<rect x="0" y="0" width="2300" height="130" rx="0" fill="#263C55" />
+<text x="58" y="58" class="title" fill="white">Talent Pilot Expanded Vector Diagram Set</text>
+<text x="60" y="96" class="subtitle" fill="#D6E0EA">Open the linked SVG files for the refined, expanded, zoomable architecture and ERD diagrams</text>
+<rect x="1940" y="34" width="270" height="46" rx="23" fill="#405B78" />
+<text x="2075" y="63" class="tag" fill="#EDF4FA" text-anchor="middle">Generated June 5, 2026</text>
+<rect x="100" y="220" width="1020" height="330" rx="18" fill="white" stroke="#CAD4DF" class="box" />
+<rect x="135" y="265" width="86" height="86" rx="20" fill="#263C55" />
+<text x="178" y="321" class="title" fill="white" text-anchor="middle">01</text>
+<text x="255" y="298" class="section-title">System Design Flow</text>
+<text x="255" y="345" class="body" fill="#536273">Runtime processes, frontend, API, hosted queue, worker, Ollama, SQL, files, and</text>
+<text x="255" y="370" class="body" fill="#536273">providers.</text>
+<text x="255" y="470" class="label" fill="#246A93">01-system-design-flow.svg</text>
+<rect x="1180" y="220" width="1020" height="330" rx="18" fill="white" stroke="#CAD4DF" class="box" />
+<rect x="1215" y="265" width="86" height="86" rx="20" fill="#263C55" />
+<text x="1258" y="321" class="title" fill="white" text-anchor="middle">02</text>
+<text x="1335" y="298" class="section-title">Request / Realtime / Worker Flow</text>
+<text x="1335" y="345" class="body" fill="#536273">HTTP, SQL transaction, SignalR realtime state, durable outbox, and email worker.</text>
+<text x="1335" y="470" class="label" fill="#246A93">02-request-realtime-notification-worker-flow.svg</text>
+<rect x="100" y="675" width="1020" height="330" rx="18" fill="white" stroke="#CAD4DF" class="box" />
+<rect x="135" y="720" width="86" height="86" rx="20" fill="#263C55" />
+<text x="178" y="776" class="title" fill="white" text-anchor="middle">03</text>
+<text x="255" y="753" class="section-title">AI / Ollama / Vector / RAG Flow</text>
+<text x="255" y="800" class="body" fill="#536273">Backend-owned agents, local Ollama runtime, vectors, RAG, Tavily, and audit evidence.</text>
+<text x="255" y="925" class="label" fill="#246A93">03-ai-ollama-vector-rag-flow.svg</text>
+<rect x="1180" y="675" width="1020" height="330" rx="18" fill="white" stroke="#CAD4DF" class="box" />
+<rect x="1215" y="720" width="86" height="86" rx="20" fill="#263C55" />
+<text x="1258" y="776" class="title" fill="white" text-anchor="middle">04</text>
+<text x="1335" y="753" class="section-title">Recruiting Lifecycle Flow</text>
+<text x="1335" y="800" class="body" fill="#536273">Business stages mapped to actors, UI surfaces, backend actions, SQL records, and side</text>
+<text x="1335" y="825" class="body" fill="#536273">effects.</text>
+<text x="1335" y="925" class="label" fill="#246A93">04-recruiting-lifecycle-system-flow.svg</text>
+<rect x="640" y="1130" width="1020" height="330" rx="18" fill="white" stroke="#CAD4DF" class="box" />
+<rect x="675" y="1175" width="86" height="86" rx="20" fill="#263C55" />
+<text x="718" y="1231" class="title" fill="white" text-anchor="middle">05</text>
+<text x="795" y="1208" class="section-title">Core ERD Flow</text>
+<text x="795" y="1255" class="body" fill="#536273">Tenant, identity, workforce, job request, publishing, candidate pipeline, and outcome</text>
+<text x="795" y="1280" class="body" fill="#536273">tables.</text>
+<text x="795" y="1380" class="label" fill="#246A93">05-core-erd-refined-flow.svg</text>
+<line x1="55" y1="1580" x2="2245" y2="1580" stroke="#CAD4DF" stroke-width="2" />
+<text x="58" y="1612" class="tiny" fill="#536273">Expanded SVG files use selectable text and routed vector arrows. They are the recommended diagrams to embed or share.</text>
+</svg>

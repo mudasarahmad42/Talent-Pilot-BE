@@ -10,8 +10,23 @@ public sealed class CvParserAgentTests
     [Fact]
     public async Task ParseAsync_ExtractsCandidateProfileFromDocx()
     {
+        var modelProvider = new CapturingModelProvider("""
+            {
+              "displayName": "Sara Khan",
+              "email": "sara.khan@example.com",
+              "phone": "+92 300 111 2222",
+              "currentDesignation": "Senior React Developer",
+              "currentCompany": "Product Studio",
+              "experienceYears": 6.5,
+              "skills": ["React", "TypeScript", "Azure", "SQL Server"],
+              "universityName": "University of Lahore",
+              "degreeName": "BS Computer Science",
+              "graduationYear": 2018,
+              "summary": "Sara Khan is a Senior React Developer with 6.5 years of experience and React, TypeScript, Azure, and SQL Server evidence. Recruiter review is required."
+            }
+            """);
         var logger = new CapturingRunLogger();
-        var agent = new CvParserAgent(new StaticRuntimeSettingsResolver(), logger);
+        var agent = new CvParserAgent(modelProvider, new StaticRuntimeSettingsResolver(), logger);
         var content = CreateDocx(
             "Sara Khan",
             "Senior React Developer",
@@ -26,9 +41,11 @@ public sealed class CvParserAgentTests
         var result = await agent.ParseAsync(
             StaticRuntimeSettingsResolver.TenantId,
             new CvParseRequest("sara-khan.docx", content),
-            CancellationToken.None);
+                CancellationToken.None);
 
         Assert.Equal("cv-parser", logger.AgentId);
+        Assert.Equal(CvParserAgent.AgentId, modelProvider.LastRequest?.AgentId);
+        Assert.Contains("Return strict JSON only", modelProvider.LastRequest?.Prompt);
         Assert.Equal("Sara Khan", result.DisplayName);
         Assert.Equal("sara.khan@example.com", result.Email);
         Assert.Equal("Senior React Developer", result.CurrentDesignation);
@@ -48,7 +65,7 @@ public sealed class CvParserAgentTests
     public async Task ParseAsync_WhenDocxCannotBeRead_LogsFailure()
     {
         var logger = new CapturingRunLogger();
-        var agent = new CvParserAgent(new StaticRuntimeSettingsResolver(), logger);
+        var agent = new CvParserAgent(new CapturingModelProvider("{}"), new StaticRuntimeSettingsResolver(), logger);
 
         await Assert.ThrowsAsync<InvalidDataException>(() =>
             agent.ParseAsync(
@@ -58,6 +75,23 @@ public sealed class CvParserAgentTests
 
         Assert.True(logger.Failed);
         Assert.Contains("Directory", logger.OutputSummary);
+    }
+
+    [Fact]
+    public async Task ParseAsync_WhenModelFails_LogsFailure()
+    {
+        var logger = new CapturingRunLogger();
+        var agent = new CvParserAgent(new ThrowingModelProvider(), new StaticRuntimeSettingsResolver(), logger);
+        var content = CreateDocx("Sara Khan", "Senior React Developer", "sara.khan@example.com");
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            agent.ParseAsync(
+                StaticRuntimeSettingsResolver.TenantId,
+                new CvParseRequest("sara-khan.docx", content),
+                CancellationToken.None));
+
+        Assert.True(logger.Failed);
+        Assert.Contains("model offline", logger.OutputSummary);
     }
 
     private static byte[] CreateDocx(params string[] paragraphs)
@@ -101,6 +135,32 @@ public sealed class CvParserAgentTests
                 768,
                 "SqlServerVector",
                 "http://localhost:11434"));
+        }
+    }
+
+    private sealed class CapturingModelProvider : IAiModelProvider
+    {
+        private readonly string _response;
+
+        public CapturingModelProvider(string response)
+        {
+            _response = response;
+        }
+
+        public AiPromptRequest? LastRequest { get; private set; }
+
+        public Task<string> GenerateAsync(AiPromptRequest request, CancellationToken cancellationToken)
+        {
+            LastRequest = request;
+            return Task.FromResult(_response);
+        }
+    }
+
+    private sealed class ThrowingModelProvider : IAiModelProvider
+    {
+        public Task<string> GenerateAsync(AiPromptRequest request, CancellationToken cancellationToken)
+        {
+            throw new InvalidOperationException("model offline");
         }
     }
 

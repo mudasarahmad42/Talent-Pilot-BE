@@ -14,6 +14,7 @@ public static class AccessConstants
     public const string ManageTenantProfile = "tenant.profile.manage";
     public const string ManageNotifications = "notifications.manage";
     public const string ViewAiSettings = "ai.settings.view";
+    public const string AiAssistantUse = "ai.assistant.use";
     public const string ViewJobRequests = "job.requests.view";
     public const string CreateJobRequest = "job.requests.create";
     public const string ClaimWorkflowTask = "workflow.assignments.claim";

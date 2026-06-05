@@ -99,7 +99,7 @@ public sealed class BenchMatchingAgent : IBenchMatchingAgent
                 .ThenBy(item => item.Employee.DisplayName, StringComparer.OrdinalIgnoreCase)
                 .ToArray();
 
-            var explanations = await TryGenerateExplanationsAsync(context, scored, webResearch, settings.LlmModel, cancellationToken);
+            var explanations = await GenerateExplanationsAsync(context, scored, webResearch, settings.LlmModel, cancellationToken);
             var ranked = scored
                 .Select((item, index) => ToRankedEmployee(item, index + 1, explanations, context, webResearch))
                 .ToArray();
@@ -244,47 +244,52 @@ public sealed class BenchMatchingAgent : IBenchMatchingAgent
         }
     }
 
-    private async Task<IReadOnlyDictionary<Guid, string>> TryGenerateExplanationsAsync(
+    private async Task<IReadOnlyDictionary<Guid, string>> GenerateExplanationsAsync(
         OperationsBenchMatchingContext context,
         IReadOnlyList<ScoredEmployee> scored,
         WebResearchResult webResearch,
         string model,
         CancellationToken cancellationToken)
     {
-        try
-        {
-            var prompt = BuildExplanationPrompt(context, scored, webResearch);
-            var response = await _modelProvider.GenerateAsync(
-                new AiPromptRequest(
-                    AgentId,
-                    prompt,
-                    new Dictionary<string, string>
-                    {
-                        ["model"] = model,
-                        ["output"] = "json"
-                    }),
-                cancellationToken);
+        var prompt = BuildExplanationPrompt(context, scored, webResearch);
+        var response = await _modelProvider.GenerateAsync(
+            new AiPromptRequest(
+                AgentId,
+                prompt,
+                new Dictionary<string, string>
+                {
+                    ["model"] = model,
+                    ["output"] = "json"
+                }),
+            cancellationToken);
 
-            var normalized = response.Trim();
-            if (normalized.StartsWith("```", StringComparison.Ordinal))
-            {
-                normalized = normalized
-                    .Replace("```json", string.Empty, StringComparison.OrdinalIgnoreCase)
-                    .Replace("```", string.Empty, StringComparison.Ordinal)
-                    .Trim();
-            }
-
-            var items = JsonSerializer.Deserialize<AiExplanationItem[]>(normalized, JsonOptions) ?? [];
-            return items
-                .Where(item => Guid.TryParse(item.EmployeeId, out _))
-                .ToDictionary(
-                    item => Guid.Parse(item.EmployeeId),
-                    item => string.IsNullOrWhiteSpace(item.Explanation) ? string.Empty : item.Explanation.Trim());
-        }
-        catch
+        if (string.IsNullOrWhiteSpace(response))
         {
-            return new Dictionary<Guid, string>();
+            throw new InvalidOperationException("The Bench Matching Agent returned an empty explanation response.");
         }
+
+        var normalized = response.Trim();
+        if (normalized.StartsWith("```", StringComparison.Ordinal))
+        {
+            normalized = normalized
+                .Replace("```json", string.Empty, StringComparison.OrdinalIgnoreCase)
+                .Replace("```", string.Empty, StringComparison.Ordinal)
+                .Trim();
+        }
+
+        var items = JsonSerializer.Deserialize<AiExplanationItem[]>(normalized, JsonOptions) ?? [];
+        var explanations = items
+            .Where(item => Guid.TryParse(item.EmployeeId, out _) && !string.IsNullOrWhiteSpace(item.Explanation))
+            .ToDictionary(
+                item => Guid.Parse(item.EmployeeId),
+                item => item.Explanation.Trim());
+
+        if (explanations.Count == 0 && scored.Count > 0)
+        {
+            throw new InvalidOperationException("The Bench Matching Agent did not return any usable LLM explanations.");
+        }
+
+        return explanations;
     }
 
     private static ScoredEmployee ScoreEmployee(
@@ -336,10 +341,7 @@ public sealed class BenchMatchingAgent : IBenchMatchingAgent
     {
         var strengths = BuildStrengths(scored);
         var gaps = BuildGaps(scored.Employee);
-        var explanation = aiExplanations.TryGetValue(scored.Employee.EmployeeId, out var aiExplanation) &&
-                          !string.IsNullOrWhiteSpace(aiExplanation)
-            ? aiExplanation
-            : BuildFallbackExplanation(scored);
+        var explanation = RequiredAiExplanation(aiExplanations, scored.Employee.EmployeeId, scored.Employee.DisplayName);
 
         return new BenchMatchingRankedEmployee(
             scored.Employee.EmployeeId,
@@ -633,33 +635,19 @@ public sealed class BenchMatchingAgent : IBenchMatchingAgent
         return string.Join(' ', sentences);
     }
 
-    private static string BuildFallbackExplanation(ScoredEmployee scored)
+    private static string RequiredAiExplanation(
+        IReadOnlyDictionary<Guid, string> explanations,
+        Guid employeeId,
+        string displayName)
     {
-        var builder = new StringBuilder();
-        builder.Append(scored.Employee.DisplayName);
-        builder.Append(" is ranked for PMO review because ");
-        builder.Append(scored.Employee.MatchedSkills.Count > 0
-            ? $"their profile matches {string.Join(", ", scored.Employee.MatchedSkills)}"
-            : "their active bench profile is eligible for this request");
-        builder.Append($", with a skill coverage score of {scored.SkillCoverage:P0}");
-        builder.Append($", vector similarity score of {scored.VectorSimilarity:P0}");
-        builder.Append($", experience fit score of {scored.ExperienceFit:P0}");
-        builder.Append($", and location fit score of {scored.LocationFit:P0}.");
-        if (scored.Employee.ProjectEvidence.Count > 0)
+        if (explanations.TryGetValue(employeeId, out var explanation) &&
+            !string.IsNullOrWhiteSpace(explanation))
         {
-            builder.Append(" Relevant project evidence includes ");
-            builder.Append(string.Join(", ", scored.Employee.ProjectEvidence.Take(2).Select(project => project.ProjectName)));
-            builder.Append('.');
+            return explanation;
         }
 
-        if (scored.Employee.MissingSkills.Count > 0)
-        {
-            builder.Append(" PMO should validate gaps around ");
-            builder.Append(string.Join(", ", scored.Employee.MissingSkills));
-            builder.Append('.');
-        }
-
-        return builder.ToString();
+        throw new InvalidOperationException(
+            $"The Bench Matching Agent did not return an LLM explanation for {displayName}.");
     }
 
     private static string BuildRunInputText(OperationsBenchMatchingContext context)
@@ -736,7 +724,7 @@ public sealed class BenchMatchingAgent : IBenchMatchingAgent
 
         prompt.AppendLine();
         prompt.AppendLine("Ranked employee evidence:");
-        foreach (var item in scored.Take(10))
+        foreach (var item in scored)
         {
             prompt.AppendLine($"EmployeeId: {item.Employee.EmployeeId:D}");
             prompt.AppendLine($"Name: {SafeField(item.Employee.DisplayName)}");

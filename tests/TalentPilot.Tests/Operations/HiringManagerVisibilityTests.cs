@@ -1,0 +1,42 @@
+namespace TalentPilot.Tests.Operations;
+
+public sealed class HiringManagerVisibilityTests
+{
+    [Fact]
+    public void HiringManagerReviewQueries_KeepHiredCandidatesVisibleUntilJoined()
+    {
+        var repository = ReadBackendFile(
+            "src",
+            "TalentPilot.Infrastructure",
+            "Persistence",
+            "Repositories",
+            "DapperOperationsRepository.cs");
+
+        Assert.Contains(
+            "N'HiringManagerReview', N'Offered', N'OnHold', N'Rejected', N'Hired', N'Joined'",
+            repository,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "IsDashboardStatus(row.Status, \"Hired\")",
+            repository,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "new HiringManagerDashboardStatusBreakdownItem(\"Pending joining\", rows.Count(row => IsDashboardStatus(row.Status, \"Hired\")))",
+            repository,
+            StringComparison.Ordinal);
+    }
+
+    private static string ReadBackendFile(params string[] pathParts)
+    {
+        var directory = new DirectoryInfo(AppContext.BaseDirectory);
+        while (directory is not null && !Directory.Exists(Path.Combine(directory.FullName, "src")))
+        {
+            directory = directory.Parent;
+        }
+
+        Assert.NotNull(directory);
+        var path = Path.Combine(new[] { directory!.FullName }.Concat(pathParts).ToArray());
+        Assert.True(File.Exists(path), $"Expected file to exist: {path}");
+        return File.ReadAllText(path);
+    }
+}

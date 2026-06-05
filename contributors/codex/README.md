@@ -1,5 +1,18 @@
 # Codex Contributor Log
 
+## 2026-06-04 - Branch: mudasar-ahmad
+
+- Commit summary: pending AI interview question recommender.
+- Purpose: add an LLM-backed Interview Question Recommender that retrieves seeded question-bank evidence, generates structured interviewer question sets, persists version history per interview, and exports the latest set as DOCX.
+- Files touched: `src/TalentPilot.Api/Controllers/OperationsController.cs`, application AI/operations/document contracts and service, Dapper operations repository, OpenXML export service, SQL migration/seed scripts, AI/export tests, knowledge-base docs, contributor log.
+- Endpoints changed: added `GET /api/talent-pilot/interviews/{interviewId}/question-recommendations`, `POST /api/talent-pilot/interviews/{interviewId}/question-recommendations/generate`, and `GET /api/talent-pilot/interviews/{interviewId}/question-recommendations/download`.
+- Schema changed: added `InterviewQuestionBankItems`, `InterviewQuestionRecommendationSets`, and `InterviewQuestionRecommendations`; registered `interview-question-recommender`.
+- Seed/stored procedures changed: added seeded per-skill and generic question-bank items for every active tenant skill; no stored procedure changes.
+- Follow-up fix: enabled Ollama JSON mode for structured-output requests, requires at least 10 generated questions, increased the backend AI HTTP timeout, added DOCX export, and allowed visible completed interview tasks whose application row is inactive to generate recommendations.
+- Tests run: `dotnet test` passed with 86 tests; database script runner completed successfully against local `TalentPilot`; verified Amara regeneration persisted version 2 with 10 questions and DOCX package download.
+- Known risks: Local `llama3.2` generation is still slow; the verified Amara 10-question regeneration took about 473 seconds.
+- AI assistance: Codex implemented and reviewed the changes.
+
 ## 2026-06-03 - Branch: mudasar-ahmad
 
 - Commit summary: pending strict sequential interview scheduling validation.
