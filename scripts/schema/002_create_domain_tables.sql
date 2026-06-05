@@ -565,32 +565,6 @@ BEGIN
 END;
 GO
 
-IF OBJECT_ID(N'dbo.JobPostInterviewRounds', N'U') IS NULL
-BEGIN
-    CREATE TABLE dbo.JobPostInterviewRounds
-    (
-        JobPostInterviewRoundId UNIQUEIDENTIFIER NOT NULL CONSTRAINT PK_JobPostInterviewRounds PRIMARY KEY,
-        TenantId UNIQUEIDENTIFIER NOT NULL,
-        JobPostId UNIQUEIDENTIFIER NOT NULL,
-        InterviewTemplateRoundId UNIQUEIDENTIFIER NULL,
-        RoundOrder INT NOT NULL,
-        Name NVARCHAR(160) NOT NULL,
-        OwnerUserId UNIQUEIDENTIFIER NULL,
-        DurationMinutes INT NOT NULL CONSTRAINT DF_JobPostInterviewRounds_Duration DEFAULT (60),
-        Status NVARCHAR(20) NOT NULL CONSTRAINT DF_JobPostInterviewRounds_Status DEFAULT N'Active',
-        CreatedAtUtc DATETIME2(3) NOT NULL CONSTRAINT DF_JobPostInterviewRounds_CreatedAtUtc DEFAULT SYSUTCDATETIME(),
-        UpdatedAtUtc DATETIME2(3) NOT NULL CONSTRAINT DF_JobPostInterviewRounds_UpdatedAtUtc DEFAULT SYSUTCDATETIME(),
-        CONSTRAINT FK_JobPostInterviewRounds_Tenants FOREIGN KEY (TenantId) REFERENCES dbo.Tenants (TenantId),
-        CONSTRAINT FK_JobPostInterviewRounds_JobPosts FOREIGN KEY (JobPostId) REFERENCES dbo.JobPosts (JobPostId),
-        CONSTRAINT FK_JobPostInterviewRounds_TemplateRounds FOREIGN KEY (InterviewTemplateRoundId) REFERENCES dbo.InterviewTemplateRounds (InterviewTemplateRoundId),
-        CONSTRAINT FK_JobPostInterviewRounds_OwnerUser FOREIGN KEY (OwnerUserId) REFERENCES dbo.AppUsers (UserId),
-        CONSTRAINT CK_JobPostInterviewRounds_Duration CHECK (DurationMinutes BETWEEN 15 AND 240),
-        CONSTRAINT CK_JobPostInterviewRounds_Status CHECK (Status IN (N'Active', N'Inactive')),
-        CONSTRAINT UQ_JobPostInterviewRounds_Post_Order UNIQUE (JobPostId, RoundOrder)
-    );
-END;
-GO
-
 IF COL_LENGTH(N'dbo.JobApplications', N'JobPostId') IS NOT NULL
    AND OBJECT_ID(N'dbo.JobPosts', N'U') IS NOT NULL
    AND NOT EXISTS (
@@ -801,6 +775,32 @@ BEGIN
         CONSTRAINT FK_InterviewTemplateRounds_OwnerRole FOREIGN KEY (OwnerRoleId) REFERENCES dbo.Roles (RoleId),
         CONSTRAINT FK_InterviewTemplateRounds_OwnerUser FOREIGN KEY (OwnerUserId) REFERENCES dbo.AppUsers (UserId),
         CONSTRAINT UQ_InterviewTemplateRounds_Template_Order UNIQUE (InterviewTemplateId, RoundOrder)
+    );
+END;
+GO
+
+IF OBJECT_ID(N'dbo.JobPostInterviewRounds', N'U') IS NULL
+BEGIN
+    CREATE TABLE dbo.JobPostInterviewRounds
+    (
+        JobPostInterviewRoundId UNIQUEIDENTIFIER NOT NULL CONSTRAINT PK_JobPostInterviewRounds PRIMARY KEY,
+        TenantId UNIQUEIDENTIFIER NOT NULL,
+        JobPostId UNIQUEIDENTIFIER NOT NULL,
+        InterviewTemplateRoundId UNIQUEIDENTIFIER NULL,
+        RoundOrder INT NOT NULL,
+        Name NVARCHAR(160) NOT NULL,
+        OwnerUserId UNIQUEIDENTIFIER NULL,
+        DurationMinutes INT NOT NULL CONSTRAINT DF_JobPostInterviewRounds_Duration DEFAULT (60),
+        Status NVARCHAR(20) NOT NULL CONSTRAINT DF_JobPostInterviewRounds_Status DEFAULT N'Active',
+        CreatedAtUtc DATETIME2(3) NOT NULL CONSTRAINT DF_JobPostInterviewRounds_CreatedAtUtc DEFAULT SYSUTCDATETIME(),
+        UpdatedAtUtc DATETIME2(3) NOT NULL CONSTRAINT DF_JobPostInterviewRounds_UpdatedAtUtc DEFAULT SYSUTCDATETIME(),
+        CONSTRAINT FK_JobPostInterviewRounds_Tenants FOREIGN KEY (TenantId) REFERENCES dbo.Tenants (TenantId),
+        CONSTRAINT FK_JobPostInterviewRounds_JobPosts FOREIGN KEY (JobPostId) REFERENCES dbo.JobPosts (JobPostId),
+        CONSTRAINT FK_JobPostInterviewRounds_TemplateRounds FOREIGN KEY (InterviewTemplateRoundId) REFERENCES dbo.InterviewTemplateRounds (InterviewTemplateRoundId),
+        CONSTRAINT FK_JobPostInterviewRounds_OwnerUser FOREIGN KEY (OwnerUserId) REFERENCES dbo.AppUsers (UserId),
+        CONSTRAINT CK_JobPostInterviewRounds_Duration CHECK (DurationMinutes BETWEEN 15 AND 240),
+        CONSTRAINT CK_JobPostInterviewRounds_Status CHECK (Status IN (N'Active', N'Inactive')),
+        CONSTRAINT UQ_JobPostInterviewRounds_Post_Order UNIQUE (JobPostId, RoundOrder)
     );
 END;
 GO
