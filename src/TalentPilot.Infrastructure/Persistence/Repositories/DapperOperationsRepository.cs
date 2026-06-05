@@ -5852,7 +5852,16 @@ public sealed class DapperOperationsRepository : IOperationsRepository
 
         var requestNumber = await connection.ExecuteScalarAsync<int>(
             new CommandDefinition(
-                "SELECT COUNT(1) + 1 FROM dbo.JobRequests WHERE TenantId = @TenantId;",
+                """
+                SELECT COALESCE(MAX(
+                    CASE
+                        WHEN RequestCode LIKE N'TP-REQ-%'
+                        THEN TRY_CONVERT(INT, SUBSTRING(RequestCode, LEN(N'TP-REQ-') + 1, 20))
+                        ELSE NULL
+                    END), 0) + 1
+                FROM dbo.JobRequests WITH (UPDLOCK, HOLDLOCK)
+                WHERE TenantId = @TenantId;
+                """,
                 new { TenantId = tenantId },
                 transaction,
                 cancellationToken: cancellationToken));

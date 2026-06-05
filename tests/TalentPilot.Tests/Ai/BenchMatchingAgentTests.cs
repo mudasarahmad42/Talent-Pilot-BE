@@ -121,7 +121,36 @@ public sealed class BenchMatchingAgentTests
     }
 
     [Fact]
-    public async Task RankAsync_WhenModelDoesNotReturnExplanations_FailsClosed()
+    public async Task RankAsync_AcceptsWrappedExplanationJson()
+    {
+        var agent = new BenchMatchingAgent(
+            new CapturingModelProvider($$"""
+                {
+                  "explanations": [
+                    {
+                      "employeeId": "{{HamzaEmployeeId:D}}",
+                      "explanation": "Wrapped JSON explanation for Hamza."
+                    },
+                    {
+                      "employeeId": "{{AminaEmployeeId:D}}",
+                      "explanation": "Wrapped JSON explanation for Amina."
+                    }
+                  ]
+                }
+                """),
+            new StaticEmbeddingProvider(),
+            new CapturingVectorStore(new Dictionary<Guid, decimal>()),
+            new StaticRuntimeSettingsResolver(),
+            new CapturingRunLogger(),
+            new CapturingWebResearchProvider(new WebResearchResult("Skipped", [])));
+
+        var result = await agent.RankAsync(TenantId, CreateContext(), CancellationToken.None);
+
+        Assert.Contains("Wrapped JSON explanation", result.Matches[0].Explanation);
+    }
+
+    [Fact]
+    public async Task RankAsync_WhenModelDoesNotReturnExplanations_UsesDeterministicFallback()
     {
         var logger = new CapturingRunLogger();
         var agent = new BenchMatchingAgent(
@@ -132,12 +161,13 @@ public sealed class BenchMatchingAgentTests
             logger,
             new CapturingWebResearchProvider(new WebResearchResult("Skipped", [])));
 
-        await Assert.ThrowsAsync<InvalidOperationException>(() =>
-            agent.RankAsync(TenantId, CreateContext(), CancellationToken.None));
+        var result = await agent.RankAsync(TenantId, CreateContext(), CancellationToken.None);
 
-        Assert.False(logger.Succeeded);
-        Assert.True(logger.Failed);
-        Assert.Contains("usable LLM explanations", logger.OutputSummary);
+        Assert.True(logger.Succeeded);
+        Assert.False(logger.Failed);
+        Assert.Equal(2, result.Matches.Count);
+        Assert.Contains("deterministic tenant evidence", result.Matches[0].Explanation);
+        Assert.Contains("PMO should still validate fit", result.Matches[0].Explanation);
     }
 
     private static OperationsBenchMatchingContext CreateContext()
