@@ -43,9 +43,14 @@ services:
       MicrosoftGraphEmail__ClientSecret: ${MICROSOFT_GRAPH_CLIENT_SECRET:-}
       MicrosoftGraphEmail__FromEmail: ${MICROSOFT_GRAPH_FROM_EMAIL:-}
       MicrosoftGraphEmail__SaveToSentItems: ${MICROSOFT_GRAPH_SAVE_TO_SENT_ITEMS:-true}
-      TavilySearch__Enabled: "false"
-      GoogleSearch__Enabled: "false"
-      GitHubSearch__Enabled: "false"
+      WebResearch__Provider: ${WEB_RESEARCH_PROVIDER:-Tavily}
+      TavilySearch__Enabled: ${TAVILY_SEARCH_ENABLED:-true}
+      TavilySearch__ApiKey: ${TAVILY_API_KEY:-}
+      GoogleSearch__Enabled: ${GOOGLE_SEARCH_ENABLED:-false}
+      GoogleSearch__ApiKey: ${GOOGLE_SEARCH_API_KEY:-}
+      GoogleSearch__SearchEngineId: ${GOOGLE_SEARCH_ENGINE_ID:-}
+      GitHubSearch__Enabled: ${GITHUB_SEARCH_ENABLED:-true}
+      GitHubSearch__Token: ${GITHUB_TOKEN:-}
       GoogleCalendar__Enabled: "false"
     depends_on:
       sqlserver:

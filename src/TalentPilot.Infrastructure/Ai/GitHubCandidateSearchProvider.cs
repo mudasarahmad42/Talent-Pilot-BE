@@ -28,8 +28,8 @@ public sealed class GitHubCandidateSearchProvider : IGitHubCandidateSearchProvid
             return new GitHubCandidateSearchResult("Disabled", []);
         }
 
-        var query = BuildQuery(request);
-        if (string.IsNullOrWhiteSpace(query))
+        var queries = BuildQueries(request);
+        if (queries.Count == 0)
         {
             return new GitHubCandidateSearchResult("Skipped:NoQuery", []);
         }
@@ -39,30 +39,54 @@ public sealed class GitHubCandidateSearchProvider : IGitHubCandidateSearchProvid
             using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             timeout.CancelAfter(TimeSpan.FromSeconds(Math.Clamp(_options.RequestTimeoutSeconds, 5, 60)));
 
-            using var searchRequest = CreateRequest(
-                HttpMethod.Get,
-                $"/search/users?q={Uri.EscapeDataString(query)}&per_page={Math.Clamp(request.Limit, 1, 20)}");
-            using var searchResponse = await _httpClient.SendAsync(searchRequest, timeout.Token);
-            if (!searchResponse.IsSuccessStatusCode)
-            {
-                return new GitHubCandidateSearchResult(ToStatus(searchResponse), []);
-            }
-
-            var search = await searchResponse.Content.ReadFromJsonAsync<GitHubUserSearchResponse>(
-                cancellationToken: timeout.Token);
-            if (search?.Items is null || search.Items.Count == 0)
-            {
-                return new GitHubCandidateSearchResult("NoResults", []);
-            }
-
+            var limit = Math.Clamp(request.Limit, 1, 20);
             var profiles = new List<GitHubCandidateProfile>();
-            foreach (var item in search.Items.Take(Math.Clamp(request.Limit, 1, 20)))
+            var statuses = new List<string>();
+
+            foreach (var query in queries)
             {
-                var profile = await LoadProfileAsync(item, timeout.Token);
-                profiles.Add(profile);
+                using var searchRequest = CreateRequest(
+                    HttpMethod.Get,
+                    $"/search/users?q={Uri.EscapeDataString(query)}&per_page={limit}");
+                using var searchResponse = await _httpClient.SendAsync(searchRequest, timeout.Token);
+                if (!searchResponse.IsSuccessStatusCode)
+                {
+                    statuses.Add(ToStatus(searchResponse));
+                    continue;
+                }
+
+                var search = await searchResponse.Content.ReadFromJsonAsync<GitHubUserSearchResponse>(
+                    cancellationToken: timeout.Token);
+                if (search?.Items is null || search.Items.Count == 0)
+                {
+                    statuses.Add("NoResults");
+                    continue;
+                }
+
+                foreach (var item in search.Items.Take(limit))
+                {
+                    if (profiles.Any(profile => string.Equals(profile.Login, item.Login, StringComparison.OrdinalIgnoreCase)))
+                    {
+                        continue;
+                    }
+
+                    var profile = await LoadProfileAsync(item, timeout.Token);
+                    profiles.Add(profile);
+                    if (profiles.Count >= limit)
+                    {
+                        break;
+                    }
+                }
+
+                if (profiles.Count >= limit)
+                {
+                    break;
+                }
             }
 
-            return new GitHubCandidateSearchResult("Succeeded", profiles);
+            return profiles.Count > 0
+                ? new GitHubCandidateSearchResult(statuses.Any(status => IsProviderFailure(status)) ? "Partial" : "Succeeded", profiles)
+                : new GitHubCandidateSearchResult(ConsolidateNoResultStatus(statuses), []);
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
         {
@@ -118,16 +142,16 @@ public sealed class GitHubCandidateSearchProvider : IGitHubCandidateSearchProvid
         return request;
     }
 
-    private static string BuildQuery(GitHubCandidateSearchRequest request)
+    private static IReadOnlyList<string> BuildQueries(GitHubCandidateSearchRequest request)
     {
-        var terms = SelectSearchSkills(request.JobTitle, request.Skills)
+        var skillTerms = SelectSearchSkills(request.JobTitle, request.Skills)
             .Where(skill => !string.IsNullOrWhiteSpace(skill))
             .Select(NormalizeSearchTerm)
             .ToList();
 
-        if (terms.Count == 0 && !string.IsNullOrWhiteSpace(request.JobTitle))
+        if (skillTerms.Count == 0 && !string.IsNullOrWhiteSpace(request.JobTitle))
         {
-            terms.AddRange(request.JobTitle
+            skillTerms.AddRange(request.JobTitle
                 .Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
                 .Where(token => token.Length > 2)
                 .Where(token => !token.Equals("senior", StringComparison.OrdinalIgnoreCase))
@@ -137,12 +161,66 @@ public sealed class GitHubCandidateSearchProvider : IGitHubCandidateSearchProvid
         }
 
         var location = BuildLocationQualifier(request.Location);
+        var primarySkill = skillTerms.Take(1).ToArray();
+        var languageQualifiers = BuildLanguageQualifiers(request.JobTitle, request.Skills);
+        var queries = new List<string>();
+
+        AddQuery(queries, skillTerms, location);
+        AddQuery(queries, primarySkill, location);
+        AddQuery(queries, skillTerms, null);
+        AddQuery(queries, primarySkill.Concat(languageQualifiers).ToArray(), null);
+
+        return queries
+            .Where(query => !string.IsNullOrWhiteSpace(query))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Take(4)
+            .ToArray();
+    }
+
+    private static void AddQuery(List<string> queries, IReadOnlyList<string> terms, string? location)
+    {
+        var values = terms.Where(term => !string.IsNullOrWhiteSpace(term)).ToList();
         if (!string.IsNullOrWhiteSpace(location))
         {
-            terms.Add(location);
+            values.Add(location);
         }
 
-        return string.Join(' ', terms);
+        if (values.Count > 0)
+        {
+            queries.Add(string.Join(' ', values));
+        }
+    }
+
+    private static IReadOnlyList<string> BuildLanguageQualifiers(string jobTitle, IReadOnlyList<string> skills)
+    {
+        var values = string.Join(' ', skills.Append(jobTitle));
+        var qualifiers = new List<string>();
+        if (ContainsAny(values, ["React", "JavaScript", "Node.js", "NodeJS", "Next.js", "NextJS"]))
+        {
+            qualifiers.Add("language:JavaScript");
+        }
+
+        if (ContainsAny(values, ["React", "TypeScript", "Angular", "Next.js", "NextJS"]))
+        {
+            qualifiers.Add("language:TypeScript");
+        }
+
+        if (ContainsAny(values, ["Python", "Django", "FastAPI", "Flask"]))
+        {
+            qualifiers.Add("language:Python");
+        }
+
+        if (ContainsAny(values, ["Java", "Spring Boot"]))
+        {
+            qualifiers.Add("language:Java");
+        }
+
+        if (ContainsAny(values, ["C#", ".NET", ".NET Core", "ASP.NET"]))
+        {
+            qualifiers.Add("language:C#");
+        }
+
+        return qualifiers.Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
     }
 
     private static IReadOnlyList<string> PrioritizeSkills(string jobTitle, IReadOnlyList<string> skills)
@@ -220,6 +298,24 @@ public sealed class GitHubCandidateSearchProvider : IGitHubCandidateSearchProvid
             _ => "Failed:GitHubHttp"
         };
     }
+
+    private static bool IsProviderFailure(string status) =>
+        status.StartsWith("Unavailable:", StringComparison.OrdinalIgnoreCase) ||
+        status.StartsWith("Failed:", StringComparison.OrdinalIgnoreCase);
+
+    private static string ConsolidateNoResultStatus(IReadOnlyList<string> statuses)
+    {
+        if (statuses.Count == 0)
+        {
+            return "NoResults";
+        }
+
+        var providerFailure = statuses.FirstOrDefault(IsProviderFailure);
+        return providerFailure ?? "NoResults";
+    }
+
+    private static bool ContainsAny(string haystack, IEnumerable<string> terms) =>
+        terms.Any(term => haystack.Contains(term, StringComparison.OrdinalIgnoreCase));
 
     private sealed record GitHubUserSearchResponse(
         [property: JsonPropertyName("items")] IReadOnlyList<GitHubUserSearchItem> Items);
