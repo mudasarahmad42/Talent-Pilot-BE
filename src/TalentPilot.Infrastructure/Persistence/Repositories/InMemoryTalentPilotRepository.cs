@@ -150,7 +150,7 @@ public sealed class InMemoryTalentPilotRepository :
             PublicJobsEnabled = true,
             InviteExpiryDays = 7,
             ReapplyCooldownDays = 90,
-            NotificationEmailProvider = NotificationEmailProviders.Resend,
+            NotificationEmailProvider = NotificationEmailProviders.MicrosoftGraph,
             AdminCenterAccessMode = AdminCenterAccessModes.FullAccess,
             SetupComplete = true,
             UpdatedAtUtc = _clock.UtcNow
@@ -1180,7 +1180,7 @@ public sealed class InMemoryTalentPilotRepository :
         {
             var provider = _tenant.TenantId == tenantId
                 ? _tenant.NotificationEmailProvider
-                : NotificationEmailProviders.Resend;
+                : NotificationEmailProviders.MicrosoftGraph;
 
             return Task.FromResult(new NotificationEmailProviderSettings(NotificationEmailProviders.NormalizeOrDefault(provider)));
         }
@@ -3482,7 +3482,7 @@ public sealed class InMemoryTalentPilotRepository :
         public bool PublicJobsEnabled { get; set; }
         public int InviteExpiryDays { get; set; }
         public int ReapplyCooldownDays { get; set; }
-        public string NotificationEmailProvider { get; set; } = NotificationEmailProviders.Resend;
+        public string NotificationEmailProvider { get; set; } = NotificationEmailProviders.MicrosoftGraph;
         public string AdminCenterAccessMode { get; set; } = AdminCenterAccessModes.FullAccess;
         public string? LogoFileName { get; set; }
         public string? LogoContentType { get; set; }

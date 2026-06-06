@@ -10,6 +10,7 @@ public sealed class PublicFeedbackServiceTests
 {
     private static readonly Guid TenantId = Guid.Parse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa");
     private static readonly Guid AuthenticatedTenantId = Guid.Parse("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb");
+    private const string ExplicitSenderEmail = "sender@example.com";
 
     [Fact]
     public async Task SubmitAsync_SendsAdminAndThankYouEmails()
@@ -23,8 +24,8 @@ public sealed class PublicFeedbackServiceTests
         Assert.Equal(2, emailSender.Messages.Count);
         Assert.Equal("mudasarahmad150@gmail.com", emailSender.Messages[0].ToEmail);
         Assert.Equal("visitor@example.com", emailSender.Messages[1].ToEmail);
-        Assert.Equal("mudasar.ahmad@8pkk57.onmicrosoft.com", emailSender.Messages[0].FromEmail);
-        Assert.Equal("mudasar.ahmad@8pkk57.onmicrosoft.com", emailSender.Messages[1].FromEmail);
+        Assert.Equal(ExplicitSenderEmail, emailSender.Messages[0].FromEmail);
+        Assert.Equal(ExplicitSenderEmail, emailSender.Messages[1].FromEmail);
         Assert.Contains("New feedback received", emailSender.Messages[0].HtmlBody, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("We received your feedback", emailSender.Messages[1].HtmlBody, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("more dashboard guidance", emailSender.Messages[1].HtmlBody, StringComparison.OrdinalIgnoreCase);
@@ -120,7 +121,7 @@ public sealed class PublicFeedbackServiceTests
         "tkxel",
         null,
         "mudasarahmad150@gmail.com",
-        "mudasar.ahmad@8pkk57.onmicrosoft.com");
+        ExplicitSenderEmail);
 
     private static PublicFeedbackService CreateService(
         IPublicFeedbackTenantResolver? tenantResolver = null,

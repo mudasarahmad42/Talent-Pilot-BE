@@ -4,12 +4,12 @@ IF COL_LENGTH(N'dbo.TenantRecruitmentSettings', N'NotificationEmailProvider') IS
 BEGIN
     ALTER TABLE dbo.TenantRecruitmentSettings
         ADD NotificationEmailProvider NVARCHAR(40) NOT NULL
-            CONSTRAINT DF_TenantRecruitmentSettings_NotificationEmailProvider DEFAULT N'Resend';
+            CONSTRAINT DF_TenantRecruitmentSettings_NotificationEmailProvider DEFAULT N'MicrosoftGraph';
 END;
 GO
 
 UPDATE dbo.TenantRecruitmentSettings
-SET NotificationEmailProvider = N'Resend'
+SET NotificationEmailProvider = N'MicrosoftGraph'
 WHERE NotificationEmailProvider IS NULL
    OR NotificationEmailProvider NOT IN (N'Resend', N'MicrosoftGraph');
 GO

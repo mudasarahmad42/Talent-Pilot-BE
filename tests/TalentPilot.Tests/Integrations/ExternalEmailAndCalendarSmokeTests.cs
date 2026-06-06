@@ -35,8 +35,7 @@ public sealed class ExternalEmailAndCalendarSmokeTests
             configuration["ExternalSmokeTests:SenderEmail"],
             Environment.GetEnvironmentVariable("TALENTPILOT_EXTERNAL_SMOKE_SENDER_EMAIL"),
             configuration["PublicFeedback:SenderEmail"],
-            configuration["MicrosoftGraphEmail:FromEmail"],
-            "mudasar.ahmad@8pkk57.onmicrosoft.com");
+            configuration["MicrosoftGraphEmail:FromEmail"]);
 
         var services = new ServiceCollection();
         services.AddSingleton<IConfiguration>(configuration);
@@ -83,8 +82,7 @@ public sealed class ExternalEmailAndCalendarSmokeTests
             configuration["ExternalSmokeTests:SenderEmail"],
             Environment.GetEnvironmentVariable("TALENTPILOT_EXTERNAL_SMOKE_SENDER_EMAIL"),
             configuration["PublicFeedback:SenderEmail"],
-            configuration["MicrosoftGraphEmail:FromEmail"],
-            "mudasar.ahmad@8pkk57.onmicrosoft.com");
+            configuration["MicrosoftGraphEmail:FromEmail"]);
 
         var services = new ServiceCollection();
         services.AddSingleton<IConfiguration>(configuration);

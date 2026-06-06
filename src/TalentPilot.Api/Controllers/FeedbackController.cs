@@ -12,7 +12,6 @@ namespace TalentPilot.Api.Controllers;
 public sealed class FeedbackController : ApiControllerBase
 {
     private const string DefaultRecipientEmail = "mudasarahmad150@gmail.com";
-    private const string DefaultSenderEmail = "mudasar.ahmad@8pkk57.onmicrosoft.com";
 
     private readonly IPublicFeedbackService _feedbackService;
     private readonly IConfiguration _configuration;
@@ -31,7 +30,7 @@ public sealed class FeedbackController : ApiControllerBase
         CancellationToken cancellationToken)
     {
         var recipientEmail = _configuration["PublicFeedback:RecipientEmail"] ?? DefaultRecipientEmail;
-        var senderEmail = _configuration["PublicFeedback:SenderEmail"] ?? DefaultSenderEmail;
+        var senderEmail = _configuration["PublicFeedback:SenderEmail"];
         var input = new SubmitPublicFeedbackInput(
             request.Name,
             request.Email,
