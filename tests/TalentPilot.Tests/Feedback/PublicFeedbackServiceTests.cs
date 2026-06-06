@@ -75,6 +75,19 @@ public sealed class PublicFeedbackServiceTests
     }
 
     [Fact]
+    public async Task SubmitAsync_AllowsProviderDefaultSenderWhenSenderEmailIsBlank()
+    {
+        var emailSender = new CapturingEmailSender();
+        var service = CreateService(emailSender: emailSender);
+
+        var result = await service.SubmitAsync(ValidInput() with { SenderEmail = "" }, CancellationToken.None);
+
+        Assert.True(result.Succeeded);
+        Assert.Equal(2, emailSender.Messages.Count);
+        Assert.All(emailSender.Messages, message => Assert.Null(message.FromEmail));
+    }
+
+    [Fact]
     public async Task SubmitAsync_ReturnsGenericErrorWhenAdminEmailFails()
     {
         var emailSender = new CapturingEmailSender(failOnAttempt: 1);

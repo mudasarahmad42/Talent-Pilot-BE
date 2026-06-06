@@ -55,7 +55,7 @@ public sealed class PublicFeedbackService : IPublicFeedbackService
             return Result<SubmitPublicFeedbackResponse>.Failure(recipientResult.Error.Code, recipientResult.Error.Message);
         }
 
-        var senderResult = NormalizeEmail(input.SenderEmail, "feedback.sender_invalid", "Feedback sender email is not configured.");
+        var senderResult = NormalizeOptionalEmail(input.SenderEmail, "feedback.sender_invalid", "Feedback sender email is invalid.");
         if (senderResult.Failed)
         {
             return Result<SubmitPublicFeedbackResponse>.Failure(
@@ -117,7 +117,7 @@ public sealed class PublicFeedbackService : IPublicFeedbackService
     private static NotificationEmailMessage BuildAdminFeedbackEmail(
         PublicFeedbackTenant tenant,
         string recipientEmail,
-        string senderEmail,
+        string? senderEmail,
         string name,
         string email,
         string message,
@@ -156,7 +156,7 @@ public sealed class PublicFeedbackService : IPublicFeedbackService
 
     private static NotificationEmailMessage BuildThankYouEmail(
         PublicFeedbackTenant tenant,
-        string senderEmail,
+        string? senderEmail,
         string name,
         string email)
     {
@@ -239,6 +239,20 @@ public sealed class PublicFeedbackService : IPublicFeedbackService
         {
             return Result<string>.Failure(errorCode, errorMessage);
         }
+    }
+
+    private static Result<string?> NormalizeOptionalEmail(string? email, string errorCode, string errorMessage)
+    {
+        var normalized = NormalizeWhitespace(email);
+        if (string.IsNullOrWhiteSpace(normalized))
+        {
+            return Result<string?>.Success(null);
+        }
+
+        var result = NormalizeEmail(normalized, errorCode, errorMessage);
+        return result.Failed
+            ? Result<string?>.Failure(result.Error.Code, result.Error.Message)
+            : Result<string?>.Success(result.Value);
     }
 
     private static string NormalizeWhitespace(string? value)

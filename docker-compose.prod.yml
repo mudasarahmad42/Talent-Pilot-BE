@@ -34,6 +34,15 @@ services:
       TalentPilotRuntime__EmbeddingDimensions: "768"
       TalentPilotRuntime__VectorStore: SqlServerVector
       TalentPilotRuntime__OllamaBaseUrl: http://ollama:11434
+      PublicFeedback__RecipientEmail: ${PUBLIC_FEEDBACK_RECIPIENT_EMAIL:-mudasarahmad150@gmail.com}
+      PublicFeedback__SenderEmail: ${PUBLIC_FEEDBACK_SENDER_EMAIL:-}
+      Resend__ApiKey: ${RESEND_API_KEY:-}
+      Resend__FromEmail: ${RESEND_FROM_EMAIL:-onboarding@resend.dev}
+      MicrosoftGraphEmail__TenantId: ${MICROSOFT_GRAPH_TENANT_ID:-}
+      MicrosoftGraphEmail__ClientId: ${MICROSOFT_GRAPH_CLIENT_ID:-}
+      MicrosoftGraphEmail__ClientSecret: ${MICROSOFT_GRAPH_CLIENT_SECRET:-}
+      MicrosoftGraphEmail__FromEmail: ${MICROSOFT_GRAPH_FROM_EMAIL:-}
+      MicrosoftGraphEmail__SaveToSentItems: ${MICROSOFT_GRAPH_SAVE_TO_SENT_ITEMS:-true}
       TavilySearch__Enabled: "false"
       GoogleSearch__Enabled: "false"
       GitHubSearch__Enabled: "false"
@@ -64,6 +73,13 @@ services:
       TalentPilotRuntime__EmbeddingDimensions: "768"
       TalentPilotRuntime__VectorStore: SqlServerVector
       TalentPilotRuntime__OllamaBaseUrl: http://ollama:11434
+      Resend__ApiKey: ${RESEND_API_KEY:-}
+      Resend__FromEmail: ${RESEND_FROM_EMAIL:-onboarding@resend.dev}
+      MicrosoftGraphEmail__TenantId: ${MICROSOFT_GRAPH_TENANT_ID:-}
+      MicrosoftGraphEmail__ClientId: ${MICROSOFT_GRAPH_CLIENT_ID:-}
+      MicrosoftGraphEmail__ClientSecret: ${MICROSOFT_GRAPH_CLIENT_SECRET:-}
+      MicrosoftGraphEmail__FromEmail: ${MICROSOFT_GRAPH_FROM_EMAIL:-}
+      MicrosoftGraphEmail__SaveToSentItems: ${MICROSOFT_GRAPH_SAVE_TO_SENT_ITEMS:-true}
     depends_on:
       sqlserver:
         condition: service_healthy

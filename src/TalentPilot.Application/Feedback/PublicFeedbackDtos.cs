@@ -7,7 +7,7 @@ public sealed record SubmitPublicFeedbackInput(
     string? TenantSlug,
     Guid? JobPostId,
     string RecipientEmail,
-    string SenderEmail);
+    string? SenderEmail);
 
 public sealed record SubmitPublicFeedbackResponse(
     string Provider,
