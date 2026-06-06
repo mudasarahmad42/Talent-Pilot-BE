@@ -19,6 +19,12 @@ DECLARE @ReactSkillId UNIQUEIDENTIFIER = 'cccccccc-cccc-cccc-cccc-cccccccccc05';
 DECLARE @DotNetSkillId UNIQUEIDENTIFIER = 'cccccccc-cccc-cccc-cccc-cccccccccc02';
 DECLARE @AzureSkillId UNIQUEIDENTIFIER = 'cccccccc-cccc-cccc-cccc-cccccccccc04';
 
+IF NOT EXISTS (SELECT 1 FROM dbo.Tenants WHERE TenantId = @TenantId)
+BEGIN
+    PRINT N'Skipping HOD role and demo user migration because tenant seed data has not been applied yet.';
+    RETURN;
+END;
+
 IF OBJECT_ID(N'dbo.Roles', N'U') IS NOT NULL
 BEGIN
     MERGE dbo.Roles AS target

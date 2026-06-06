@@ -9,7 +9,7 @@ public sealed class AdminRuntimeSettings : IAdminRuntimeSettings
     {
         var section = configuration.GetSection("TalentPilotRuntime");
         Provider = section["Provider"] ?? "Mock/Ollama";
-        LlmModel = section["LlmModel"] ?? "llama3.2";
+        LlmModel = section["LlmModel"] ?? "llama3.2:1b";
         EmbeddingModel = section["EmbeddingModel"] ?? "nomic-embed-text";
         EmbeddingDimensions = int.TryParse(section["EmbeddingDimensions"], out var dimensions)
             ? dimensions

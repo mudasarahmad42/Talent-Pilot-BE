@@ -37,6 +37,6 @@ public static class NotificationEmailProviders
     public static string NormalizeOrDefault(string? provider)
     {
         var normalized = Normalize(provider);
-        return IsSupported(normalized) ? normalized : Resend;
+        return IsSupported(normalized) ? normalized : MicrosoftGraph;
     }
 }

@@ -127,7 +127,7 @@ DECLARE @InitialAssignmentId UNIQUEIDENTIFIER = '99999999-aaaa-bbbb-cccc-0000000
 
 MERGE dbo.TenantAiSettings AS target
 USING (VALUES
-    (@TenantId, N'Mock/Ollama', N'llama3.2', N'nomic-embed-text', 768, N'SqlServerVector', CAST(1 AS BIT), CAST(1 AS BIT), CAST(0 AS BIT))
+    (@TenantId, N'Mock/Ollama', N'llama3.2:1b', N'nomic-embed-text', 768, N'SqlServerVector', CAST(1 AS BIT), CAST(1 AS BIT), CAST(0 AS BIT))
 ) AS source (TenantId, ProviderMode, LlmModel, EmbeddingModel, EmbeddingDimensions, VectorStore, ModelSwitchingLocked, HumanReviewRequired, AutoRejectEnabled)
 ON target.TenantId = source.TenantId
 WHEN MATCHED THEN

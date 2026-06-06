@@ -42,7 +42,7 @@ BEGIN
         PublicJobsEnabled BIT NOT NULL CONSTRAINT DF_TenantRecruitmentSettings_PublicJobsEnabled DEFAULT (1),
         InviteExpiryDays INT NOT NULL CONSTRAINT DF_TenantRecruitmentSettings_InviteExpiryDays DEFAULT (7),
         ReapplyCooldownDays INT NOT NULL CONSTRAINT DF_TenantRecruitmentSettings_ReapplyCooldownDays DEFAULT (90),
-        NotificationEmailProvider NVARCHAR(40) NOT NULL CONSTRAINT DF_TenantRecruitmentSettings_NotificationEmailProvider DEFAULT N'Resend',
+        NotificationEmailProvider NVARCHAR(40) NOT NULL CONSTRAINT DF_TenantRecruitmentSettings_NotificationEmailProvider DEFAULT N'MicrosoftGraph',
         CreatedAtUtc DATETIME2(3) NOT NULL CONSTRAINT DF_TenantRecruitmentSettings_CreatedAtUtc DEFAULT SYSUTCDATETIME(),
         UpdatedAtUtc DATETIME2(3) NOT NULL CONSTRAINT DF_TenantRecruitmentSettings_UpdatedAtUtc DEFAULT SYSUTCDATETIME(),
         CONSTRAINT FK_TenantRecruitmentSettings_Tenants FOREIGN KEY (TenantId) REFERENCES dbo.Tenants (TenantId),

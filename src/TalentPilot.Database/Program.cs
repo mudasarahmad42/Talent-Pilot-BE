@@ -31,6 +31,8 @@ internal static class SqlScriptRunnerApp
             Console.WriteLine($"Scripts found: {scripts.Count}");
             Console.WriteLine();
 
+            await EnsureDatabaseExistsAsync(connection.Value);
+
             await using var sqlConnection = new SqlConnection(connection.Value);
             await sqlConnection.OpenAsync();
 
@@ -59,6 +61,33 @@ internal static class SqlScriptRunnerApp
 
             return 1;
         }
+    }
+
+    private static async Task EnsureDatabaseExistsAsync(string connectionString)
+    {
+        var builder = new SqlConnectionStringBuilder(connectionString);
+        var databaseName = builder.InitialCatalog.Trim();
+        if (string.IsNullOrWhiteSpace(databaseName))
+        {
+            return;
+        }
+
+        builder.InitialCatalog = "master";
+        await using var connection = new SqlConnection(builder.ConnectionString);
+        await connection.OpenAsync();
+
+        await using var command = connection.CreateCommand();
+        command.CommandText = """
+            IF DB_ID(@DatabaseName) IS NULL
+            BEGIN
+                DECLARE @sql NVARCHAR(MAX) = N'CREATE DATABASE ' + QUOTENAME(@DatabaseName);
+                EXEC sys.sp_executesql @sql;
+            END
+            """;
+        command.Parameters.AddWithValue("@DatabaseName", databaseName);
+        await command.ExecuteNonQueryAsync();
+
+        Console.WriteLine($"Ensured database exists: {databaseName}");
     }
 
     private static async Task ExecuteScriptAsync(SqlConnection connection, SqlScript script)

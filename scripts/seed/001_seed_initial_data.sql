@@ -68,7 +68,7 @@ WHEN NOT MATCHED THEN
 
 MERGE dbo.TenantRecruitmentSettings AS target
 USING (VALUES
-    (@TenantId, N'TKXEL Careers', N'75-C/II, Gulberg III', N'Lahore', N'Pakistan', N'hr@tkxel.com', N'+92 42 111 859 351', N'#2563EB', CAST(1 AS BIT), N'DOCX', CAST(1 AS BIT), 7, 90, N'Resend')
+    (@TenantId, N'TKXEL Careers', N'75-C/II, Gulberg III', N'Lahore', N'Pakistan', N'hr@tkxel.com', N'+92 42 111 859 351', N'#2563EB', CAST(1 AS BIT), N'DOCX', CAST(1 AS BIT), 7, 90, N'MicrosoftGraph')
 ) AS source (TenantId, CareerDisplayName, CompanyAddress, CompanyCity, CompanyCountry, OfficialEmail, OfficialPhone, PrimaryColorHex, CandidateLoginRequired, CandidateCvFormat, PublicJobsEnabled, InviteExpiryDays, ReapplyCooldownDays, NotificationEmailProvider)
 ON target.TenantId = source.TenantId
 WHEN MATCHED THEN
@@ -85,6 +85,7 @@ WHEN MATCHED THEN
         PublicJobsEnabled = source.PublicJobsEnabled,
         InviteExpiryDays = source.InviteExpiryDays,
         ReapplyCooldownDays = source.ReapplyCooldownDays,
+        NotificationEmailProvider = source.NotificationEmailProvider,
         UpdatedAtUtc = @Now
 WHEN NOT MATCHED THEN
     INSERT (TenantId, CareerDisplayName, CompanyAddress, CompanyCity, CompanyCountry, OfficialEmail, OfficialPhone, PrimaryColorHex, CandidateLoginRequired, CandidateCvFormat, PublicJobsEnabled, InviteExpiryDays, ReapplyCooldownDays, NotificationEmailProvider, CreatedAtUtc, UpdatedAtUtc)

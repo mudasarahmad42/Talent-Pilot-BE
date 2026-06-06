@@ -31,6 +31,8 @@ desktop.ini
 .env
 .env.*
 !.env.example
+!.env.production.example
+.env.production
 appsettings.Local.json
 appsettings.*.local.json
 
