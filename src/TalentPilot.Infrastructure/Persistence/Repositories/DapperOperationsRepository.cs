@@ -5504,6 +5504,35 @@ public sealed class DapperOperationsRepository : IOperationsRepository
         await using var connection = _connectionFactory.CreateConnection();
 
         const string sql = """
+            WITH LatestOffer AS
+            (
+                SELECT *
+                FROM
+                (
+                    SELECT
+                        offer.OfferLetterId,
+                        offer.JobApplicationId,
+                        offer.Status,
+                        offer.UpdatedAtUtc,
+                        ROW_NUMBER() OVER
+                        (
+                            PARTITION BY offer.JobApplicationId
+                            ORDER BY offer.Version DESC, offer.UpdatedAtUtc DESC
+                        ) AS RowNumber
+                    FROM dbo.OfferLetters AS offer
+                    WHERE offer.TenantId = @TenantId
+                ) AS rankedOffer
+                WHERE rankedOffer.RowNumber = 1
+            ),
+            MeetingAgg AS
+            (
+                SELECT
+                    meeting.JobApplicationId,
+                    MAX(meeting.MeetingAtUtc) AS LatestMeetingAtUtc
+                FROM dbo.OfferPresentationMeetings AS meeting
+                WHERE meeting.TenantId = @TenantId
+                GROUP BY meeting.JobApplicationId
+            )
             SELECT
                 application.JobApplicationId,
                 request.JobRequestId,
@@ -5516,7 +5545,9 @@ public sealed class DapperOperationsRepository : IOperationsRepository
                 candidate.Email AS CandidateEmail,
                 application.CurrentStatus AS Status,
                 hiringManager.DisplayName AS HiringManagerName,
-                application.UpdatedAtUtc AS UpdatedAt
+                application.UpdatedAtUtc AS UpdatedAt,
+                latestOffer.Status AS OfferLetterStatus,
+                meetingAgg.LatestMeetingAtUtc AS LatestMeetingAt
             FROM dbo.JobApplications AS application
             INNER JOIN dbo.JobRequests AS request
                 ON request.TenantId = application.TenantId
@@ -5533,6 +5564,10 @@ public sealed class DapperOperationsRepository : IOperationsRepository
             INNER JOIN dbo.AppUsers AS hiringManager
                 ON hiringManager.TenantId = request.TenantId
                 AND hiringManager.UserId = request.HiringManagerUserId
+            LEFT JOIN LatestOffer AS latestOffer
+                ON latestOffer.JobApplicationId = application.JobApplicationId
+            LEFT JOIN MeetingAgg AS meetingAgg
+                ON meetingAgg.JobApplicationId = application.JobApplicationId
             WHERE application.TenantId = @TenantId
               AND application.CurrentStatus IN (N'HiringManagerReview', N'Offered', N'OnHold', N'Rejected', N'Hired', N'Joined')
               AND (@IncludeAllTenantReviews = CAST(1 AS BIT) OR request.HiringManagerUserId = @ActorUserId)
@@ -5557,7 +5592,9 @@ public sealed class DapperOperationsRepository : IOperationsRepository
                 row.CandidateEmail,
                 row.Status,
                 row.HiringManagerName,
-                Utc(row.UpdatedAt)))
+                Utc(row.UpdatedAt),
+                row.OfferLetterStatus,
+                ToUtc(row.LatestMeetingAt)))
             .ToArray());
     }
 
@@ -16706,6 +16743,8 @@ public sealed class DapperOperationsRepository : IOperationsRepository
                 request.RequiredPositions,
                 request.FulfilledPositions,
                 request.Status AS RequestStatus,
+                request.ClosedAtUtc AS RequestClosedAt,
+                closeAudit.EventSummary AS RequestCloseReason,
                 request.HiringManagerUserId,
                 hiringManager.DisplayName AS HiringManagerName,
                 candidate.DisplayName AS CandidateName,
@@ -16770,6 +16809,15 @@ public sealed class DapperOperationsRepository : IOperationsRepository
                 ON tenant.TenantId = application.TenantId
             LEFT JOIN dbo.TenantRecruitmentSettings AS settings
                 ON settings.TenantId = application.TenantId
+            OUTER APPLY (
+                SELECT TOP (1) audit.EventSummary
+                FROM dbo.AuditLogs AS audit
+                WHERE audit.TenantId = request.TenantId
+                  AND audit.EntityType = N'JobRequest'
+                  AND audit.EntityId = request.JobRequestId
+                  AND audit.EventType = N'job_request.closed_by_hiring_manager'
+                ORDER BY audit.CreatedAtUtc DESC
+            ) AS closeAudit
             WHERE application.TenantId = @TenantId
               AND application.JobApplicationId = @JobApplicationId
               AND (@IncludeAllTenantReviews = CAST(1 AS BIT) OR request.HiringManagerUserId = @ActorUserId);
@@ -16938,6 +16986,8 @@ public sealed class DapperOperationsRepository : IOperationsRepository
                 access.RequiredPositions,
                 access.FulfilledPositions,
                 access.RequestStatus,
+                ToUtc(access.RequestClosedAt),
+                access.RequestCloseReason,
                 access.ApplicationStatus,
                 ToUtc(access.FinalOutcomeRecordedAt),
                 access.FinalOutcomeReason,
@@ -19485,7 +19535,9 @@ public sealed class DapperOperationsRepository : IOperationsRepository
         string CandidateEmail,
         string Status,
         string HiringManagerName,
-        DateTime UpdatedAt);
+        DateTime UpdatedAt,
+        string? OfferLetterStatus,
+        DateTime? LatestMeetingAt);
 
     private sealed record HiringManagerDashboardReviewRow(
         Guid JobApplicationId,
@@ -19563,6 +19615,8 @@ public sealed class DapperOperationsRepository : IOperationsRepository
         int RequiredPositions,
         int FulfilledPositions,
         string RequestStatus,
+        DateTime? RequestClosedAt,
+        string? RequestCloseReason,
         Guid HiringManagerUserId,
         string HiringManagerName,
         string CandidateName,

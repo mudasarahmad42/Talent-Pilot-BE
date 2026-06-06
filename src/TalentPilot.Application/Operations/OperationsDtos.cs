@@ -1575,7 +1575,9 @@ public sealed record HiringManagerReviewListItem(
     string CandidateEmail,
     string Status,
     string HiringManagerName,
-    DateTimeOffset UpdatedAt);
+    DateTimeOffset UpdatedAt,
+    string? OfferLetterStatus,
+    DateTimeOffset? LatestMeetingAt);
 
 public sealed record HiringReviewCandidateSummary(
     Guid CandidateId,
@@ -1602,6 +1604,8 @@ public sealed record HiringReviewJobSummary(
     int RequiredPositions,
     int FulfilledPositions,
     string RequestStatus,
+    DateTimeOffset? RequestClosedAt,
+    string? RequestCloseReason,
     string ApplicationStatus,
     DateTimeOffset? FinalOutcomeRecordedAt,
     string? FinalOutcomeReason,

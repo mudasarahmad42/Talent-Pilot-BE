@@ -344,6 +344,8 @@ public sealed class KnowledgeIndexingServiceTests
                 1,
                 0,
                 "Closed",
+                DateTimeOffset.Parse("2026-06-04T13:04:56Z"),
+                "Position closed by hiring manager.",
                 "Offered",
                 null,
                 null,

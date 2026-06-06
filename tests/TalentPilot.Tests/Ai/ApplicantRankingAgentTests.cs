@@ -87,7 +87,39 @@ public sealed class ApplicantRankingAgentTests
     }
 
     [Fact]
-    public async Task RankAsync_WhenModelDoesNotReturnExplanations_FailsClosed()
+    public async Task RankAsync_AcceptsObjectWrappedExplanationResponses()
+    {
+        var modelProvider = new CapturingModelProvider($$"""
+            {
+              "explanations": [
+                {
+                  "jobApplicationId": "{{StrongApplicationId:D}}",
+                  "rationale": "Wrapped response still identifies Ayesha as the strongest React and Azure applicant."
+                },
+                {
+                  "jobApplicationId": "{{WeakApplicationId:D}}",
+                  "rationale": "Wrapped response notes Omar has partial React evidence and missing Azure evidence."
+                }
+              ]
+            }
+            """);
+        var logger = new CapturingRunLogger();
+        var agent = new ApplicantRankingAgent(
+            modelProvider,
+            new StaticEmbeddingProvider(),
+            new CapturingVectorStore(new Dictionary<Guid, decimal>()),
+            new StaticRuntimeSettingsResolver(),
+            logger);
+
+        var result = await agent.RankAsync(TenantId, CreateContext(), CancellationToken.None);
+
+        Assert.Equal(2, result.Matches.Count);
+        Assert.Contains("Wrapped response", result.Matches[0].Explanation);
+        Assert.True(logger.Succeeded);
+    }
+
+    [Fact]
+    public async Task RankAsync_WhenModelDoesNotReturnExplanations_UsesDeterministicFallback()
     {
         var logger = new CapturingRunLogger();
         var agent = new ApplicantRankingAgent(
@@ -97,12 +129,13 @@ public sealed class ApplicantRankingAgentTests
             new StaticRuntimeSettingsResolver(),
             logger);
 
-        await Assert.ThrowsAsync<InvalidOperationException>(() =>
-            agent.RankAsync(TenantId, CreateContext(), CancellationToken.None));
+        var result = await agent.RankAsync(TenantId, CreateContext(), CancellationToken.None);
 
-        Assert.False(logger.Succeeded);
-        Assert.True(logger.Failed);
-        Assert.Contains("usable LLM explanations", logger.OutputSummary);
+        Assert.Equal(2, result.Matches.Count);
+        Assert.True(logger.Succeeded);
+        Assert.False(logger.Failed);
+        Assert.Contains("deterministic ranking", result.Matches[0].Explanation);
+        Assert.Contains("Recruiter review is still required", result.Matches[0].Explanation);
     }
 
     private static OperationsApplicantRankingContext CreateContext()
