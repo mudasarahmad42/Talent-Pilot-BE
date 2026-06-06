@@ -29,6 +29,28 @@ public sealed class SeedDataConsistencyTests
         Assert.Contains("N'\"interviewsPassed\":3'", migration, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public void Migration_SeedsReactTalentRediscoveryCandidatePool()
+    {
+        var migration = ReadBackendFile("scripts", "migrations", "044_seed_react_talent_rediscovery_candidates.sql");
+
+        var candidateRows = System.Text.RegularExpressions.Regex.Matches(
+            migration,
+            @"^\s*\(\d+, N'[^']+', N'[A-Z]{2}', N'[^']+@8pkk57\.onmicrosoft\.com'",
+            System.Text.RegularExpressions.RegexOptions.Multiline);
+
+        Assert.Equal(45, candidateRows.Count);
+        Assert.Contains("DECLARE @ExpectedCandidateCount INT = 45;", migration, StringComparison.Ordinal);
+        Assert.Contains("THROW 51044", migration, StringComparison.Ordinal);
+        Assert.Contains("ReactRediscoverySeed", migration, StringComparison.Ordinal);
+        Assert.Contains("MERGE dbo.JobApplicationDocuments", migration, StringComparison.Ordinal);
+        Assert.Contains("ExtractedTextHashSha256", migration, StringComparison.Ordinal);
+        Assert.Contains("N'web performance optimization'", migration, StringComparison.Ordinal);
+        Assert.Contains("N'rest api integration'", migration, StringComparison.Ordinal);
+        Assert.Contains("N'tailwind css'", migration, StringComparison.Ordinal);
+        Assert.Contains("N'ant design'", migration, StringComparison.Ordinal);
+    }
+
     private static string ReadBackendFile(params string[] pathParts)
     {
         var directory = new DirectoryInfo(AppContext.BaseDirectory);
