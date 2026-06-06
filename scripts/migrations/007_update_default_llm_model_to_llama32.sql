@@ -4,6 +4,6 @@
     the current development environment.
 */
 UPDATE dbo.TenantAiSettings
-SET LlmModel = N'llama3.2',
+SET LlmModel = N'llama3.2:1b',
     UpdatedAtUtc = SYSUTCDATETIME()
-WHERE LlmModel = N'llama3.1:8b';
+WHERE LlmModel IN (N'llama3.1:8b', N'llama3.2');

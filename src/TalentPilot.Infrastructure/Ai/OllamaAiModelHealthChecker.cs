@@ -99,8 +99,7 @@ public sealed class OllamaAiModelHealthChecker : IAiModelHealthChecker
             return false;
         }
 
-        return string.Equals(candidate, $"{requested}:latest", StringComparison.OrdinalIgnoreCase)
-            || candidate.StartsWith($"{requested}:", StringComparison.OrdinalIgnoreCase);
+        return string.Equals(candidate, $"{requested}:latest", StringComparison.OrdinalIgnoreCase);
     }
 
     private sealed record OllamaTagsResponse(

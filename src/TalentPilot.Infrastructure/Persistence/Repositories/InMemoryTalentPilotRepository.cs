@@ -113,7 +113,7 @@ public sealed class InMemoryTalentPilotRepository :
     {
         TenantId = TenantId,
         Provider = "Mock/Ollama",
-        LlmModel = "llama3.2",
+        LlmModel = "llama3.2:1b",
         EmbeddingModel = "nomic-embed-text",
         EmbeddingDimensions = 768,
         VectorStore = "SqlServerVector",

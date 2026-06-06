@@ -8,7 +8,7 @@ BEGIN
     (
         TenantId UNIQUEIDENTIFIER NOT NULL CONSTRAINT PK_TenantAiSettings PRIMARY KEY,
         ProviderMode NVARCHAR(60) NOT NULL CONSTRAINT DF_TenantAiSettings_ProviderMode DEFAULT N'Mock/Ollama',
-        LlmModel NVARCHAR(120) NOT NULL CONSTRAINT DF_TenantAiSettings_LlmModel DEFAULT N'llama3.2',
+        LlmModel NVARCHAR(120) NOT NULL CONSTRAINT DF_TenantAiSettings_LlmModel DEFAULT N'llama3.2:1b',
         EmbeddingModel NVARCHAR(120) NOT NULL CONSTRAINT DF_TenantAiSettings_EmbeddingModel DEFAULT N'nomic-embed-text',
         EmbeddingDimensions INT NOT NULL CONSTRAINT DF_TenantAiSettings_EmbeddingDimensions DEFAULT (768),
         VectorStore NVARCHAR(80) NOT NULL CONSTRAINT DF_TenantAiSettings_VectorStore DEFAULT N'SqlServerVector',
