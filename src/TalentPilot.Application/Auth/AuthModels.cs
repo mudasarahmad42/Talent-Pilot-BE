@@ -9,6 +9,27 @@ public sealed class AuthRuntimeOptions
     public int RefreshTokenDays { get; init; } = 7;
 }
 
+public enum CandidateSignupStatus
+{
+    Created,
+    TenantRequired,
+    JobNotFound,
+    PublicJobsDisabled,
+    CandidateRoleMissing,
+    EmailExists
+}
+
+public sealed record CandidateSignupRegistrationInput(
+    string? TenantSlug,
+    Guid? JobPostId,
+    string DisplayName,
+    string Email,
+    string PasswordHash);
+
+public sealed record CandidateSignupRepositoryResult(
+    CandidateSignupStatus Status,
+    AuthUserRecord? User);
+
 public sealed class AuthUserRecord
 {
     public Guid UserId { get; init; }

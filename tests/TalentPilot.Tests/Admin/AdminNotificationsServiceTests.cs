@@ -177,5 +177,7 @@ public sealed class AdminNotificationsServiceTests
         public Guid TenantId => AdminNotificationsServiceTests.TenantId;
 
         public string Email => "admin@example.com";
+
+        public IReadOnlyCollection<string> RoleCodes => Array.Empty<string>();
     }
 }

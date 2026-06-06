@@ -84,10 +84,10 @@ Keep this file aligned when controllers or frontend contracts change.
 - `GET /api/talent-pilot/job-requests/{entityId}/activity`
   - Job request timeline/activity, using the same visibility guardrails as Job Request snapshots.
 - `POST /api/talent-pilot/job-requests`
-  - Creates a Job Request from tenant IDs: department, location, skills, experience range, priority, required positions, and hiring manager. PMO-created requests assign to the PMO creator; Presales-created requests route by department intake configuration and fall back to Tenant Admins when no active recipient exists. Presales handoff notifications use the `PRESALES_REQUEST_SUBMITTED` notification event/template.
+  - Creates a Job Request from tenant IDs: department, location, skills, experience range, priority, required positions, hiring manager, and optional `clientContext` plain text. PMO-created requests assign to the PMO creator; Presales-created requests route by department intake configuration and fall back to Tenant Admins when no active recipient exists. Presales handoff notifications use the `PRESALES_REQUEST_SUBMITTED` notification event/template.
 - `POST /api/talent-pilot/job-requests/description-draft`
-  - Runs the code-owned `job-description-drafter` agent against structured intake fields only. Returns editable plain-text description content plus agent run metadata. The endpoint is not open chat and does not move workflow stages or make hiring decisions.
-  - Job Request creation runs the code-owned `requirement-parser` indexing step and embeds the final saved requirement profile into `VectorEmbeddings` as `JobRequestDescription`; embedding failures are logged in `AiAgentRuns` and do not roll back the request.
+  - Runs the code-owned `job-description-drafter` agent against structured intake fields only, including optional `clientContext` when provided. Returns editable plain-text description content plus agent run metadata. The endpoint is not open chat and does not move workflow stages or make hiring decisions.
+  - Job Request creation runs the code-owned `requirement-parser` indexing step and embeds the final saved requirement profile, including `clientContext`, into `VectorEmbeddings` as `JobRequestDescription`; embedding failures are logged in `AiAgentRuns` and do not roll back the request.
 - `POST /api/talent-pilot/workflow-assignments/{assignmentId}/claim`
   - Atomic PMO/recruiter ownership claim. Claiming a PMO group assignment only assigns ownership; it does not move the Job Request out of PMO Review.
 - `GET /api/talent-pilot/job-requests/{entityId}/pmo-review`

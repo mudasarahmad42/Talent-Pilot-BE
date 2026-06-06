@@ -5,7 +5,7 @@ using TalentPilot.Application.Admin.TenantProfiles;
 
 namespace TalentPilot.Infrastructure.Persistence.Repositories;
 
-public sealed class DapperAdminTenantProfileRepository : IAdminTenantProfileRepository
+public sealed class DapperAdminTenantProfileRepository : IAdminTenantProfileRepository, IAdminCenterAccessPolicyReader
 {
     private readonly ISqlConnectionFactory _connectionFactory;
 
@@ -79,9 +79,14 @@ public sealed class DapperAdminTenantProfileRepository : IAdminTenantProfileRepo
                 },
                 cancellationToken: cancellationToken));
 
-        return row is null
-            ? null
-            : new TenantProfileSettings(
+        if (row is null)
+        {
+            return null;
+        }
+
+        var adminCenterAccessMode = await ReadAdminCenterAccessModeAsync(connection, tenantId, null, cancellationToken);
+
+        return new TenantProfileSettings(
                 row.TenantId,
                 row.DisplayName,
                 row.Slug,
@@ -103,6 +108,7 @@ public sealed class DapperAdminTenantProfileRepository : IAdminTenantProfileRepo
                 row.InviteExpiryDays,
                 row.ReapplyCooldownDays,
                 NotificationEmailProviders.NormalizeOrDefault(row.NotificationEmailProvider),
+                adminCenterAccessMode,
                 row.UserCount,
                 row.RoleCount,
                 row.SetupComplete,
@@ -112,6 +118,12 @@ public sealed class DapperAdminTenantProfileRepository : IAdminTenantProfileRepo
                 row.LogoContentType,
                 ToBase64(row.LogoContent),
                 Utc(row.UpdatedAt));
+    }
+
+    public async Task<string> GetAdminCenterAccessModeAsync(Guid tenantId, CancellationToken cancellationToken)
+    {
+        await using var connection = _connectionFactory.CreateConnection();
+        return await ReadAdminCenterAccessModeAsync(connection, tenantId, null, cancellationToken);
     }
 
     public async Task<bool> IsSlugAvailableAsync(Guid tenantId, string slug, CancellationToken cancellationToken)
@@ -143,6 +155,7 @@ public sealed class DapperAdminTenantProfileRepository : IAdminTenantProfileRepo
         await using var connection = _connectionFactory.CreateConnection();
         await connection.OpenAsync(cancellationToken);
         await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
+        await EnsureAdminCenterAccessModeColumnAsync(connection, transaction, cancellationToken);
 
         const string updateTenantSql = """
             UPDATE dbo.Tenants
@@ -220,6 +233,64 @@ public sealed class DapperAdminTenantProfileRepository : IAdminTenantProfileRepo
             transaction,
             cancellationToken: cancellationToken));
 
+        const string upsertAccessPolicySql = """
+            DECLARE @BenchVisibilityRoleId UNIQUEIDENTIFIER;
+
+            SELECT TOP (1) @BenchVisibilityRoleId = RoleId
+            FROM dbo.Roles
+            WHERE TenantId = @TenantId
+              AND Code = N'PMO'
+              AND Status = N'Active'
+            ORDER BY Priority, Name;
+
+            IF EXISTS (SELECT 1 FROM dbo.TenantAccessPolicies WHERE TenantId = @TenantId)
+            BEGIN
+                UPDATE dbo.TenantAccessPolicies
+                SET AdminCenterAccessMode = @AdminCenterAccessMode,
+                    UpdatedByUserId = @ActorUserId,
+                    UpdatedAtUtc = SYSUTCDATETIME()
+                WHERE TenantId = @TenantId;
+            END
+            ELSE IF @BenchVisibilityRoleId IS NOT NULL
+            BEGIN
+                INSERT INTO dbo.TenantAccessPolicies
+                (
+                    TenantAccessPolicyId,
+                    TenantId,
+                    PermissionResolutionMode,
+                    BenchVisibilityRoleId,
+                    GroupFallbackMode,
+                    AdminCenterAccessMode,
+                    UpdatedByUserId,
+                    CreatedAtUtc,
+                    UpdatedAtUtc
+                )
+                VALUES
+                (
+                    NEWID(),
+                    @TenantId,
+                    N'MergeAllAssignedRoles',
+                    @BenchVisibilityRoleId,
+                    N'TenantAdmins',
+                    @AdminCenterAccessMode,
+                    @ActorUserId,
+                    SYSUTCDATETIME(),
+                    SYSUTCDATETIME()
+                );
+            END;
+            """;
+
+        await connection.ExecuteAsync(new CommandDefinition(
+            upsertAccessPolicySql,
+            new
+            {
+                TenantId = tenantId,
+                ActorUserId = actorUserId,
+                AdminCenterAccessMode = AdminCenterAccessModes.Normalize(input.AdminCenterAccessMode)
+            },
+            transaction,
+            cancellationToken: cancellationToken));
+
         const string insertAuditSql = """
             INSERT INTO dbo.AuditLogs
             (
@@ -285,6 +356,72 @@ public sealed class DapperAdminTenantProfileRepository : IAdminTenantProfileRepo
     private static string? NullIfWhiteSpace(string? value)
     {
         return string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+    }
+
+    private static async Task<string> ReadAdminCenterAccessModeAsync(
+        Microsoft.Data.SqlClient.SqlConnection connection,
+        Guid tenantId,
+        System.Data.Common.DbTransaction? transaction,
+        CancellationToken cancellationToken)
+    {
+        const string sql = """
+            IF OBJECT_ID(N'dbo.TenantAccessPolicies', N'U') IS NULL
+               OR COL_LENGTH(N'dbo.TenantAccessPolicies', N'AdminCenterAccessMode') IS NULL
+            BEGIN
+                SELECT N'FullAccess';
+            END
+            ELSE
+            BEGIN
+                DECLARE @Sql NVARCHAR(MAX) = N'
+                    SELECT COALESCE(
+                        (
+                            SELECT TOP (1) AdminCenterAccessMode
+                            FROM dbo.TenantAccessPolicies
+                            WHERE TenantId = @TenantId
+                        ),
+                        N''FullAccess'');';
+
+                EXEC sp_executesql @Sql, N'@TenantId UNIQUEIDENTIFIER', @TenantId;
+            END;
+            """;
+
+        var mode = await connection.ExecuteScalarAsync<string?>(
+            new CommandDefinition(sql, new { TenantId = tenantId }, transaction, cancellationToken: cancellationToken));
+
+        return AdminCenterAccessModes.Normalize(mode);
+    }
+
+    private static async Task EnsureAdminCenterAccessModeColumnAsync(
+        Microsoft.Data.SqlClient.SqlConnection connection,
+        System.Data.Common.DbTransaction transaction,
+        CancellationToken cancellationToken)
+    {
+        const string sql = """
+            IF OBJECT_ID(N'dbo.TenantAccessPolicies', N'U') IS NOT NULL
+               AND COL_LENGTH(N'dbo.TenantAccessPolicies', N'AdminCenterAccessMode') IS NULL
+            BEGIN
+                ALTER TABLE dbo.TenantAccessPolicies
+                ADD AdminCenterAccessMode NVARCHAR(20) NOT NULL
+                    CONSTRAINT DF_TenantAccessPolicies_AdminCenterAccessMode DEFAULT N'FullAccess';
+            END;
+
+            IF OBJECT_ID(N'dbo.TenantAccessPolicies', N'U') IS NOT NULL
+               AND COL_LENGTH(N'dbo.TenantAccessPolicies', N'AdminCenterAccessMode') IS NOT NULL
+               AND NOT EXISTS
+               (
+                   SELECT 1
+                   FROM sys.check_constraints
+                   WHERE name = N'CK_TenantAccessPolicies_AdminCenterAccessMode'
+                     AND parent_object_id = OBJECT_ID(N'dbo.TenantAccessPolicies')
+            )
+            BEGIN
+                EXEC(N'ALTER TABLE dbo.TenantAccessPolicies
+                    ADD CONSTRAINT CK_TenantAccessPolicies_AdminCenterAccessMode
+                    CHECK (AdminCenterAccessMode IN (N''FullAccess'', N''ReadOnly''));');
+            END;
+            """;
+
+        await connection.ExecuteAsync(new CommandDefinition(sql, null, transaction, cancellationToken: cancellationToken));
     }
 
     private sealed record TenantProfileSettingsRow(

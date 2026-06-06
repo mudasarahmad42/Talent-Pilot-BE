@@ -26,6 +26,23 @@ public sealed class HiringManagerVisibilityTests
             StringComparison.Ordinal);
     }
 
+    [Fact]
+    public void HiringManagerReviewList_ExposesOfferLetterStateForMyWork()
+    {
+        var repository = ReadBackendFile(
+            "src",
+            "TalentPilot.Infrastructure",
+            "Persistence",
+            "Repositories",
+            "DapperOperationsRepository.cs");
+
+        Assert.Contains("WITH LatestOffer AS", repository, StringComparison.Ordinal);
+        Assert.Contains("latestOffer.Status AS OfferLetterStatus", repository, StringComparison.Ordinal);
+        Assert.Contains("meetingAgg.LatestMeetingAtUtc AS LatestMeetingAt", repository, StringComparison.Ordinal);
+        Assert.Contains("row.OfferLetterStatus", repository, StringComparison.Ordinal);
+        Assert.Contains("ToUtc(row.LatestMeetingAt)", repository, StringComparison.Ordinal);
+    }
+
     private static string ReadBackendFile(params string[] pathParts)
     {
         var directory = new DirectoryInfo(AppContext.BaseDirectory);

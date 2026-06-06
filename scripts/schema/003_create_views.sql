@@ -66,6 +66,7 @@ SELECT
     jr.RequestCode,
     jr.Title,
     jr.ClientName,
+    jr.ClientContext,
     jr.Status,
     jr.PublishStatus,
     jr.CurrentStageKey,

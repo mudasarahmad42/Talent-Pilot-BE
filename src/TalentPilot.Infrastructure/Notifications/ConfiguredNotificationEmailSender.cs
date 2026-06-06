@@ -38,6 +38,27 @@ internal sealed class ConfiguredNotificationEmailSender : INotificationEmailSend
                 $"Email provider '{provider}' is not registered.");
         }
 
-        return await sender.SendAsync(message, cancellationToken);
+        try
+        {
+            return await sender.SendAsync(message, cancellationToken);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception exception)
+        {
+            return Result<NotificationEmailSendResult>.Failure(
+                "notifications.email_provider_failed",
+                ToProviderFailureMessage(provider, exception));
+        }
+    }
+
+    private static string ToProviderFailureMessage(string provider, Exception exception)
+    {
+        var detail = exception.Message.Trim();
+        return string.IsNullOrWhiteSpace(detail)
+            ? $"Email provider '{provider}' failed before completing the request."
+            : $"Email provider '{provider}' failed: {detail}";
     }
 }

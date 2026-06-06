@@ -7,6 +7,13 @@ public sealed record StoreApplicationDocumentRequest(
     string ContentType,
     byte[] Content);
 
+public sealed record StoreCandidateProfileDocumentRequest(
+    Guid TenantId,
+    Guid CandidateId,
+    string OriginalFileName,
+    string ContentType,
+    byte[] Content);
+
 public sealed record StoredApplicationDocument(
     string StorageProvider,
     string StorageKey,
@@ -18,6 +25,10 @@ public interface IApplicationDocumentStorage
 {
     Task<StoredApplicationDocument> SaveAsync(
         StoreApplicationDocumentRequest request,
+        CancellationToken cancellationToken);
+
+    Task<StoredApplicationDocument> SaveProfileAsync(
+        StoreCandidateProfileDocumentRequest request,
         CancellationToken cancellationToken);
 
     Task<byte[]?> ReadAsync(

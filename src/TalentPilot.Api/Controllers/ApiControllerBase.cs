@@ -22,9 +22,15 @@ public abstract class ApiControllerBase : ControllerBase
 
     private ObjectResult ToErrorResponse(Error error)
     {
-        var status = error.Code.Contains("not_found", StringComparison.OrdinalIgnoreCase)
-            ? StatusCodes.Status404NotFound
-            : StatusCodes.Status400BadRequest;
+        var status = StatusCodes.Status400BadRequest;
+        if (error.Code.Contains("not_found", StringComparison.OrdinalIgnoreCase))
+        {
+            status = StatusCodes.Status404NotFound;
+        }
+        else if (error.Code.Contains("forbidden", StringComparison.OrdinalIgnoreCase))
+        {
+            status = StatusCodes.Status403Forbidden;
+        }
 
         return StatusCode(status, new
         {

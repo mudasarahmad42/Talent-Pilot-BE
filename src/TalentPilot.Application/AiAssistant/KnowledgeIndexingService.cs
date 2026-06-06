@@ -2,6 +2,7 @@ using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using TalentPilot.Application.Ai;
 using TalentPilot.Application.Abstractions;
 using TalentPilot.Application.Operations;
 
@@ -200,8 +201,11 @@ public sealed class KnowledgeIndexingService : IKnowledgeIndexingService
 
         foreach (var match in review.BenchMatches)
         {
-            var employeeName = review.EligibleEmployees.FirstOrDefault(employee => employee.EmployeeId == match.EmployeeId)?.DisplayName
-                ?? "Bench employee";
+            var employee = review.EligibleEmployees.FirstOrDefault(employee => employee.EmployeeId == match.EmployeeId);
+            var employeeName = employee?.DisplayName ?? "Bench employee";
+            var explanation = employee is null
+                ? match.Explanation
+                : BenchMatchExplanationGuard.Apply(employee, request, match.Explanation);
             AddChunk(
                 chunks,
                 RagAssistantContextTypes.PmoRequest,
@@ -220,7 +224,7 @@ public sealed class KnowledgeIndexingService : IKnowledgeIndexingService
                     $"Rank: {match.Rank}",
                     $"Score: {match.Score}",
                     $"Confidence: {match.Confidence}",
-                    $"Explanation: {match.Explanation}",
+                    $"Explanation: {explanation}",
                     $"Strengths: {Join(match.Strengths)}",
                     $"Gaps: {Join(match.Gaps)}",
                     $"Project evidence: {Join(match.ProjectEvidence.Select(ProjectEvidenceText))}",

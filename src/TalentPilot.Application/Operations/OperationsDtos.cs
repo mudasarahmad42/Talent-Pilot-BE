@@ -386,6 +386,30 @@ public sealed record OperationsJobPublishing(
 public sealed record PortalJobPostList(
     IReadOnlyList<PortalJobPostListItem> Items);
 
+public sealed record PublicPortalContextQuery(
+    string? TenantSlug,
+    Guid? JobPostId);
+
+public sealed record PublicPortalContext(
+    Guid TenantId,
+    string Slug,
+    string DisplayName,
+    string CareerDisplayName,
+    string? CompanyAddress,
+    string? CompanyCity,
+    string? CompanyCountry,
+    string? OfficialEmail,
+    string? OfficialPhone,
+    string PrimaryColor,
+    bool CandidateLoginRequired,
+    string CandidateCvFormat,
+    bool PublicJobsEnabled,
+    int InviteExpiryDays,
+    int ReapplyCooldownDays,
+    string? LogoFileName,
+    string? LogoContentType,
+    string? LogoContentBase64);
+
 public sealed record PortalJobPostListItem(
     Guid JobPostId,
     Guid JobRequestId,
@@ -528,6 +552,7 @@ public sealed record OperationsJobRequest(
     string Code,
     string Title,
     string Client,
+    string? ClientContext,
     string Description,
     string Department,
     IReadOnlyList<string> Skills,
@@ -880,6 +905,12 @@ public sealed record OperationsApplicationDocumentDownload(
     string ContentType,
     byte[] Content);
 
+public sealed record PortalCandidateProfileDocumentDownload(
+    Guid CandidateProfileDocumentId,
+    string FileName,
+    string ContentType,
+    byte[] Content);
+
 public sealed record OperationsApplicantRankingMatch(
     Guid JobApplicationId,
     Guid CandidateId,
@@ -1045,6 +1076,9 @@ public sealed record PortalJobApplicationResult(
 public sealed record PortalUploadApplicationDocumentResult(
     PortalApplicationDocument Document);
 
+public sealed record PortalUploadCandidateProfileDocumentResult(
+    PortalCandidateProfileDocument Document);
+
 public sealed record PortalMyApplications(
     IReadOnlyList<PortalMyApplicationItem> Items);
 
@@ -1063,7 +1097,23 @@ public sealed record PortalCandidateProfile(
     PortalCandidateProfileEducation? PrimaryEducation,
     PortalCandidateProfileWorkHistory? CurrentWorkHistory,
     IReadOnlyList<PortalCandidateProfileSkill> Skills,
-    IReadOnlyList<PortalCandidateProfileSkillOption> SkillOptions);
+    IReadOnlyList<PortalCandidateProfileSkillOption> SkillOptions,
+    PortalCandidateProfileDocument? ResumeDocument);
+
+public sealed record PortalCandidateProfileDocument(
+    Guid CandidateProfileDocumentId,
+    Guid CandidateId,
+    string DocumentType,
+    string FileName,
+    string ContentType,
+    long SizeBytes,
+    string StorageProvider,
+    DateTimeOffset UploadedAt,
+    string ExtractionStatus,
+    bool HasTextEvidence,
+    string? ParserVersion,
+    DateTimeOffset? ExtractedAt,
+    string? ExtractionError);
 
 public sealed record PortalCandidateProfileEducation(
     string? UniversityName,
@@ -1162,6 +1212,45 @@ public sealed record PortalApplicationDocumentMetadataInput(
 public sealed record PortalApplicationDocumentUploadContext(
     Guid JobApplicationId,
     Guid CandidateId);
+
+public sealed record PortalCandidateProfileDocumentUploadContext(
+    Guid CandidateId);
+
+public sealed record PortalCandidateProfileDocumentMetadataInput(
+    string DocumentType,
+    string FileName,
+    string ContentType,
+    long SizeBytes,
+    string StorageProvider,
+    string StorageKey,
+    string? StorageContainer,
+    string ContentHashSha256,
+    string ExtractionStatus,
+    string? ExtractedText,
+    string? ExtractedTextHashSha256,
+    string? ParserVersion,
+    DateTimeOffset? ExtractedAt,
+    string? ExtractionError);
+
+public sealed record PortalCandidateProfileDocumentEvidence(
+    Guid CandidateProfileDocumentId,
+    Guid CandidateId,
+    string DocumentType,
+    string FileName,
+    string ContentType,
+    long SizeBytes,
+    string StorageProvider,
+    string StorageKey,
+    string? StorageContainer,
+    string ContentHashSha256,
+    DateTimeOffset UploadedAt,
+    string ExtractionStatus,
+    bool HasExtractedText,
+    string? ExtractedText,
+    string? ExtractedTextHashSha256,
+    string? ParserVersion,
+    DateTimeOffset? ExtractedAt,
+    string? ExtractionError);
 
 public sealed record PortalApplicationTimelineItem(
     string Kind,
@@ -1486,7 +1575,9 @@ public sealed record HiringManagerReviewListItem(
     string CandidateEmail,
     string Status,
     string HiringManagerName,
-    DateTimeOffset UpdatedAt);
+    DateTimeOffset UpdatedAt,
+    string? OfferLetterStatus,
+    DateTimeOffset? LatestMeetingAt);
 
 public sealed record HiringReviewCandidateSummary(
     Guid CandidateId,
@@ -1513,6 +1604,8 @@ public sealed record HiringReviewJobSummary(
     int RequiredPositions,
     int FulfilledPositions,
     string RequestStatus,
+    DateTimeOffset? RequestClosedAt,
+    string? RequestCloseReason,
     string ApplicationStatus,
     DateTimeOffset? FinalOutcomeRecordedAt,
     string? FinalOutcomeReason,
@@ -1674,6 +1767,7 @@ public sealed record OperationsEmployeeReferral(
 public sealed record CreateOperationsJobRequestInput(
     string Title,
     string Client,
+    string? ClientContext,
     string Description,
     Guid DepartmentId,
     Guid LocationId,
@@ -1687,6 +1781,7 @@ public sealed record CreateOperationsJobRequestInput(
 public sealed record DraftJobDescriptionInput(
     string Title,
     string Client,
+    string? ClientContext,
     Guid DepartmentId,
     Guid LocationId,
     IReadOnlyList<Guid> SkillIds,

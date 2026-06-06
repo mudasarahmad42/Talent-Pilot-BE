@@ -17,6 +17,11 @@ public sealed class JwtTokenService : IJwtTokenService
     {
         _options = options.Value;
         _clock = clock;
+
+        if (Encoding.UTF8.GetByteCount(_options.SigningKey) < 32)
+        {
+            throw new InvalidOperationException("JWT signing key must be at least 32 bytes.");
+        }
     }
 
     public JwtTokenResult CreateAccessToken(CurrentUserContext user, TimeSpan lifetime)

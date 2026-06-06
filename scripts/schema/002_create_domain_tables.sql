@@ -358,6 +358,7 @@ BEGIN
         Title NVARCHAR(200) NOT NULL,
         Description NVARCHAR(MAX) NOT NULL,
         ClientName NVARCHAR(200) NULL,
+        ClientContext NVARCHAR(MAX) NULL,
         DepartmentId UNIQUEIDENTIFIER NULL,
         LocationId UNIQUEIDENTIFIER NULL,
         EmploymentType NVARCHAR(60) NOT NULL CONSTRAINT DF_JobRequests_EmploymentType DEFAULT N'FullTime',
@@ -389,6 +390,12 @@ BEGIN
         CONSTRAINT CK_JobRequests_PublishStatus CHECK (PublishStatus IN (N'NotPublished', N'Published', N'Unpublished')),
         CONSTRAINT UQ_JobRequests_Tenant_RequestCode UNIQUE (TenantId, RequestCode)
     );
+END;
+GO
+
+IF COL_LENGTH(N'dbo.JobRequests', N'ClientContext') IS NULL
+BEGIN
+    ALTER TABLE dbo.JobRequests ADD ClientContext NVARCHAR(MAX) NULL;
 END;
 GO
 

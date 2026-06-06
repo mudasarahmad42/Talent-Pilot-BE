@@ -4,6 +4,7 @@ public static class AccessConstants
 {
     public const string SystemAdminRoleCode = "SystemAdmin";
     public const string TenantAdminRoleCode = "TenantAdmin";
+    public const string AdminRoleCodes = SystemAdminRoleCode + "," + TenantAdminRoleCode;
     public const string PmoRoleCode = "PMO";
     public const string HodRoleCode = "HOD";
 

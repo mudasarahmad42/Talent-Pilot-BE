@@ -102,6 +102,47 @@ public sealed class DapperAdminCenterRepository :
             new CommandDefinition(sql, new { TenantId = tenantId }, cancellationToken: cancellationToken));
     }
 
+    public async Task<IReadOnlyList<AdminAiAgentRunListItem>> ListRecentRunsAsync(
+        Guid tenantId,
+        int count,
+        CancellationToken cancellationToken)
+    {
+        const string sql = """
+            SELECT TOP (@Count)
+                runs.AiAgentRunId,
+                runs.AiAgentDefinitionId AS AgentId,
+                definitions.DisplayName AS AgentName,
+                runs.SourceEntityType,
+                runs.SourceEntityId,
+                runs.ModelName,
+                runs.EmbeddingModelName,
+                runs.Status,
+                runs.StartedAtUtc,
+                runs.CompletedAtUtc,
+                CASE
+                    WHEN runs.CompletedAtUtc IS NULL THEN NULL
+                    ELSE DATEDIFF(MILLISECOND, runs.StartedAtUtc, runs.CompletedAtUtc)
+                END AS DurationMs,
+                runs.OutputSummary,
+                runs.InputHash,
+                runs.MetadataJson
+            FROM dbo.AiAgentRuns AS runs
+            INNER JOIN dbo.AiAgentDefinitions AS definitions
+                ON definitions.AiAgentDefinitionId = runs.AiAgentDefinitionId
+            WHERE runs.TenantId = @TenantId
+            ORDER BY runs.StartedAtUtc DESC;
+            """;
+
+        await using var connection = _connectionFactory.CreateConnection();
+        var rows = await connection.QueryAsync<AiAgentRunLogRow>(
+            new CommandDefinition(
+                sql,
+                new { TenantId = tenantId, Count = count },
+                cancellationToken: cancellationToken));
+
+        return rows.Select(ToAiAgentRunLogItem).ToArray();
+    }
+
     public async Task<AdminCandidateSourcesResponse> ListAsync(
         Guid tenantId,
         AdminCandidateSourcesQuery query,
@@ -4286,6 +4327,72 @@ public sealed class DapperAdminCenterRepository :
         }
     }
 
+    private static IReadOnlyDictionary<string, string> ParseStringMap(string json)
+    {
+        if (string.IsNullOrWhiteSpace(json))
+        {
+            return new Dictionary<string, string>();
+        }
+
+        try
+        {
+            using var document = JsonDocument.Parse(json);
+            if (document.RootElement.ValueKind != JsonValueKind.Object)
+            {
+                return new Dictionary<string, string>();
+            }
+
+            var values = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var property in document.RootElement.EnumerateObject())
+            {
+                values[property.Name] = property.Value.ValueKind switch
+                {
+                    JsonValueKind.String => property.Value.GetString() ?? string.Empty,
+                    JsonValueKind.True => bool.TrueString.ToLowerInvariant(),
+                    JsonValueKind.False => bool.FalseString.ToLowerInvariant(),
+                    JsonValueKind.Number => property.Value.GetRawText(),
+                    _ => property.Value.GetRawText()
+                };
+            }
+
+            return values;
+        }
+        catch (JsonException)
+        {
+            return new Dictionary<string, string>();
+        }
+    }
+
+    private static AdminAiAgentRunListItem ToAiAgentRunLogItem(AiAgentRunLogRow row)
+    {
+        var metadata = ParseStringMap(row.MetadataJson);
+        return new AdminAiAgentRunListItem(
+            row.AiAgentRunId,
+            row.AgentId,
+            row.AgentName,
+            row.SourceEntityType,
+            row.SourceEntityId,
+            row.ModelName,
+            row.EmbeddingModelName,
+            row.Status,
+            Utc(row.StartedAtUtc),
+            ToUtc(row.CompletedAtUtc),
+            row.DurationMs,
+            row.OutputSummary,
+            row.InputHash,
+            MetadataValue(metadata, "promptVersion"),
+            MetadataValue(metadata, "semanticSimilarityStatus") ?? MetadataValue(metadata, "semanticSimilarity"),
+            string.Equals(MetadataValue(metadata, "humanDecisionRequired"), "true", StringComparison.OrdinalIgnoreCase),
+            MetadataValue(metadata, "errorType"));
+    }
+
+    private static string? MetadataValue(IReadOnlyDictionary<string, string> metadata, string key)
+    {
+        return metadata.TryGetValue(key, out var value) && !string.IsNullOrWhiteSpace(value)
+            ? value.Trim()
+            : null;
+    }
+
     private static async Task<Guid> EnsureNotificationEventAsync(
         SqlConnection connection,
         DbTransaction transaction,
@@ -4541,4 +4648,5 @@ public sealed class DapperAdminCenterRepository :
         int ProcessingCount);
     private sealed record AuditLogListRow(Guid Id, DateTime OccurredAtUtc, string ActorDisplayName, string EventSummary, string RecordLabel, string Area);
     private sealed record AuditLogDetailsRow(Guid Id, DateTime OccurredAtUtc, Guid? ActorUserId, string ActorDisplayName, string EventType, string EntityType, Guid? EntityId, string RecordLabel, string EventSummary, string Area, string MetadataJson);
+    private sealed record AiAgentRunLogRow(Guid AiAgentRunId, string AgentId, string AgentName, string SourceEntityType, Guid SourceEntityId, string ModelName, string? EmbeddingModelName, string Status, DateTime StartedAtUtc, DateTime? CompletedAtUtc, int? DurationMs, string? OutputSummary, string InputHash, string MetadataJson);
 }

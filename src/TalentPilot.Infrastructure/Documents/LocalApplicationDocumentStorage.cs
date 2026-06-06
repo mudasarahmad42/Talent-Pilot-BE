@@ -25,29 +25,56 @@ public sealed class LocalApplicationDocumentStorage : IApplicationDocumentStorag
         StoreApplicationDocumentRequest request,
         CancellationToken cancellationToken)
     {
+        return await SaveCoreAsync(
+            request.TenantId,
+            request.JobApplicationId.ToString("N"),
+            request.OriginalFileName,
+            request.Content,
+            cancellationToken);
+    }
+
+    public async Task<StoredApplicationDocument> SaveProfileAsync(
+        StoreCandidateProfileDocumentRequest request,
+        CancellationToken cancellationToken)
+    {
+        return await SaveCoreAsync(
+            request.TenantId,
+            Path.Combine("profiles", request.CandidateId.ToString("N")),
+            request.OriginalFileName,
+            request.Content,
+            cancellationToken);
+    }
+
+    private async Task<StoredApplicationDocument> SaveCoreAsync(
+        Guid tenantId,
+        string scopePath,
+        string originalFileName,
+        byte[] content,
+        CancellationToken cancellationToken)
+    {
         var rootPath = string.IsNullOrWhiteSpace(_options.RootPath)
             ? Path.Combine(AppContext.BaseDirectory, "App_Data", "application-documents")
             : _options.RootPath;
-        var extension = NormalizeExtension(Path.GetExtension(request.OriginalFileName));
+        var extension = NormalizeExtension(Path.GetExtension(originalFileName));
         var documentId = Guid.NewGuid();
         var relativeDirectory = Path.Combine(
-            request.TenantId.ToString("N"),
-            request.JobApplicationId.ToString("N"));
+            tenantId.ToString("N"),
+            scopePath);
         var absoluteDirectory = Path.Combine(rootPath, relativeDirectory);
         Directory.CreateDirectory(absoluteDirectory);
 
         var fileName = $"{documentId:N}{extension}";
         var absolutePath = Path.Combine(absoluteDirectory, fileName);
-        await File.WriteAllBytesAsync(absolutePath, request.Content, cancellationToken);
+        await File.WriteAllBytesAsync(absolutePath, content, cancellationToken);
 
-        var hash = Convert.ToHexString(SHA256.HashData(request.Content)).ToLowerInvariant();
+        var hash = Convert.ToHexString(SHA256.HashData(content)).ToLowerInvariant();
         var storageKey = Path.Combine(relativeDirectory, fileName).Replace('\\', '/');
 
         return new StoredApplicationDocument(
             ProviderName,
             storageKey,
             _options.StorageContainer,
-            request.Content.LongLength,
+            content.LongLength,
             hash);
     }
 

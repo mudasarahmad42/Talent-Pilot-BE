@@ -2,6 +2,13 @@ namespace TalentPilot.Application.Auth;
 
 public sealed record LoginRequest(string Email, string? Password);
 
+public sealed record CandidateSignupRequest(
+    string? TenantSlug,
+    Guid? JobPostId,
+    string DisplayName,
+    string Email,
+    string Password);
+
 public sealed record RefreshTokenRequest(string RefreshToken);
 
 public sealed record LogoutRequest(string RefreshToken);

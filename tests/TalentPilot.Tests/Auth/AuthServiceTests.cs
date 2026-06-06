@@ -1,3 +1,4 @@
+using System.Security.Cryptography;
 using Microsoft.Extensions.Options;
 using TalentPilot.Application.Auth;
 using TalentPilot.Common.Time;
@@ -99,21 +100,81 @@ public sealed class AuthServiceTests
         Assert.NotNull(fixture.Repository.RefreshTokens.Single().RevokedAtUtc);
     }
 
+    [Fact]
+    public async Task RegisterCandidateAsync_WithValidRequest_HashesPasswordAndReturnsCandidateAuthResponse()
+    {
+        var fixture = CreateFixture();
+        var candidateUserId = Guid.Parse("44444444-4444-4444-4444-444444444444");
+        fixture.Repository.CandidateSignupResultFactory = input => new CandidateSignupRepositoryResult(
+            CandidateSignupStatus.Created,
+            new AuthUserRecord
+            {
+                UserId = candidateUserId,
+                TenantId = fixture.TenantId,
+                DisplayName = input.DisplayName,
+                Email = input.Email,
+                AccountStatus = "Active",
+                PasswordHash = input.PasswordHash
+            });
+
+        var result = await fixture.Service.RegisterCandidateAsync(
+            new CandidateSignupRequest(
+                "tkxel",
+                Guid.Parse("55555555-5555-5555-5555-555555555555"),
+                "Ayesha Khan",
+                "ayesha@example.com",
+                "StrongPass123"),
+            CancellationToken.None);
+
+        Assert.True(result.Succeeded);
+        Assert.Equal(candidateUserId, result.Value.User.UserId);
+        Assert.Equal("ayesha@example.com", result.Value.User.Email);
+        Assert.Contains(result.Value.User.Roles, role => role.Code == "Candidate");
+        Assert.Single(fixture.Repository.RefreshTokens);
+        Assert.NotNull(fixture.Repository.LastCandidateSignupInput);
+        Assert.NotEqual("StrongPass123", fixture.Repository.LastCandidateSignupInput!.PasswordHash);
+        Assert.True(BCrypt.Net.BCrypt.Verify("StrongPass123", fixture.Repository.LastCandidateSignupInput.PasswordHash));
+    }
+
+    [Theory]
+    [InlineData("a", "candidate@example.com", "StrongPass123", "auth.candidate_signup_name_invalid")]
+    [InlineData("Ayesha Khan", "not-an-email", "StrongPass123", "auth.candidate_signup_email_invalid")]
+    [InlineData("Ayesha Khan", "candidate@example.com", "short", "auth.candidate_signup_password_invalid")]
+    public async Task RegisterCandidateAsync_WithInvalidInput_FailsBeforeRepository(
+        string displayName,
+        string email,
+        string password,
+        string expectedCode)
+    {
+        var fixture = CreateFixture();
+
+        var result = await fixture.Service.RegisterCandidateAsync(
+            new CandidateSignupRequest("tkxel", null, displayName, email, password),
+            CancellationToken.None);
+
+        Assert.True(result.Failed);
+        Assert.Equal(expectedCode, result.Error.Code);
+        Assert.Null(fixture.Repository.LastCandidateSignupInput);
+        Assert.Empty(fixture.Repository.RefreshTokens);
+    }
+
     private static Fixture CreateFixture(string accountStatus = "Active")
     {
         var clock = new FixedClock(DateTimeOffset.Parse("2026-05-31T08:00:00Z"));
         var tenantId = Guid.Parse("11111111-1111-1111-1111-111111111111");
         var userId = Guid.Parse("33333333-3333-3333-3333-333333333304");
         var repository = new FakeIdentityRepository(tenantId, userId, accountStatus);
+        var passwordVerifier = new BCryptPasswordVerifier();
         var service = new AuthService(
             repository,
-            new BCryptPasswordVerifier(),
+            passwordVerifier,
+            passwordVerifier,
             new JwtTokenService(
                 Options.Create(new JwtOptions
                 {
                     Issuer = "TalentPilot",
                     Audience = "TalentPilot.Web",
-                    SigningKey = "development-only-change-this-key-before-production-32"
+                    SigningKey = Convert.ToBase64String(RandomNumberGenerator.GetBytes(64))
                 }),
                 clock),
             new SecureTokenGenerator(),
@@ -124,10 +185,10 @@ public sealed class AuthServiceTests
                 RefreshTokenDays = 7
             });
 
-        return new Fixture(service, repository, userId);
+        return new Fixture(service, repository, tenantId, userId);
     }
 
-    private sealed record Fixture(AuthService Service, FakeIdentityRepository Repository, Guid UserId);
+    private sealed record Fixture(AuthService Service, FakeIdentityRepository Repository, Guid TenantId, Guid UserId);
 
     private sealed class FixedClock : IClock
     {
@@ -154,6 +215,10 @@ public sealed class AuthServiceTests
 
         public List<RefreshTokenRecord> RefreshTokens { get; } = [];
 
+        public CandidateSignupRegistrationInput? LastCandidateSignupInput { get; private set; }
+
+        public Func<CandidateSignupRegistrationInput, CandidateSignupRepositoryResult>? CandidateSignupResultFactory { get; set; }
+
         public Task<IReadOnlyList<LoginOption>> ListLoginOptionsAsync(CancellationToken cancellationToken) =>
             Task.FromResult<IReadOnlyList<LoginOption>>([]);
 
@@ -178,8 +243,41 @@ public sealed class AuthServiceTests
         public Task<AuthUserRecord?> FindUserByIdAsync(Guid tenantId, Guid userId, CancellationToken cancellationToken) =>
             Task.FromResult<AuthUserRecord?>(null);
 
+        public Task<CandidateSignupRepositoryResult> RegisterCandidateAsync(
+            CandidateSignupRegistrationInput input,
+            CancellationToken cancellationToken)
+        {
+            LastCandidateSignupInput = input;
+            return Task.FromResult(CandidateSignupResultFactory?.Invoke(input) ??
+                new CandidateSignupRepositoryResult(CandidateSignupStatus.TenantRequired, null));
+        }
+
         public Task<CurrentUserData?> GetCurrentUserDataAsync(Guid tenantId, Guid userId, CancellationToken cancellationToken)
         {
+            if (CandidateSignupResultFactory is not null &&
+                tenantId == _tenantId &&
+                userId == Guid.Parse("44444444-4444-4444-4444-444444444444"))
+            {
+                var candidateData = new CurrentUserData
+                {
+                    UserId = userId,
+                    TenantId = tenantId,
+                    TenantDisplayName = "TKXEL",
+                    DisplayName = "Ayesha Khan",
+                    Email = "ayesha@example.com",
+                    PermissionResolutionMode = PermissionResolutionMode.MergeAllAssignedRoles
+                };
+                candidateData.Roles.Add(new RoleWithPermissions
+                {
+                    RoleId = Guid.Parse("22222222-2222-2222-2222-222222222210"),
+                    Code = "Candidate",
+                    Name = "Candidate",
+                    Priority = 90
+                });
+
+                return Task.FromResult<CurrentUserData?>(candidateData);
+            }
+
             if (tenantId != _tenantId || userId != _userId)
             {
                 return Task.FromResult<CurrentUserData?>(null);

@@ -255,31 +255,23 @@ public sealed class ApplicantRankingAgent : IApplicantRankingAgent
 
         if (string.IsNullOrWhiteSpace(response))
         {
-            throw new InvalidOperationException("The Applicant Ranking Agent returned an empty explanation response.");
+            return new Dictionary<Guid, string>();
         }
 
-        var normalized = response.Trim();
-        if (normalized.StartsWith("```", StringComparison.Ordinal))
+        var normalized = ExtractJsonPayload(response);
+        if (string.IsNullOrWhiteSpace(normalized))
         {
-            normalized = normalized
-                .Replace("```json", string.Empty, StringComparison.OrdinalIgnoreCase)
-                .Replace("```", string.Empty, StringComparison.Ordinal)
-                .Trim();
+            return new Dictionary<Guid, string>();
         }
 
-        var items = JsonSerializer.Deserialize<AiExplanationItem[]>(normalized, JsonOptions) ?? [];
-        var explanations = items
-            .Where(item => Guid.TryParse(item.JobApplicationId, out _) && !string.IsNullOrWhiteSpace(item.Explanation))
-            .ToDictionary(
-                item => Guid.Parse(item.JobApplicationId),
-                item => item.Explanation.Trim());
-
-        if (explanations.Count == 0 && scored.Count > 0)
+        try
         {
-            throw new InvalidOperationException("The Applicant Ranking Agent did not return any usable LLM explanations.");
+            return ParseExplanationItems(normalized);
         }
-
-        return explanations;
+        catch (JsonException)
+        {
+            return new Dictionary<Guid, string>();
+        }
     }
 
     private static ScoredApplication ScoreApplication(
@@ -288,10 +280,11 @@ public sealed class ApplicantRankingAgent : IApplicantRankingAgent
         IReadOnlyDictionary<Guid, decimal> vectorScores,
         IReadOnlyDictionary<Guid, string> documentTexts)
     {
-        var requestedSkillCount = application.MatchedSkills.Count + application.MissingSkills.Count;
-        var skillCoverage = requestedSkillCount == 0
-            ? 0m
-            : (decimal)application.MatchedSkills.Count / requestedSkillCount;
+        var skillAssessment = TechnologySkillMatcher.Assess(
+            context.RequiredSkills,
+            application.Skills,
+            BuildApplicationProfileText(application, documentTexts));
+        var skillCoverage = skillAssessment.OverallScore;
         var vectorSimilarity = vectorScores.TryGetValue(application.JobApplicationId, out var vectorScore)
             ? Clamp(vectorScore, 0, 1)
             : 0m;
@@ -314,7 +307,8 @@ public sealed class ApplicantRankingAgent : IApplicantRankingAgent
             decimal.Round(fit, 4),
             decimal.Round(historicalSignal, 4),
             decimal.Round(evidenceCompleteness, 4),
-            decimal.Round(recency, 4));
+            decimal.Round(recency, 4),
+            skillAssessment);
     }
 
     private static ApplicantRankingRankedApplication ToRankedApplication(
@@ -326,7 +320,7 @@ public sealed class ApplicantRankingAgent : IApplicantRankingAgent
         var gaps = BuildGaps(scored);
         var documentEvidence = BuildDocumentEvidence(scored.Application);
         var historicalEvidence = BuildHistoricalEvidence(scored.Application);
-        var explanation = RequiredAiExplanation(aiExplanations, scored.Application.JobApplicationId, scored.Application.CandidateName);
+        var explanation = GuardExplanation(scored, AiExplanationOrFallback(aiExplanations, scored, rank));
 
         return new ApplicantRankingRankedApplication(
             scored.Application.JobApplicationId,
@@ -496,11 +490,7 @@ public sealed class ApplicantRankingAgent : IApplicantRankingAgent
 
     private static IReadOnlyList<string> BuildStrengths(ScoredApplication scored)
     {
-        var strengths = new List<string>();
-        if (scored.Application.MatchedSkills.Count > 0)
-        {
-            strengths.Add($"Matches {string.Join(", ", scored.Application.MatchedSkills)}.");
-        }
+        var strengths = new List<string>(TechnologySkillMatcher.BuildStrengthNotes(scored.SkillAssessment));
 
         if (scored.Application.ExperienceYears.HasValue)
         {
@@ -527,11 +517,7 @@ public sealed class ApplicantRankingAgent : IApplicantRankingAgent
 
     private static IReadOnlyList<string> BuildGaps(ScoredApplication scored)
     {
-        var gaps = new List<string>();
-        if (scored.Application.MissingSkills.Count > 0)
-        {
-            gaps.AddRange(scored.Application.MissingSkills.Select(skill => $"Missing requested skill evidence: {skill}."));
-        }
+        var gaps = new List<string>(TechnologySkillMatcher.BuildGapNotes(scored.SkillAssessment));
 
         if (string.IsNullOrWhiteSpace(scored.Application.CoverLetterText))
         {
@@ -589,19 +575,161 @@ public sealed class ApplicantRankingAgent : IApplicantRankingAgent
         return evidenceItems.Length == 0 ? ["No prior application or interview evidence was found."] : evidenceItems;
     }
 
-    private static string RequiredAiExplanation(
+    private static string AiExplanationOrFallback(
         IReadOnlyDictionary<Guid, string> explanations,
-        Guid jobApplicationId,
-        string candidateName)
+        ScoredApplication scored,
+        int rank)
     {
-        if (explanations.TryGetValue(jobApplicationId, out var explanation) &&
+        if (explanations.TryGetValue(scored.Application.JobApplicationId, out var explanation) &&
             !string.IsNullOrWhiteSpace(explanation))
         {
             return explanation;
         }
 
-        throw new InvalidOperationException(
-            $"The Applicant Ranking Agent did not return an LLM explanation for {candidateName}.");
+        return BuildFallbackExplanation(scored, rank);
+    }
+
+    private static string BuildFallbackExplanation(ScoredApplication scored, int rank)
+    {
+        var application = scored.Application;
+        var strengths = BuildStrengths(scored).Take(2).ToArray();
+        var gaps = BuildGaps(scored).Take(2).ToArray();
+        var matchedSkills = application.MatchedSkills.Count == 0
+            ? "no required skills directly matched"
+            : string.Join(", ", application.MatchedSkills.Take(4));
+        var missingSkills = application.MissingSkills.Count == 0
+            ? "no required skill gaps recorded"
+            : string.Join(", ", application.MissingSkills.Take(4));
+
+        return string.Join(' ', new[]
+        {
+            $"{application.CandidateName} is ranked #{rank} with a {decimal.Round(scored.Score, 0)}% fit score for {application.CurrentDesignation ?? "the current role"}.",
+            $"The deterministic ranking used candidate profile, application, CV/document, historical workflow, and semantic evidence; direct matched skills: {matchedSkills}.",
+            $"Recorded gaps: {missingSkills}.",
+            $"Key strengths: {string.Join("; ", strengths)}",
+            $"Review notes: {string.Join("; ", gaps)}",
+            "Recruiter review is still required before any workflow decision."
+        });
+    }
+
+    private static string GuardExplanation(ScoredApplication scored, string explanation)
+    {
+        var warning = TechnologySkillMatcher.BuildDirectEvidenceWarning(scored.SkillAssessment);
+        var trimmed = explanation.Trim();
+        if (string.IsNullOrWhiteSpace(warning) ||
+            trimmed.Contains(warning, StringComparison.OrdinalIgnoreCase))
+        {
+            return trimmed;
+        }
+
+        return $"{warning} {trimmed}";
+    }
+
+    private static string ExtractJsonPayload(string response)
+    {
+        var normalized = response.Trim();
+        if (normalized.StartsWith("```", StringComparison.Ordinal))
+        {
+            normalized = normalized
+                .Replace("```json", string.Empty, StringComparison.OrdinalIgnoreCase)
+                .Replace("```", string.Empty, StringComparison.Ordinal)
+                .Trim();
+        }
+
+        var arrayStart = normalized.IndexOf('[');
+        var arrayEnd = normalized.LastIndexOf(']');
+        if (arrayStart >= 0 && arrayEnd > arrayStart)
+        {
+            return normalized[arrayStart..(arrayEnd + 1)];
+        }
+
+        var objectStart = normalized.IndexOf('{');
+        var objectEnd = normalized.LastIndexOf('}');
+        return objectStart >= 0 && objectEnd > objectStart
+            ? normalized[objectStart..(objectEnd + 1)]
+            : normalized;
+    }
+
+    private static IReadOnlyDictionary<Guid, string> ParseExplanationItems(string normalized)
+    {
+        using var document = JsonDocument.Parse(normalized);
+        var items = document.RootElement.ValueKind switch
+        {
+            JsonValueKind.Array => ReadExplanationItems(document.RootElement),
+            JsonValueKind.Object => ReadExplanationItemsFromObject(document.RootElement),
+            _ => []
+        };
+
+        return items
+            .Where(item => Guid.TryParse(item.JobApplicationId, out _) && !string.IsNullOrWhiteSpace(item.Explanation))
+            .GroupBy(item => Guid.Parse(item.JobApplicationId))
+            .ToDictionary(
+                group => group.Key,
+                group => group.First().Explanation.Trim());
+    }
+
+    private static IReadOnlyList<AiExplanationItem> ReadExplanationItemsFromObject(JsonElement element)
+    {
+        if (TryReadExplanationItem(element, out var single))
+        {
+            return [single];
+        }
+
+        foreach (var propertyName in new[] { "items", "results", "rankings", "applicantRankings", "applications", "explanations" })
+        {
+            if (element.TryGetProperty(propertyName, out var property) &&
+                property.ValueKind == JsonValueKind.Array)
+            {
+                return ReadExplanationItems(property);
+            }
+        }
+
+        return [];
+    }
+
+    private static IReadOnlyList<AiExplanationItem> ReadExplanationItems(JsonElement element)
+    {
+        var items = new List<AiExplanationItem>();
+        foreach (var item in element.EnumerateArray())
+        {
+            if (TryReadExplanationItem(item, out var explanationItem))
+            {
+                items.Add(explanationItem);
+            }
+        }
+
+        return items;
+    }
+
+    private static bool TryReadExplanationItem(JsonElement element, out AiExplanationItem item)
+    {
+        item = new AiExplanationItem(string.Empty, string.Empty);
+        if (element.ValueKind != JsonValueKind.Object ||
+            !TryGetStringProperty(element, out var jobApplicationId, "jobApplicationId", "applicationId", "id") ||
+            !TryGetStringProperty(element, out var explanation, "explanation", "rationale", "summary", "reason"))
+        {
+            return false;
+        }
+
+        item = new AiExplanationItem(jobApplicationId, explanation);
+        return true;
+    }
+
+    private static bool TryGetStringProperty(JsonElement element, out string value, params string[] propertyNames)
+    {
+        foreach (var propertyName in propertyNames)
+        {
+            if (element.TryGetProperty(propertyName, out var property) &&
+                property.ValueKind == JsonValueKind.String &&
+                !string.IsNullOrWhiteSpace(property.GetString()))
+            {
+                value = property.GetString()!;
+                return true;
+            }
+        }
+
+        value = string.Empty;
+        return false;
     }
 
     private static string BuildRunInputText(
@@ -625,6 +753,7 @@ public sealed class ApplicantRankingAgent : IApplicantRankingAgent
             $"Requirement source: JobPost",
             $"Title: {SafeField(context.JobPost.Title)}",
             $"Client: {SafeField(context.JobRequest.Client)}",
+            $"Client context: {SafeField(context.JobRequest.ClientContext)}",
             $"Department: {SafeField(context.JobPost.Department ?? context.JobRequest.Department)}",
             $"Location: {SafeField(context.JobPost.Location ?? context.JobRequest.Location)}",
             $"Experience: {FormatRange(context.ExperienceMinYears, context.ExperienceMaxYears)}",
@@ -678,6 +807,8 @@ public sealed class ApplicantRankingAgent : IApplicantRankingAgent
         builder.AppendLine("You are the Talent Pilot Applicant Ranking agent.");
         builder.AppendLine("Write concise recruiter-facing explanations for current applicants on the active job post.");
         builder.AppendLine("Use only the supplied tenant evidence. Do not search the web. Do not mention private identifiers beyond names already supplied. Do not decide whether to shortlist, reject, contact, or move workflow.");
+        builder.AppendLine("Do not treat broad labels such as backend engineer, sales, HR, finance, recruiter, project manager, marketing, customer support, QA, analyst, manager, or developer as exact matches. Explain exact, adjacent, transferable, broad, and missing requirements using the supplied skill and role-domain assessment.");
+        builder.AppendLine("When a required language, framework, platform, department sub-domain, tool, process, ownership level, or market/domain context is not directly evidenced, say that clearly before discussing transferable experience.");
         builder.AppendLine("Return JSON only: [{\"jobApplicationId\":\"guid\",\"explanation\":\"plain text\"}].");
         builder.AppendLine();
         builder.AppendLine("Job post requirement:");
@@ -695,6 +826,8 @@ public sealed class ApplicantRankingAgent : IApplicantRankingAgent
             builder.AppendLine($"Skills matched: {string.Join(", ", application.MatchedSkills.DefaultIfEmpty("None"))}");
             builder.AppendLine($"Skill gaps: {string.Join(", ", application.MissingSkills.DefaultIfEmpty("None"))}");
             builder.AppendLine($"Scores: overall {scoredApplication.Score}, skill {FormatPercent(scoredApplication.SkillCoverage)}, vector {FormatPercent(scoredApplication.VectorSimilarity)}, fit {FormatPercent(scoredApplication.Fit)}, history {FormatPercent(scoredApplication.HistoricalSignal)}, evidence {FormatPercent(scoredApplication.EvidenceCompleteness)}, recency {FormatPercent(scoredApplication.Recency)}");
+            builder.AppendLine("Skill and role-domain assessment:");
+            builder.AppendLine(TechnologySkillMatcher.FormatAssessmentForPrompt(scoredApplication.SkillAssessment));
             builder.AppendLine($"Cover letter: {SafeField(TrimText(application.CoverLetterText, 800))}");
             builder.AppendLine($"Document evidence: {string.Join(" | ", BuildDocumentEvidence(application))}");
             builder.AppendLine($"Document text excerpt: {SafeField(TrimText(documentText, 1000))}");
@@ -800,7 +933,8 @@ public sealed class ApplicantRankingAgent : IApplicantRankingAgent
         decimal Fit,
         decimal HistoricalSignal,
         decimal EvidenceCompleteness,
-        decimal Recency);
+        decimal Recency,
+        SkillMatchAssessment SkillAssessment);
 
     private sealed record VectorScoreResult(
         IReadOnlyDictionary<Guid, decimal> Scores,
