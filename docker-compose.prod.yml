@@ -51,7 +51,17 @@ services:
       GoogleSearch__SearchEngineId: ${GOOGLE_SEARCH_ENGINE_ID:-}
       GitHubSearch__Enabled: ${GITHUB_SEARCH_ENABLED:-true}
       GitHubSearch__Token: ${GITHUB_TOKEN:-}
-      GoogleCalendar__Enabled: "false"
+      GoogleCalendar__Enabled: ${GOOGLE_CALENDAR_ENABLED:-true}
+      GoogleCalendar__ApplicationName: ${GOOGLE_CALENDAR_APPLICATION_NAME:-Talent Pilot}
+      GoogleCalendar__CalendarId: ${GOOGLE_CALENDAR_CALENDAR_ID:-primary}
+      GoogleCalendar__DefaultTimeZoneId: ${GOOGLE_CALENDAR_DEFAULT_TIME_ZONE_ID:-Asia/Karachi}
+      GoogleCalendar__CreateGoogleMeetLink: ${GOOGLE_CALENDAR_CREATE_MEET_LINK:-true}
+      GoogleCalendar__ClientId: ${GOOGLE_CALENDAR_CLIENT_ID:-}
+      GoogleCalendar__ClientSecret: ${GOOGLE_CALENDAR_CLIENT_SECRET:-}
+      GoogleCalendar__RedirectUri: ${GOOGLE_CALENDAR_REDIRECT_URI:-}
+      GoogleCalendar__Scope: ${GOOGLE_CALENDAR_SCOPE:-https://www.googleapis.com/auth/calendar.events}
+      GoogleCalendar__FrontendSuccessRedirectUrl: ${GOOGLE_CALENDAR_FRONTEND_SUCCESS_URL:-/settings/integrations/google-calendar/success}
+      GoogleCalendar__FrontendErrorRedirectUrl: ${GOOGLE_CALENDAR_FRONTEND_ERROR_URL:-/settings/integrations/google-calendar/error}
     depends_on:
       sqlserver:
         condition: service_healthy
