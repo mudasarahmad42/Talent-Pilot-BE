@@ -1,3 +1,4 @@
+using System.Security.Cryptography;
 using Microsoft.Extensions.Options;
 using TalentPilot.Application.Auth;
 using TalentPilot.Common.Time;
@@ -173,7 +174,7 @@ public sealed class AuthServiceTests
                 {
                     Issuer = "TalentPilot",
                     Audience = "TalentPilot.Web",
-                    SigningKey = "development-only-change-this-key-before-production-32"
+                    SigningKey = Convert.ToBase64String(RandomNumberGenerator.GetBytes(64))
                 }),
                 clock),
             new SecureTokenGenerator(),

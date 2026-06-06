@@ -58,3 +58,39 @@ public sealed record AdminAiGuardrailItem(
 public sealed record AdminAiGuardrailSettings(
     bool HumanReviewRequired,
     bool AutoRejectEnabled);
+
+public sealed record AdminAiAgentRunListResponse(
+    int TotalCount,
+    IReadOnlyList<AdminAiAgentRunListItem> Items);
+
+public sealed record AdminAiAgentRunListItem(
+    Guid AiAgentRunId,
+    string AgentId,
+    string AgentName,
+    string SourceEntityType,
+    Guid SourceEntityId,
+    string ModelName,
+    string? EmbeddingModelName,
+    string Status,
+    DateTimeOffset StartedAtUtc,
+    DateTimeOffset? CompletedAtUtc,
+    int? DurationMs,
+    string? OutputSummary,
+    string InputHash,
+    string? PromptVersion,
+    string? SemanticSimilarityStatus,
+    bool HumanDecisionRequired,
+    string? FailureType);
+
+public sealed record AdminAiEvaluationResponse(
+    string OverallStatus,
+    int ScorePercent,
+    DateTimeOffset GeneratedAtUtc,
+    IReadOnlyList<AdminAiEvaluationItem> Items);
+
+public sealed record AdminAiEvaluationItem(
+    string Name,
+    string Status,
+    string RubricArea,
+    string Evidence,
+    string NextStep);

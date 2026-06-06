@@ -233,6 +233,7 @@ BEGIN
         PermissionResolutionMode NVARCHAR(40) NOT NULL CONSTRAINT DF_TenantAccessPolicies_PermissionResolutionMode DEFAULT N'MergeAllAssignedRoles',
         BenchVisibilityRoleId UNIQUEIDENTIFIER NOT NULL,
         GroupFallbackMode NVARCHAR(80) NOT NULL CONSTRAINT DF_TenantAccessPolicies_GroupFallbackMode DEFAULT N'TenantAdmins',
+        AdminCenterAccessMode NVARCHAR(20) NOT NULL CONSTRAINT DF_TenantAccessPolicies_AdminCenterAccessMode DEFAULT N'FullAccess',
         UpdatedByUserId UNIQUEIDENTIFIER NULL,
         CreatedAtUtc DATETIME2(3) NOT NULL CONSTRAINT DF_TenantAccessPolicies_CreatedAtUtc DEFAULT SYSUTCDATETIME(),
         UpdatedAtUtc DATETIME2(3) NOT NULL CONSTRAINT DF_TenantAccessPolicies_UpdatedAtUtc DEFAULT SYSUTCDATETIME(),
@@ -240,7 +241,8 @@ BEGIN
         CONSTRAINT FK_TenantAccessPolicies_BenchVisibilityRole FOREIGN KEY (BenchVisibilityRoleId) REFERENCES dbo.Roles (RoleId),
         CONSTRAINT FK_TenantAccessPolicies_UpdatedByUser FOREIGN KEY (UpdatedByUserId) REFERENCES dbo.AppUsers (UserId),
         CONSTRAINT UQ_TenantAccessPolicies_TenantId UNIQUE (TenantId),
-        CONSTRAINT CK_TenantAccessPolicies_PermissionResolutionMode CHECK (PermissionResolutionMode IN (N'MergeAllAssignedRoles', N'HighestPriorityRoleOnly'))
+        CONSTRAINT CK_TenantAccessPolicies_PermissionResolutionMode CHECK (PermissionResolutionMode IN (N'MergeAllAssignedRoles', N'HighestPriorityRoleOnly')),
+        CONSTRAINT CK_TenantAccessPolicies_AdminCenterAccessMode CHECK (AdminCenterAccessMode IN (N'FullAccess', N'ReadOnly'))
     );
 END;
 GO

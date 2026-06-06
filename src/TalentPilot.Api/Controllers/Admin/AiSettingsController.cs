@@ -42,4 +42,18 @@ public sealed class AiSettingsController : AdminApiControllerBase
     {
         return FromResult(await _service.GetGuardrailsAsync(cancellationToken));
     }
+
+    [HttpGet("agent-runs")]
+    public async Task<ActionResult<AdminAiAgentRunListResponse>> AgentRuns(
+        [FromQuery] int count,
+        CancellationToken cancellationToken)
+    {
+        return FromResult(await _service.GetRecentRunsAsync(count == 0 ? 12 : count, cancellationToken));
+    }
+
+    [HttpGet("evaluation")]
+    public async Task<ActionResult<AdminAiEvaluationResponse>> Evaluation(CancellationToken cancellationToken)
+    {
+        return FromResult(await _service.GetEvaluationAsync(cancellationToken));
+    }
 }

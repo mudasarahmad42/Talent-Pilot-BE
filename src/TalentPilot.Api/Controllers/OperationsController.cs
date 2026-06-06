@@ -1,5 +1,7 @@
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.RateLimiting;
+using TalentPilot.Api.Security;
 using TalentPilot.Application.Operations;
 using TalentPilot.Common.Results;
 
@@ -134,6 +136,7 @@ public sealed class OperationsController : ApiControllerBase
 
     [AllowAnonymous]
     [HttpGet("portal/job-posts")]
+    [EnableRateLimiting(ApiRateLimitPolicies.PublicPortal)]
     public async Task<ActionResult<PortalJobPostList>> PortalJobPosts(
         [FromQuery] string? tenantSlug,
         CancellationToken cancellationToken)
@@ -143,6 +146,7 @@ public sealed class OperationsController : ApiControllerBase
 
     [AllowAnonymous]
     [HttpGet("portal/job-posts/{jobPostId:guid}")]
+    [EnableRateLimiting(ApiRateLimitPolicies.PublicPortal)]
     public async Task<ActionResult<PortalJobPostDetail>> PortalJobPost(
         Guid jobPostId,
         CancellationToken cancellationToken)
@@ -152,6 +156,7 @@ public sealed class OperationsController : ApiControllerBase
 
     [AllowAnonymous]
     [HttpGet("portal/invitations/{candidateInvitationId:guid}")]
+    [EnableRateLimiting(ApiRateLimitPolicies.PublicPortal)]
     public async Task<ActionResult<PortalInvitationContext>> PortalInvitation(
         Guid candidateInvitationId,
         [FromQuery] string token,
@@ -273,6 +278,7 @@ public sealed class OperationsController : ApiControllerBase
     }
 
     [HttpPost("job-requests/description-draft")]
+    [EnableRateLimiting(ApiRateLimitPolicies.AiWork)]
     public async Task<ActionResult<DraftJobDescriptionResult>> DraftJobDescription(
         DraftJobDescriptionInput input,
         CancellationToken cancellationToken)
@@ -287,6 +293,7 @@ public sealed class OperationsController : ApiControllerBase
     }
 
     [HttpPost("job-requests/{entityId:guid}/bench-matches/rank")]
+    [EnableRateLimiting(ApiRateLimitPolicies.AiWork)]
     public async Task<ActionResult<RankBenchMatchesResult>> RankBenchMatches(
         Guid entityId,
         CancellationToken cancellationToken)
@@ -295,6 +302,7 @@ public sealed class OperationsController : ApiControllerBase
     }
 
     [HttpPost("job-requests/{entityId:guid}/talent-rediscovery/rank")]
+    [EnableRateLimiting(ApiRateLimitPolicies.AiWork)]
     public async Task<ActionResult<RankTalentRediscoveryResult>> RankTalentRediscovery(
         Guid entityId,
         CancellationToken cancellationToken)
@@ -303,6 +311,7 @@ public sealed class OperationsController : ApiControllerBase
     }
 
     [HttpPost("job-posts/{jobPostId:guid}/applicant-rankings/rank")]
+    [EnableRateLimiting(ApiRateLimitPolicies.AiWork)]
     public async Task<ActionResult<RankApplicantRankingsResult>> RankApplicantRankings(
         Guid jobPostId,
         CancellationToken cancellationToken)
@@ -311,6 +320,7 @@ public sealed class OperationsController : ApiControllerBase
     }
 
     [HttpPost("job-requests/{entityId:guid}/online-headhunting/search")]
+    [EnableRateLimiting(ApiRateLimitPolicies.AiWork)]
     public async Task<ActionResult<OperationsOnlineHeadhuntingQueuedResult>> SearchOnlineCandidates(
         Guid entityId,
         OnlineHeadhuntingSearchInput input,
@@ -351,6 +361,7 @@ public sealed class OperationsController : ApiControllerBase
 
     [HttpPost("candidates/cv-parse")]
     [RequestSizeLimit(2_500_000)]
+    [EnableRateLimiting(ApiRateLimitPolicies.AiWork)]
     public async Task<ActionResult<ParseCandidateCvResult>> ParseCandidateCv(
         [FromForm] IFormFile file,
         CancellationToken cancellationToken)
@@ -403,6 +414,7 @@ public sealed class OperationsController : ApiControllerBase
     }
 
     [HttpPost("interviews/{interviewId:guid}/question-recommendations/generate")]
+    [EnableRateLimiting(ApiRateLimitPolicies.AiWork)]
     public async Task<ActionResult<InterviewQuestionRecommendationSet>> GenerateInterviewQuestionRecommendations(
         Guid interviewId,
         GenerateInterviewQuestionRecommendationsInput input,
@@ -477,6 +489,7 @@ public sealed class OperationsController : ApiControllerBase
     }
 
     [HttpPost("job-applications/{jobApplicationId:guid}/offer-letter")]
+    [EnableRateLimiting(ApiRateLimitPolicies.AiWork)]
     public async Task<ActionResult<OfferLetterDetails>> GenerateOfferLetter(
         Guid jobApplicationId,
         GenerateOfferLetterInput input,

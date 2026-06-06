@@ -25,7 +25,8 @@ internal sealed class MicrosoftGraphNotificationEmailSender : INotificationEmail
         NotificationEmailMessage message,
         CancellationToken cancellationToken)
     {
-        var validation = ValidateOptions();
+        var fromEmail = FirstConfigured(message.FromEmail, _options.FromEmail);
+        var validation = ValidateOptions(fromEmail);
         if (validation.Failed)
         {
             return Result<NotificationEmailSendResult>.Failure(validation.Error.Code, validation.Error.Message);
@@ -69,7 +70,7 @@ internal sealed class MicrosoftGraphNotificationEmailSender : INotificationEmail
 
         try
         {
-            await graphClient.Users[_options.FromEmail.Trim()]
+            await graphClient.Users[fromEmail]
                 .SendMail
                 .PostAsync(requestBody, cancellationToken: cancellationToken);
 
@@ -90,7 +91,7 @@ internal sealed class MicrosoftGraphNotificationEmailSender : INotificationEmail
         }
     }
 
-    private Result ValidateOptions()
+    private Result ValidateOptions(string fromEmail)
     {
         if (string.IsNullOrWhiteSpace(_options.TenantId))
         {
@@ -113,7 +114,7 @@ internal sealed class MicrosoftGraphNotificationEmailSender : INotificationEmail
                 "Microsoft Graph client secret is not configured for this environment.");
         }
 
-        if (string.IsNullOrWhiteSpace(_options.FromEmail))
+        if (string.IsNullOrWhiteSpace(fromEmail))
         {
             return Result.Failure(
                 "notifications.microsoft_graph_sender_missing",
@@ -121,6 +122,11 @@ internal sealed class MicrosoftGraphNotificationEmailSender : INotificationEmail
         }
 
         return Result.Success();
+    }
+
+    private static string FirstConfigured(params string?[] values)
+    {
+        return values.FirstOrDefault(value => !string.IsNullOrWhiteSpace(value))?.Trim() ?? string.Empty;
     }
 
     private static string ToGraphFailureMessage(Exception exception)

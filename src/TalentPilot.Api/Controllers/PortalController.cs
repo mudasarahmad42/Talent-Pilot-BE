@@ -1,11 +1,14 @@
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.RateLimiting;
+using TalentPilot.Api.Security;
 using TalentPilot.Application.Operations;
 
 namespace TalentPilot.Api.Controllers;
 
 [AllowAnonymous]
 [Route("api/portal")]
+[EnableRateLimiting(ApiRateLimitPolicies.PublicPortal)]
 public sealed class PortalController : ApiControllerBase
 {
     private readonly IOperationsService _operationsService;

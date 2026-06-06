@@ -1880,6 +1880,11 @@ public sealed class OperationsService : IOperationsService
             return Result<ParseCandidateCvResult>.Failure("cv_parser.file_too_large", "CV parser accepts DOCX files up to 2 MB for MVP.");
         }
 
+        if (!LooksLikeOpenXmlPackage(content))
+        {
+            return Result<ParseCandidateCvResult>.Failure("cv_parser.invalid_file", "Upload a valid DOCX CV file.");
+        }
+
         try
         {
             var parsed = await _cvParserAgent.ParseAsync(
@@ -2848,7 +2853,22 @@ public sealed class OperationsService : IOperationsService
             return ($"{codePrefix}.docx_required", "Upload a DOCX document for MVP.");
         }
 
+        if (!LooksLikeOpenXmlPackage(content))
+        {
+            return ($"{codePrefix}.invalid_file", "Upload a valid DOCX document.");
+        }
+
         return null;
+    }
+
+    private static bool LooksLikeOpenXmlPackage(byte[] content)
+    {
+        if (content.Length < 4 || content[0] != 0x50 || content[1] != 0x4B)
+        {
+            return false;
+        }
+
+        return (content[2], content[3]) is (0x03, 0x04) or (0x05, 0x06) or (0x07, 0x08);
     }
 
     private static string? NormalizeApplicationDecision(string? decision)

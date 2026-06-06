@@ -28,6 +28,15 @@ public sealed class CurrentUserAccessor : ICurrentUserAccessor, ICurrentUserCont
 
     public string Email => _emailOverride ?? _httpContextAccessor.HttpContext?.User.FindFirstValue(ClaimTypes.Email) ?? string.Empty;
 
+    public IReadOnlyCollection<string> RoleCodes =>
+        _httpContextAccessor.HttpContext?.User
+            .FindAll(ClaimTypes.Role)
+            .Select(claim => claim.Value)
+            .Where(value => !string.IsNullOrWhiteSpace(value))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray()
+        ?? Array.Empty<string>();
+
     public void Set(Guid tenantId, Guid userId, string email)
     {
         _tenantIdOverride = tenantId;

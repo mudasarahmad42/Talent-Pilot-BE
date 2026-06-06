@@ -13,6 +13,7 @@ using TalentPilot.Application.Admin.Users;
 using TalentPilot.Application.Admin.Workflows;
 using TalentPilot.Application.Auth;
 using TalentPilot.Application.Calendar;
+using TalentPilot.Application.Feedback;
 using TalentPilot.Application.Notifications;
 using TalentPilot.Common.Time;
 using TalentPilot.Domain.Access;
@@ -24,6 +25,7 @@ namespace TalentPilot.Infrastructure.Persistence.Repositories;
 public sealed class InMemoryTalentPilotRepository :
     IIdentityRepository,
     IAdminTenantProfileRepository,
+    IAdminCenterAccessPolicyReader,
     IAdminUsersRepository,
     IAdminAccessPoliciesRepository,
     IAdminDepartmentsRepository,
@@ -40,6 +42,7 @@ public sealed class InMemoryTalentPilotRepository :
     INotificationEmailProviderSettingsResolver,
     INotificationOutboxProcessor,
     INotificationWorkerStatusStore,
+    IPublicFeedbackTenantResolver,
     IGoogleCalendarConnectionRepository
 {
     private const int NotificationWorkerPollIntervalSeconds = 30;
@@ -148,6 +151,7 @@ public sealed class InMemoryTalentPilotRepository :
             InviteExpiryDays = 7,
             ReapplyCooldownDays = 90,
             NotificationEmailProvider = NotificationEmailProviders.Resend,
+            AdminCenterAccessMode = AdminCenterAccessModes.FullAccess,
             SetupComplete = true,
             UpdatedAtUtc = _clock.UtcNow
         };
@@ -217,6 +221,51 @@ public sealed class InMemoryTalentPilotRepository :
             return Task.FromResult<AdminAiGuardrailSettings?>(new AdminAiGuardrailSettings(
                 _aiSettings.HumanReviewRequired,
                 _aiSettings.AutoRejectEnabled));
+        }
+    }
+
+    public Task<IReadOnlyList<AdminAiAgentRunListItem>> ListRecentRunsAsync(
+        Guid tenantId,
+        int count,
+        CancellationToken cancellationToken)
+    {
+        lock (_gate)
+        {
+            if (_aiSettings.TenantId != tenantId)
+            {
+                return Task.FromResult<IReadOnlyList<AdminAiAgentRunListItem>>([]);
+            }
+
+            var now = _clock.UtcNow;
+            var agent = _aiAgents.FirstOrDefault(item => item.Enabled);
+            if (agent is null)
+            {
+                return Task.FromResult<IReadOnlyList<AdminAiAgentRunListItem>>([]);
+            }
+
+            IReadOnlyList<AdminAiAgentRunListItem> items =
+            [
+                new AdminAiAgentRunListItem(
+                    Guid.Parse("99999999-0000-0000-0000-000000000001"),
+                    agent.Id,
+                    agent.DisplayName,
+                    "JobRequest",
+                    Guid.Parse("99999999-0000-0000-0000-000000000101"),
+                    _aiSettings.LlmModel,
+                    _aiSettings.EmbeddingModel,
+                    "Succeeded",
+                    now.AddMinutes(-18),
+                    now.AddMinutes(-18).AddSeconds(7),
+                    7000,
+                    "Generated advisory output for demo workflow review.",
+                    "demo-input-hash",
+                    "demo-agent-contract-v1",
+                    "Available",
+                    true,
+                    null)
+            ];
+
+            return Task.FromResult<IReadOnlyList<AdminAiAgentRunListItem>>(items.Take(Math.Max(0, count)).ToArray());
         }
     }
 
@@ -770,6 +819,35 @@ public sealed class InMemoryTalentPilotRepository :
         }
     }
 
+    public Task<PublicFeedbackTenant?> ResolveAsync(
+        PublicFeedbackTenantQuery query,
+        CancellationToken cancellationToken)
+    {
+        lock (_gate)
+        {
+            if (_tenant.Status != TenantStatus.Active)
+            {
+                return Task.FromResult<PublicFeedbackTenant?>(null);
+            }
+
+            if (!string.IsNullOrWhiteSpace(query.TenantSlug) &&
+                !string.Equals(query.TenantSlug.Trim(), _tenant.Slug, StringComparison.OrdinalIgnoreCase))
+            {
+                return Task.FromResult<PublicFeedbackTenant?>(null);
+            }
+
+            if (!query.JobPostId.HasValue && !_tenant.PublicJobsEnabled)
+            {
+                return Task.FromResult<PublicFeedbackTenant?>(null);
+            }
+
+            return Task.FromResult<PublicFeedbackTenant?>(new PublicFeedbackTenant(
+                _tenant.TenantId,
+                _tenant.DisplayName,
+                _tenant.Slug));
+        }
+    }
+
     public Task<CurrentUserData?> GetCurrentUserDataAsync(Guid tenantId, Guid userId, CancellationToken cancellationToken)
     {
         lock (_gate)
@@ -1016,6 +1094,7 @@ public sealed class InMemoryTalentPilotRepository :
                 _tenant.InviteExpiryDays,
                 _tenant.ReapplyCooldownDays,
                 _tenant.NotificationEmailProvider,
+                _tenant.AdminCenterAccessMode,
                 _users.Count(user => user.TenantId == tenantId && user.AccountStatus == "Active"),
                 _roles.Count(role => role.TenantId == tenantId && role.Status == "Active"),
                 _tenant.SetupComplete,
@@ -1027,6 +1106,16 @@ public sealed class InMemoryTalentPilotRepository :
                 _tenant.UpdatedAtUtc);
 
             return Task.FromResult<TenantProfileSettings?>(settings);
+        }
+    }
+
+    public Task<string> GetAdminCenterAccessModeAsync(Guid tenantId, CancellationToken cancellationToken)
+    {
+        lock (_gate)
+        {
+            return Task.FromResult(_tenant.TenantId == tenantId
+                ? AdminCenterAccessModes.Normalize(_tenant.AdminCenterAccessMode)
+                : AdminCenterAccessModes.FullAccess);
         }
     }
 
@@ -1073,6 +1162,7 @@ public sealed class InMemoryTalentPilotRepository :
             _tenant.InviteExpiryDays = input.InviteExpiryDays;
             _tenant.ReapplyCooldownDays = input.ReapplyCooldownDays;
             _tenant.NotificationEmailProvider = NotificationEmailProviders.NormalizeOrDefault(input.NotificationEmailProvider);
+            _tenant.AdminCenterAccessMode = AdminCenterAccessModes.Normalize(input.AdminCenterAccessMode);
             _tenant.LogoFileName = string.IsNullOrWhiteSpace(input.LogoContentBase64) ? null : input.LogoFileName?.Trim();
             _tenant.LogoContentType = string.IsNullOrWhiteSpace(input.LogoContentBase64) ? null : input.LogoContentType?.Trim();
             _tenant.LogoContentBase64 = string.IsNullOrWhiteSpace(input.LogoContentBase64) ? null : input.LogoContentBase64;
@@ -3393,6 +3483,7 @@ public sealed class InMemoryTalentPilotRepository :
         public int InviteExpiryDays { get; set; }
         public int ReapplyCooldownDays { get; set; }
         public string NotificationEmailProvider { get; set; } = NotificationEmailProviders.Resend;
+        public string AdminCenterAccessMode { get; set; } = AdminCenterAccessModes.FullAccess;
         public string? LogoFileName { get; set; }
         public string? LogoContentType { get; set; }
         public string? LogoContentBase64 { get; set; }

@@ -1,6 +1,8 @@
 using System.Security.Claims;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.RateLimiting;
+using TalentPilot.Api.Security;
 using TalentPilot.Application.Auth;
 
 namespace TalentPilot.Api.Controllers;
@@ -17,6 +19,7 @@ public sealed class AuthController : ApiControllerBase
 
     [HttpGet("login-options")]
     [AllowAnonymous]
+    [EnableRateLimiting(ApiRateLimitPolicies.Auth)]
     public async Task<ActionResult<IReadOnlyList<LoginOption>>> LoginOptions(CancellationToken cancellationToken)
     {
         return FromResult(await _authService.ListLoginOptionsAsync(cancellationToken));
@@ -24,6 +27,7 @@ public sealed class AuthController : ApiControllerBase
 
     [HttpPost("login")]
     [AllowAnonymous]
+    [EnableRateLimiting(ApiRateLimitPolicies.Auth)]
     public async Task<ActionResult<AuthResponse>> Login(LoginRequest request, CancellationToken cancellationToken)
     {
         return FromResult(await _authService.LoginAsync(request, cancellationToken));
@@ -31,6 +35,7 @@ public sealed class AuthController : ApiControllerBase
 
     [HttpPost("candidate-signup")]
     [AllowAnonymous]
+    [EnableRateLimiting(ApiRateLimitPolicies.Auth)]
     public async Task<ActionResult<AuthResponse>> CandidateSignup(
         CandidateSignupRequest request,
         CancellationToken cancellationToken)
@@ -40,6 +45,7 @@ public sealed class AuthController : ApiControllerBase
 
     [HttpPost("refresh")]
     [AllowAnonymous]
+    [EnableRateLimiting(ApiRateLimitPolicies.Auth)]
     public async Task<ActionResult<AuthResponse>> Refresh(RefreshTokenRequest request, CancellationToken cancellationToken)
     {
         return FromResult(await _authService.RefreshAsync(request, cancellationToken));
