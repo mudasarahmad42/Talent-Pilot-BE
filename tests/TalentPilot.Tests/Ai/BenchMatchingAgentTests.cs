@@ -12,6 +12,7 @@ public sealed class BenchMatchingAgentTests
     private static readonly Guid AminaEmployeeId = Guid.Parse("33333333-3333-3333-3333-333333333333");
     private static readonly Guid LahoreEmployeeId = Guid.Parse("66666666-6666-6666-6666-666666666666");
     private static readonly Guid KarachiEmployeeId = Guid.Parse("77777777-7777-7777-7777-777777777777");
+    private static readonly Guid JavaEmployeeId = Guid.Parse("88888888-8888-8888-8888-888888888888");
 
     [Fact]
     public async Task RankAsync_RanksEligibleEmployeesAndUsesGuardedEvidencePrompt()
@@ -170,6 +171,37 @@ public sealed class BenchMatchingAgentTests
         Assert.Contains("PMO should still validate fit", result.Matches[0].Explanation);
     }
 
+    [Fact]
+    public async Task RankAsync_GuardsSkillMismatchExplanationAndInvalidExperienceShortfall()
+    {
+        var agent = new BenchMatchingAgent(
+            new CapturingModelProvider($$"""
+                [
+                  {
+                    "employeeId": "{{JavaEmployeeId:D}}",
+                    "explanation": "Zain Javaid has 6.8 years of experience as a Senior Java Engineer, which is less than the required 3+ years for this position. He has SQL evidence but lacks AWS, Design Patterns, and Python. The ranking is based on limited experience and skill gaps."
+                  }
+                ]
+                """),
+            new StaticEmbeddingProvider(),
+            new CapturingVectorStore(new Dictionary<Guid, decimal>()),
+            new StaticRuntimeSettingsResolver(),
+            new CapturingRunLogger(),
+            new CapturingWebResearchProvider(new WebResearchResult("Skipped", [])));
+
+        var result = await agent.RankAsync(TenantId, CreatePythonContext(), CancellationToken.None);
+
+        var explanation = result.Matches.Single().Explanation;
+        Assert.StartsWith("Python is required, but no direct Python evidence is recorded", explanation);
+        Assert.Contains("Zain Javaid's profile is primarily Java", explanation);
+        Assert.Contains("this request is centered on Python, AWS, SQL, and Design Patterns", explanation);
+        Assert.Contains("current tenant evidence only supports SQL", explanation);
+        Assert.Contains("not preferred until missing Python, AWS, and Design Patterns evidence is validated", explanation);
+        Assert.Contains("limited required-skill evidence and skill gaps", explanation);
+        Assert.DoesNotContain("less than", explanation, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("limited experience", explanation, StringComparison.OrdinalIgnoreCase);
+    }
+
     private static OperationsBenchMatchingContext CreateContext()
     {
         var jobRequest = new OperationsJobRequest(
@@ -177,6 +209,7 @@ public sealed class BenchMatchingAgentTests
             "TP-REQ-009",
             "Senior .NET Engineer",
             "Enterprise Client",
+            "Enterprise SaaS platform with operational dashboards and customer workflows.",
             "Build backend services and integrate Angular operational screens.",
             "Engineering",
             [".NET", "SQL Server", "Angular"],
@@ -258,6 +291,7 @@ public sealed class BenchMatchingAgentTests
             "TP-REQ-010",
             "Senior .NET Engineer",
             "Enterprise Client",
+            null,
             "Build backend services.",
             "Engineering",
             [".NET"],
@@ -281,6 +315,61 @@ public sealed class BenchMatchingAgentTests
         };
 
         return new OperationsBenchMatchingContext(jobRequest, 4, 7, employees);
+    }
+
+    private static OperationsBenchMatchingContext CreatePythonContext()
+    {
+        var jobRequest = new OperationsJobRequest(
+            JobRequestId,
+            "TP-REQ-021",
+            "Senior Python Developer",
+            "Tesla",
+            "EV manufacturing and engineering context for the Lahore office.",
+            "Build scalable Python backend applications with AWS, SQL, and design pattern evidence.",
+            "Engineering",
+            ["Python", "AWS", "SQL", "Design Patterns"],
+            "3+ years",
+            "Lahore",
+            1,
+            0,
+            "High",
+            Guid.Parse("44444444-4444-4444-4444-444444444444"),
+            Guid.Parse("55555555-5555-5555-5555-555555555555"),
+            "PMO Review",
+            null,
+            "PMO - Engineering",
+            "NotPublished",
+            DateTimeOffset.UtcNow);
+
+        var employees = new[]
+        {
+            new OperationsBenchEmployee(
+                JavaEmployeeId,
+                "Zain Javaid",
+                "zain.javaid@tkxel.com",
+                "Senior Java Engineer",
+                "Engineering",
+                "Lahore",
+                6.8m,
+                DateOnly.FromDateTime(DateTime.UtcNow.AddYears(-5)),
+                "Available",
+                "Benched",
+                true,
+                ["Java", "Spring Boot", "SQL"],
+                ["SQL"],
+                ["Python", "AWS", "Design Patterns"],
+                [
+                    new OperationsEmployeeProjectEvidence(
+                        "AZAQ Payment Modernization",
+                        "AZAQ Saudia Arabia",
+                        "Completed",
+                        100,
+                        DateOnly.FromDateTime(DateTime.UtcNow.AddYears(-2)),
+                        DateOnly.FromDateTime(DateTime.UtcNow.AddYears(-1)))
+                ])
+        };
+
+        return new OperationsBenchMatchingContext(jobRequest, 3, null, employees);
     }
 
     private static OperationsBenchEmployee CreateComparableEngineer(

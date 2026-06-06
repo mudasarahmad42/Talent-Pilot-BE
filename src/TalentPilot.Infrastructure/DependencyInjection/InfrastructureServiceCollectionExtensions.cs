@@ -94,7 +94,9 @@ public static class InfrastructureServiceCollectionExtensions
         services.AddSingleton<IGitHubCandidateSearchProvider, GitHubCandidateSearchProvider>();
         services.AddNotificationEmailSenderServices(configuration);
 
-        services.AddSingleton<IPasswordVerifier, BCryptPasswordVerifier>();
+        services.AddSingleton<BCryptPasswordVerifier>();
+        services.AddSingleton<IPasswordVerifier>(provider => provider.GetRequiredService<BCryptPasswordVerifier>());
+        services.AddSingleton<IPasswordHasher>(provider => provider.GetRequiredService<BCryptPasswordVerifier>());
         services.AddSingleton<ITokenGenerator, SecureTokenGenerator>();
         services.AddSingleton<IJwtTokenService, JwtTokenService>();
 

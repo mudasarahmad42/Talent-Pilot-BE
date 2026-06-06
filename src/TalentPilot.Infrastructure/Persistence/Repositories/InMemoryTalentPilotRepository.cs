@@ -719,6 +719,57 @@ public sealed class InMemoryTalentPilotRepository :
         }
     }
 
+    public Task<CandidateSignupRepositoryResult> RegisterCandidateAsync(
+        CandidateSignupRegistrationInput input,
+        CancellationToken cancellationToken)
+    {
+        lock (_gate)
+        {
+            if (_tenant.Status != TenantStatus.Active || !_tenant.PublicJobsEnabled)
+            {
+                return Task.FromResult(new CandidateSignupRepositoryResult(CandidateSignupStatus.PublicJobsDisabled, null));
+            }
+
+            if (!string.IsNullOrWhiteSpace(input.TenantSlug) &&
+                !string.Equals(input.TenantSlug.Trim(), _tenant.Slug, StringComparison.OrdinalIgnoreCase))
+            {
+                return Task.FromResult(new CandidateSignupRepositoryResult(CandidateSignupStatus.TenantRequired, null));
+            }
+
+            if (_users.Any(user => string.Equals(user.Email, input.Email.Trim(), StringComparison.OrdinalIgnoreCase)))
+            {
+                return Task.FromResult(new CandidateSignupRepositoryResult(CandidateSignupStatus.EmailExists, null));
+            }
+
+            var candidateRole = _roles.FirstOrDefault(role =>
+                role.TenantId == TenantId &&
+                role.Code == "Candidate" &&
+                role.Status == "Active");
+            if (candidateRole is null)
+            {
+                return Task.FromResult(new CandidateSignupRepositoryResult(CandidateSignupStatus.CandidateRoleMissing, null));
+            }
+
+            var user = new UserState
+            {
+                UserId = Guid.NewGuid(),
+                TenantId = TenantId,
+                DisplayName = Truncate(input.DisplayName.Trim(), 200),
+                Email = input.Email.Trim().ToLowerInvariant(),
+                Initials = BuildInitials(input.DisplayName),
+                AccountStatus = "Active",
+                PasswordHash = input.PasswordHash,
+                RoleIds = [candidateRole.RoleId],
+                CreatedAtUtc = _clock.UtcNow,
+                UpdatedAtUtc = _clock.UtcNow
+            };
+            _users.Add(user);
+            return Task.FromResult(new CandidateSignupRepositoryResult(
+                CandidateSignupStatus.Created,
+                ToAuthUserRecord(user)));
+        }
+    }
+
     public Task<CurrentUserData?> GetCurrentUserDataAsync(Guid tenantId, Guid userId, CancellationToken cancellationToken)
     {
         lock (_gate)
@@ -3288,6 +3339,11 @@ public sealed class InMemoryTalentPilotRepository :
             .Select(part => char.ToUpperInvariant(part[0]));
 
         return string.Concat(parts);
+    }
+
+    private static string Truncate(string value, int maxLength)
+    {
+        return value.Length <= maxLength ? value : value[..maxLength];
     }
 
     private static Guid DepartmentIdFromName(string name)

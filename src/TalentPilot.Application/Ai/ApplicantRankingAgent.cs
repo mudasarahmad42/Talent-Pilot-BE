@@ -288,10 +288,11 @@ public sealed class ApplicantRankingAgent : IApplicantRankingAgent
         IReadOnlyDictionary<Guid, decimal> vectorScores,
         IReadOnlyDictionary<Guid, string> documentTexts)
     {
-        var requestedSkillCount = application.MatchedSkills.Count + application.MissingSkills.Count;
-        var skillCoverage = requestedSkillCount == 0
-            ? 0m
-            : (decimal)application.MatchedSkills.Count / requestedSkillCount;
+        var skillAssessment = TechnologySkillMatcher.Assess(
+            context.RequiredSkills,
+            application.Skills,
+            BuildApplicationProfileText(application, documentTexts));
+        var skillCoverage = skillAssessment.OverallScore;
         var vectorSimilarity = vectorScores.TryGetValue(application.JobApplicationId, out var vectorScore)
             ? Clamp(vectorScore, 0, 1)
             : 0m;
@@ -314,7 +315,8 @@ public sealed class ApplicantRankingAgent : IApplicantRankingAgent
             decimal.Round(fit, 4),
             decimal.Round(historicalSignal, 4),
             decimal.Round(evidenceCompleteness, 4),
-            decimal.Round(recency, 4));
+            decimal.Round(recency, 4),
+            skillAssessment);
     }
 
     private static ApplicantRankingRankedApplication ToRankedApplication(
@@ -326,7 +328,7 @@ public sealed class ApplicantRankingAgent : IApplicantRankingAgent
         var gaps = BuildGaps(scored);
         var documentEvidence = BuildDocumentEvidence(scored.Application);
         var historicalEvidence = BuildHistoricalEvidence(scored.Application);
-        var explanation = RequiredAiExplanation(aiExplanations, scored.Application.JobApplicationId, scored.Application.CandidateName);
+        var explanation = GuardExplanation(scored, RequiredAiExplanation(aiExplanations, scored.Application.JobApplicationId, scored.Application.CandidateName));
 
         return new ApplicantRankingRankedApplication(
             scored.Application.JobApplicationId,
@@ -496,11 +498,7 @@ public sealed class ApplicantRankingAgent : IApplicantRankingAgent
 
     private static IReadOnlyList<string> BuildStrengths(ScoredApplication scored)
     {
-        var strengths = new List<string>();
-        if (scored.Application.MatchedSkills.Count > 0)
-        {
-            strengths.Add($"Matches {string.Join(", ", scored.Application.MatchedSkills)}.");
-        }
+        var strengths = new List<string>(TechnologySkillMatcher.BuildStrengthNotes(scored.SkillAssessment));
 
         if (scored.Application.ExperienceYears.HasValue)
         {
@@ -527,11 +525,7 @@ public sealed class ApplicantRankingAgent : IApplicantRankingAgent
 
     private static IReadOnlyList<string> BuildGaps(ScoredApplication scored)
     {
-        var gaps = new List<string>();
-        if (scored.Application.MissingSkills.Count > 0)
-        {
-            gaps.AddRange(scored.Application.MissingSkills.Select(skill => $"Missing requested skill evidence: {skill}."));
-        }
+        var gaps = new List<string>(TechnologySkillMatcher.BuildGapNotes(scored.SkillAssessment));
 
         if (string.IsNullOrWhiteSpace(scored.Application.CoverLetterText))
         {
@@ -604,6 +598,19 @@ public sealed class ApplicantRankingAgent : IApplicantRankingAgent
             $"The Applicant Ranking Agent did not return an LLM explanation for {candidateName}.");
     }
 
+    private static string GuardExplanation(ScoredApplication scored, string explanation)
+    {
+        var warning = TechnologySkillMatcher.BuildDirectEvidenceWarning(scored.SkillAssessment);
+        var trimmed = explanation.Trim();
+        if (string.IsNullOrWhiteSpace(warning) ||
+            trimmed.Contains(warning, StringComparison.OrdinalIgnoreCase))
+        {
+            return trimmed;
+        }
+
+        return $"{warning} {trimmed}";
+    }
+
     private static string BuildRunInputText(
         OperationsApplicantRankingContext context,
         IReadOnlyDictionary<Guid, string> documentTexts)
@@ -625,6 +632,7 @@ public sealed class ApplicantRankingAgent : IApplicantRankingAgent
             $"Requirement source: JobPost",
             $"Title: {SafeField(context.JobPost.Title)}",
             $"Client: {SafeField(context.JobRequest.Client)}",
+            $"Client context: {SafeField(context.JobRequest.ClientContext)}",
             $"Department: {SafeField(context.JobPost.Department ?? context.JobRequest.Department)}",
             $"Location: {SafeField(context.JobPost.Location ?? context.JobRequest.Location)}",
             $"Experience: {FormatRange(context.ExperienceMinYears, context.ExperienceMaxYears)}",
@@ -678,6 +686,8 @@ public sealed class ApplicantRankingAgent : IApplicantRankingAgent
         builder.AppendLine("You are the Talent Pilot Applicant Ranking agent.");
         builder.AppendLine("Write concise recruiter-facing explanations for current applicants on the active job post.");
         builder.AppendLine("Use only the supplied tenant evidence. Do not search the web. Do not mention private identifiers beyond names already supplied. Do not decide whether to shortlist, reject, contact, or move workflow.");
+        builder.AppendLine("Do not treat broad labels such as backend engineer, sales, HR, finance, recruiter, project manager, marketing, customer support, QA, analyst, manager, or developer as exact matches. Explain exact, adjacent, transferable, broad, and missing requirements using the supplied skill and role-domain assessment.");
+        builder.AppendLine("When a required language, framework, platform, department sub-domain, tool, process, ownership level, or market/domain context is not directly evidenced, say that clearly before discussing transferable experience.");
         builder.AppendLine("Return JSON only: [{\"jobApplicationId\":\"guid\",\"explanation\":\"plain text\"}].");
         builder.AppendLine();
         builder.AppendLine("Job post requirement:");
@@ -695,6 +705,8 @@ public sealed class ApplicantRankingAgent : IApplicantRankingAgent
             builder.AppendLine($"Skills matched: {string.Join(", ", application.MatchedSkills.DefaultIfEmpty("None"))}");
             builder.AppendLine($"Skill gaps: {string.Join(", ", application.MissingSkills.DefaultIfEmpty("None"))}");
             builder.AppendLine($"Scores: overall {scoredApplication.Score}, skill {FormatPercent(scoredApplication.SkillCoverage)}, vector {FormatPercent(scoredApplication.VectorSimilarity)}, fit {FormatPercent(scoredApplication.Fit)}, history {FormatPercent(scoredApplication.HistoricalSignal)}, evidence {FormatPercent(scoredApplication.EvidenceCompleteness)}, recency {FormatPercent(scoredApplication.Recency)}");
+            builder.AppendLine("Skill and role-domain assessment:");
+            builder.AppendLine(TechnologySkillMatcher.FormatAssessmentForPrompt(scoredApplication.SkillAssessment));
             builder.AppendLine($"Cover letter: {SafeField(TrimText(application.CoverLetterText, 800))}");
             builder.AppendLine($"Document evidence: {string.Join(" | ", BuildDocumentEvidence(application))}");
             builder.AppendLine($"Document text excerpt: {SafeField(TrimText(documentText, 1000))}");
@@ -800,7 +812,8 @@ public sealed class ApplicantRankingAgent : IApplicantRankingAgent
         decimal Fit,
         decimal HistoricalSignal,
         decimal EvidenceCompleteness,
-        decimal Recency);
+        decimal Recency,
+        SkillMatchAssessment SkillAssessment);
 
     private sealed record VectorScoreResult(
         IReadOnlyDictionary<Guid, decimal> Scores,

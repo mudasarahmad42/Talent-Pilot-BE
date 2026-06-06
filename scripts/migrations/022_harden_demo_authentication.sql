@@ -50,6 +50,15 @@ BEGIN
         WHERE AppUsers.TenantId = @TenantId
           AND AppUsers.DeletedAtUtc IS NULL
           AND AppUsers.AccountStatus = N'Active'
+          AND AppUsers.UserId IN (
+              @PresalesUserId,
+              @PmoUserId,
+              @RecruiterUserId,
+              @InterviewerUserId,
+              @HiringManagerUserId,
+              @CandidateUserId,
+              @HodUserId
+          )
     ) AS source
     ON target.UserId = source.UserId
     WHEN MATCHED THEN

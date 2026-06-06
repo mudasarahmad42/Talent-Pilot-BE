@@ -1842,7 +1842,7 @@ public sealed class DapperOperationsRepository : IOperationsRepository
             .ToArray());
     }
 
-    public async Task<PortalJobPostList> ListPortalJobPostsAsync(CancellationToken cancellationToken)
+    public async Task<PortalJobPostList> ListPortalJobPostsAsync(string? tenantSlug, CancellationToken cancellationToken)
     {
         await using var connection = _connectionFactory.CreateConnection();
 
@@ -1879,12 +1879,14 @@ public sealed class DapperOperationsRepository : IOperationsRepository
                 AND location.LocationId = post.LocationId
             WHERE post.Status = N'Published'
               AND post.PublishedAtUtc IS NOT NULL
+              AND (@TenantSlug IS NULL OR tenant.Slug = @TenantSlug)
               AND COALESCE(settings.PublicJobsEnabled, CAST(1 AS BIT)) = CAST(1 AS BIT)
             ORDER BY post.PublishedAtUtc DESC, post.UpdatedAtUtc DESC;
             """;
 
         var rows = (await connection.QueryAsync<PortalJobPostRow>(new CommandDefinition(
             sql,
+            new { TenantSlug = string.IsNullOrWhiteSpace(tenantSlug) ? null : tenantSlug.Trim() },
             cancellationToken: cancellationToken))).ToArray();
         var items = new List<PortalJobPostListItem>(rows.Length);
         foreach (var row in rows)
@@ -1908,6 +1910,76 @@ public sealed class DapperOperationsRepository : IOperationsRepository
         }
 
         return new PortalJobPostList(items);
+    }
+
+    public async Task<PublicPortalContext?> GetPublicPortalContextAsync(
+        PublicPortalContextQuery query,
+        CancellationToken cancellationToken)
+    {
+        await using var connection = _connectionFactory.CreateConnection();
+        const string selectSql = """
+            SELECT
+                tenant.TenantId,
+                tenant.Slug,
+                tenant.DisplayName,
+                COALESCE(NULLIF(settings.CareerDisplayName, N''), tenant.DisplayName) AS CareerDisplayName,
+                settings.CompanyAddress,
+                settings.CompanyCity,
+                settings.CompanyCountry,
+                settings.OfficialEmail,
+                settings.OfficialPhone,
+                COALESCE(NULLIF(settings.PrimaryColorHex, N''), N'#2563EB') AS PrimaryColor,
+                COALESCE(settings.CandidateLoginRequired, CAST(1 AS BIT)) AS CandidateLoginRequired,
+                COALESCE(NULLIF(settings.CandidateCvFormat, N''), N'DOCX') AS CandidateCvFormat,
+                COALESCE(settings.PublicJobsEnabled, CAST(1 AS BIT)) AS PublicJobsEnabled,
+                COALESCE(settings.InviteExpiryDays, 7) AS InviteExpiryDays,
+                COALESCE(settings.ReapplyCooldownDays, 90) AS ReapplyCooldownDays,
+                settings.LogoFileName,
+                settings.LogoContentType,
+                settings.LogoContent
+            FROM dbo.Tenants AS tenant
+            LEFT JOIN dbo.TenantRecruitmentSettings AS settings
+                ON settings.TenantId = tenant.TenantId
+            """;
+
+        PublicPortalContextRow? row;
+        if (query.JobPostId.HasValue)
+        {
+            row = await connection.QuerySingleOrDefaultAsync<PublicPortalContextRow>(new CommandDefinition(
+                $"""
+                {selectSql}
+                INNER JOIN dbo.JobPosts AS post
+                    ON post.TenantId = tenant.TenantId
+                WHERE post.JobPostId = @JobPostId
+                  AND tenant.Status = N'Active';
+                """,
+                new { JobPostId = query.JobPostId.Value },
+                cancellationToken: cancellationToken));
+        }
+        else if (!string.IsNullOrWhiteSpace(query.TenantSlug))
+        {
+            row = await connection.QuerySingleOrDefaultAsync<PublicPortalContextRow>(new CommandDefinition(
+                $"""
+                {selectSql}
+                WHERE tenant.Slug = @TenantSlug
+                  AND tenant.Status = N'Active';
+                """,
+                new { TenantSlug = query.TenantSlug.Trim().ToLowerInvariant() },
+                cancellationToken: cancellationToken));
+        }
+        else
+        {
+            var rows = (await connection.QueryAsync<PublicPortalContextRow>(new CommandDefinition(
+                $"""
+                {selectSql}
+                WHERE tenant.Status = N'Active'
+                  AND COALESCE(settings.PublicJobsEnabled, CAST(1 AS BIT)) = CAST(1 AS BIT);
+                """,
+                cancellationToken: cancellationToken))).ToArray();
+            row = rows.Length == 1 ? rows[0] : null;
+        }
+
+        return row?.ToDomain();
     }
 
     public async Task<PortalJobPostDetail?> GetPortalJobPostAsync(Guid jobPostId, CancellationToken cancellationToken)
@@ -2234,6 +2306,28 @@ public sealed class DapperOperationsRepository : IOperationsRepository
         }
 
         var now = DateTime.UtcNow;
+        if (IsResumeDocumentType(input.DocumentType))
+        {
+            await connection.ExecuteAsync(new CommandDefinition(
+                """
+                UPDATE dbo.JobApplicationDocuments
+                SET Status = N'Inactive',
+                    UpdatedAtUtc = @UpdatedAtUtc
+                WHERE TenantId = @TenantId
+                  AND JobApplicationId = @JobApplicationId
+                  AND Status = N'Active'
+                  AND LOWER(DocumentType) IN (N'resume', N'cv');
+                """,
+                new
+                {
+                    TenantId = tenantId,
+                    JobApplicationId = jobApplicationId,
+                    UpdatedAtUtc = now
+                },
+                transaction,
+                cancellationToken: cancellationToken));
+        }
+
         var documentId = Guid.NewGuid();
         const string insertSql = """
             INSERT INTO dbo.JobApplicationDocuments (
@@ -2330,6 +2424,169 @@ public sealed class DapperOperationsRepository : IOperationsRepository
             input.ParserVersion,
             input.ExtractedAt,
             input.ExtractionError);
+    }
+
+    public async Task<OperationsApplicantDocumentEvidence?> CopyLatestProfileDocumentToApplicationAsync(
+        Guid tenantId,
+        Guid actorUserId,
+        Guid jobApplicationId,
+        CancellationToken cancellationToken)
+    {
+        await using var connection = _connectionFactory.CreateConnection();
+        await connection.OpenAsync(cancellationToken);
+        await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
+
+        var candidateId = await connection.ExecuteScalarAsync<Guid?>(new CommandDefinition(
+            """
+            SELECT TOP (1)
+                application.CandidateId
+            FROM dbo.JobApplications AS application
+            INNER JOIN dbo.Candidates AS candidate
+                ON candidate.TenantId = application.TenantId
+                AND candidate.CandidateId = application.CandidateId
+            WHERE application.TenantId = @TenantId
+              AND application.JobApplicationId = @JobApplicationId
+              AND candidate.AppUserId = @ActorUserId;
+            """,
+            new { TenantId = tenantId, ActorUserId = actorUserId, JobApplicationId = jobApplicationId },
+            transaction,
+            cancellationToken: cancellationToken));
+        if (!candidateId.HasValue)
+        {
+            await transaction.RollbackAsync(cancellationToken);
+            return null;
+        }
+
+        var applicationHasResume = await connection.ExecuteScalarAsync<int>(new CommandDefinition(
+            """
+            SELECT COUNT(1)
+            FROM dbo.JobApplicationDocuments
+            WHERE TenantId = @TenantId
+              AND JobApplicationId = @JobApplicationId
+              AND Status = N'Active'
+              AND LOWER(DocumentType) IN (N'resume', N'cv');
+            """,
+            new { TenantId = tenantId, JobApplicationId = jobApplicationId },
+            transaction,
+            cancellationToken: cancellationToken));
+        if (applicationHasResume > 0)
+        {
+            await transaction.CommitAsync(cancellationToken);
+            return null;
+        }
+
+        var profileDocument = await ReadLatestPortalCandidateProfileDocumentAsync(
+            connection,
+            transaction,
+            tenantId,
+            candidateId.Value,
+            cancellationToken);
+        if (profileDocument is null)
+        {
+            await transaction.CommitAsync(cancellationToken);
+            return null;
+        }
+
+        var now = DateTime.UtcNow;
+        var applicationDocumentId = Guid.NewGuid();
+        await connection.ExecuteAsync(new CommandDefinition(
+            """
+            INSERT INTO dbo.JobApplicationDocuments (
+                ApplicationDocumentId,
+                TenantId,
+                JobApplicationId,
+                CandidateId,
+                DocumentType,
+                OriginalFileName,
+                ContentType,
+                SizeBytes,
+                StorageProvider,
+                StorageKey,
+                StorageContainer,
+                ContentHashSha256,
+                ExtractionStatus,
+                ExtractedText,
+                ExtractedTextHashSha256,
+                ParserVersion,
+                ExtractedAtUtc,
+                ExtractionError,
+                Status,
+                UploadedByUserId,
+                UploadedAtUtc,
+                CreatedAtUtc,
+                UpdatedAtUtc)
+            VALUES (
+                @ApplicationDocumentId,
+                @TenantId,
+                @JobApplicationId,
+                @CandidateId,
+                N'Resume',
+                @OriginalFileName,
+                @ContentType,
+                @SizeBytes,
+                @StorageProvider,
+                @StorageKey,
+                @StorageContainer,
+                @ContentHashSha256,
+                @ExtractionStatus,
+                @ExtractedText,
+                @ExtractedTextHashSha256,
+                @ParserVersion,
+                @ExtractedAtUtc,
+                @ExtractionError,
+                N'Active',
+                @UploadedByUserId,
+                @UploadedAtUtc,
+                @CreatedAtUtc,
+                @UpdatedAtUtc);
+            """,
+            new
+            {
+                ApplicationDocumentId = applicationDocumentId,
+                TenantId = tenantId,
+                JobApplicationId = jobApplicationId,
+                CandidateId = candidateId.Value,
+                OriginalFileName = profileDocument.FileName,
+                profileDocument.ContentType,
+                profileDocument.SizeBytes,
+                profileDocument.StorageProvider,
+                profileDocument.StorageKey,
+                profileDocument.StorageContainer,
+                profileDocument.ContentHashSha256,
+                profileDocument.ExtractionStatus,
+                profileDocument.ExtractedText,
+                profileDocument.ExtractedTextHashSha256,
+                profileDocument.ParserVersion,
+                ExtractedAtUtc = profileDocument.ExtractedAt,
+                profileDocument.ExtractionError,
+                UploadedByUserId = actorUserId,
+                UploadedAtUtc = now,
+                CreatedAtUtc = now,
+                UpdatedAtUtc = now
+            },
+            transaction,
+            cancellationToken: cancellationToken));
+
+        await transaction.CommitAsync(cancellationToken);
+
+        return new OperationsApplicantDocumentEvidence(
+            applicationDocumentId,
+            "Resume",
+            profileDocument.FileName,
+            profileDocument.ContentType,
+            profileDocument.SizeBytes,
+            profileDocument.StorageProvider,
+            profileDocument.StorageKey,
+            profileDocument.StorageContainer,
+            profileDocument.ContentHashSha256,
+            Utc(now),
+            profileDocument.ExtractionStatus,
+            profileDocument.HasExtractedText,
+            profileDocument.ExtractedText,
+            profileDocument.ExtractedTextHashSha256,
+            profileDocument.ParserVersion,
+            profileDocument.ExtractedAt,
+            profileDocument.ExtractionError);
     }
 
     public async Task<IReadOnlyList<PortalApplicationDocument>> ListPortalApplicationDocumentsAsync(
@@ -2552,6 +2809,240 @@ public sealed class DapperOperationsRepository : IOperationsRepository
 
         await transaction.CommitAsync(cancellationToken);
         return await ReadPortalCandidateProfileAsync(connection, null, tenantId, actorUserId, cancellationToken);
+    }
+
+    public async Task<PortalCandidateProfileDocumentUploadContext?> GetPortalCandidateProfileDocumentUploadContextAsync(
+        Guid tenantId,
+        Guid actorUserId,
+        CancellationToken cancellationToken)
+    {
+        await using var connection = _connectionFactory.CreateConnection();
+        await connection.OpenAsync(cancellationToken);
+        await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
+
+        var candidate = await EnsurePortalCandidateIdentityAsync(
+            connection,
+            transaction,
+            tenantId,
+            actorUserId,
+            cancellationToken);
+        if (candidate is null)
+        {
+            await transaction.RollbackAsync(cancellationToken);
+            return null;
+        }
+
+        await transaction.CommitAsync(cancellationToken);
+        return new PortalCandidateProfileDocumentUploadContext(candidate.CandidateId);
+    }
+
+    public async Task<PortalCandidateProfileDocument?> AddPortalCandidateProfileDocumentAsync(
+        Guid tenantId,
+        Guid actorUserId,
+        PortalCandidateProfileDocumentMetadataInput input,
+        CancellationToken cancellationToken)
+    {
+        await using var connection = _connectionFactory.CreateConnection();
+        await connection.OpenAsync(cancellationToken);
+        await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
+
+        var candidate = await EnsurePortalCandidateIdentityAsync(
+            connection,
+            transaction,
+            tenantId,
+            actorUserId,
+            cancellationToken);
+        if (candidate is null)
+        {
+            await transaction.RollbackAsync(cancellationToken);
+            return null;
+        }
+
+        var now = DateTime.UtcNow;
+        if (IsResumeDocumentType(input.DocumentType))
+        {
+            await connection.ExecuteAsync(new CommandDefinition(
+                """
+                UPDATE dbo.CandidateProfileDocuments
+                SET Status = N'Inactive',
+                    UpdatedAtUtc = @UpdatedAtUtc
+                WHERE TenantId = @TenantId
+                  AND CandidateId = @CandidateId
+                  AND Status = N'Active'
+                  AND LOWER(DocumentType) IN (N'resume', N'cv');
+                """,
+                new
+                {
+                    TenantId = tenantId,
+                    candidate.CandidateId,
+                    UpdatedAtUtc = now
+                },
+                transaction,
+                cancellationToken: cancellationToken));
+        }
+
+        var documentId = Guid.NewGuid();
+        await connection.ExecuteAsync(new CommandDefinition(
+            """
+            INSERT INTO dbo.CandidateProfileDocuments (
+                CandidateProfileDocumentId,
+                TenantId,
+                CandidateId,
+                DocumentType,
+                OriginalFileName,
+                ContentType,
+                SizeBytes,
+                StorageProvider,
+                StorageKey,
+                StorageContainer,
+                ContentHashSha256,
+                ExtractionStatus,
+                ExtractedText,
+                ExtractedTextHashSha256,
+                ParserVersion,
+                ExtractedAtUtc,
+                ExtractionError,
+                Status,
+                UploadedByUserId,
+                UploadedAtUtc,
+                CreatedAtUtc,
+                UpdatedAtUtc)
+            VALUES (
+                @CandidateProfileDocumentId,
+                @TenantId,
+                @CandidateId,
+                @DocumentType,
+                @OriginalFileName,
+                @ContentType,
+                @SizeBytes,
+                @StorageProvider,
+                @StorageKey,
+                @StorageContainer,
+                @ContentHashSha256,
+                @ExtractionStatus,
+                @ExtractedText,
+                @ExtractedTextHashSha256,
+                @ParserVersion,
+                @ExtractedAtUtc,
+                @ExtractionError,
+                N'Active',
+                @UploadedByUserId,
+                @UploadedAtUtc,
+                @CreatedAtUtc,
+                @UpdatedAtUtc);
+            """,
+            new
+            {
+                CandidateProfileDocumentId = documentId,
+                TenantId = tenantId,
+                candidate.CandidateId,
+                input.DocumentType,
+                OriginalFileName = input.FileName,
+                input.ContentType,
+                input.SizeBytes,
+                input.StorageProvider,
+                input.StorageKey,
+                input.StorageContainer,
+                input.ContentHashSha256,
+                input.ExtractionStatus,
+                input.ExtractedText,
+                input.ExtractedTextHashSha256,
+                input.ParserVersion,
+                ExtractedAtUtc = input.ExtractedAt?.UtcDateTime,
+                input.ExtractionError,
+                UploadedByUserId = actorUserId,
+                UploadedAtUtc = now,
+                CreatedAtUtc = now,
+                UpdatedAtUtc = now
+            },
+            transaction,
+            cancellationToken: cancellationToken));
+        await transaction.CommitAsync(cancellationToken);
+
+        return new PortalCandidateProfileDocument(
+            documentId,
+            candidate.CandidateId,
+            input.DocumentType,
+            input.FileName,
+            input.ContentType,
+            input.SizeBytes,
+            input.StorageProvider,
+            Utc(now),
+            input.ExtractionStatus,
+            !string.IsNullOrWhiteSpace(input.ExtractedText),
+            input.ParserVersion,
+            input.ExtractedAt,
+            input.ExtractionError);
+    }
+
+    public async Task<PortalCandidateProfileDocumentEvidence?> GetPortalCandidateProfileDocumentAsync(
+        Guid tenantId,
+        Guid actorUserId,
+        Guid candidateProfileDocumentId,
+        CancellationToken cancellationToken)
+    {
+        await using var connection = _connectionFactory.CreateConnection();
+        const string sql = """
+            SELECT TOP (1)
+                document.CandidateProfileDocumentId,
+                document.CandidateId,
+                document.DocumentType,
+                document.OriginalFileName AS FileName,
+                document.ContentType,
+                document.SizeBytes,
+                document.StorageProvider,
+                document.StorageKey,
+                document.StorageContainer,
+                document.ContentHashSha256,
+                document.UploadedAtUtc AS UploadedAt,
+                document.ExtractionStatus,
+                CAST(CASE WHEN NULLIF(LTRIM(RTRIM(document.ExtractedText)), N'') IS NULL THEN 0 ELSE 1 END AS bit) AS HasExtractedText,
+                document.ExtractedText,
+                document.ExtractedTextHashSha256,
+                document.ParserVersion,
+                document.ExtractedAtUtc AS ExtractedAt,
+                document.ExtractionError
+            FROM dbo.CandidateProfileDocuments AS document
+            INNER JOIN dbo.Candidates AS candidate
+                ON candidate.TenantId = document.TenantId
+                AND candidate.CandidateId = document.CandidateId
+            WHERE document.TenantId = @TenantId
+              AND document.CandidateProfileDocumentId = @CandidateProfileDocumentId
+              AND document.Status = N'Active'
+              AND candidate.AppUserId = @ActorUserId;
+            """;
+
+        var row = await connection.QuerySingleOrDefaultAsync<PortalCandidateProfileDocumentRow>(new CommandDefinition(
+            sql,
+            new
+            {
+                TenantId = tenantId,
+                ActorUserId = actorUserId,
+                CandidateProfileDocumentId = candidateProfileDocumentId
+            },
+            cancellationToken: cancellationToken));
+
+        return row is null
+            ? null
+            : new PortalCandidateProfileDocumentEvidence(
+                row.CandidateProfileDocumentId,
+                row.CandidateId,
+                row.DocumentType,
+                row.FileName,
+                row.ContentType,
+                row.SizeBytes,
+                row.StorageProvider,
+                row.StorageKey,
+                row.StorageContainer,
+                row.ContentHashSha256,
+                Utc(row.UploadedAt),
+                row.ExtractionStatus,
+                row.HasExtractedText,
+                row.ExtractedText,
+                row.ExtractedTextHashSha256,
+                row.ParserVersion,
+                ToUtc(row.ExtractedAt),
+                row.ExtractionError);
     }
 
     public async Task<OperationsBenchMatchingContext?> GetBenchMatchingContextAsync(
@@ -5888,6 +6379,7 @@ public sealed class DapperOperationsRepository : IOperationsRepository
                 Title,
                 Description,
                 ClientName,
+                ClientContext,
                 DepartmentId,
                 LocationId,
                 EmploymentType,
@@ -5912,6 +6404,7 @@ public sealed class DapperOperationsRepository : IOperationsRepository
                 @Title,
                 @Description,
                 @ClientName,
+                @ClientContext,
                 @DepartmentId,
                 @LocationId,
                 N'FullTime',
@@ -5940,6 +6433,7 @@ public sealed class DapperOperationsRepository : IOperationsRepository
                 input.Title,
                 input.Description,
                 ClientName = input.Client,
+                ClientContext = NullIfBlank(input.ClientContext),
                 input.DepartmentId,
                 input.LocationId,
                 input.ExperienceMinYears,
@@ -9253,6 +9747,7 @@ public sealed class DapperOperationsRepository : IOperationsRepository
                 jr.RequestCode AS Code,
                 jr.Title,
                 COALESCE(jr.ClientName, N'Internal') AS Client,
+                jr.ClientContext,
                 jr.Description,
                 COALESCE(d.Name, N'Unassigned') AS Department,
                 COALESCE(l.Name, N'Remote') AS Location,
@@ -9341,6 +9836,7 @@ public sealed class DapperOperationsRepository : IOperationsRepository
                 jr.RequestCode,
                 jr.Title,
                 jr.ClientName,
+                jr.ClientContext,
                 jr.Description,
                 d.Name,
                 l.Name,
@@ -9601,6 +10097,7 @@ public sealed class DapperOperationsRepository : IOperationsRepository
             row.Code,
             row.Title,
             row.Client,
+            row.ClientContext,
             row.Description,
             row.Department,
             skills,
@@ -12781,6 +13278,89 @@ public sealed class DapperOperationsRepository : IOperationsRepository
         return candidate;
     }
 
+    private static async Task<CandidateMutableRow?> EnsurePortalCandidateIdentityAsync(
+        SqlConnection connection,
+        IDbTransaction transaction,
+        Guid tenantId,
+        Guid actorUserId,
+        CancellationToken cancellationToken)
+    {
+        var candidate = await connection.QuerySingleOrDefaultAsync<CandidateMutableRow>(new CommandDefinition(
+            """
+            SELECT TOP (1)
+                CandidateId,
+                AppUserId,
+                DisplayName,
+                Email
+            FROM dbo.Candidates
+            WHERE TenantId = @TenantId
+              AND AppUserId = @ActorUserId;
+            """,
+            new { TenantId = tenantId, ActorUserId = actorUserId },
+            transaction,
+            cancellationToken: cancellationToken));
+        if (candidate is not null)
+        {
+            return candidate;
+        }
+
+        var appUser = await connection.QuerySingleOrDefaultAsync<AppUserCandidateSeedRow>(new CommandDefinition(
+            """
+            SELECT TOP (1) UserId, DisplayName, Email
+            FROM dbo.AppUsers
+            WHERE TenantId = @TenantId
+              AND UserId = @ActorUserId
+              AND DeletedAtUtc IS NULL
+              AND AccountStatus <> N'Disabled';
+            """,
+            new { TenantId = tenantId, ActorUserId = actorUserId },
+            transaction,
+            cancellationToken: cancellationToken));
+        if (appUser is null)
+        {
+            return null;
+        }
+
+        candidate = new CandidateMutableRow(Guid.NewGuid(), appUser.UserId, appUser.DisplayName, appUser.Email);
+        await connection.ExecuteAsync(new CommandDefinition(
+            """
+            INSERT INTO dbo.Candidates
+            (
+                CandidateId,
+                TenantId,
+                AppUserId,
+                DisplayName,
+                Email,
+                Status,
+                CreatedAtUtc,
+                UpdatedAtUtc
+            )
+            VALUES
+            (
+                @CandidateId,
+                @TenantId,
+                @AppUserId,
+                @DisplayName,
+                @Email,
+                N'Active',
+                SYSUTCDATETIME(),
+                SYSUTCDATETIME()
+            );
+            """,
+            new
+            {
+                TenantId = tenantId,
+                candidate.CandidateId,
+                candidate.AppUserId,
+                candidate.DisplayName,
+                candidate.Email
+            },
+            transaction,
+            cancellationToken: cancellationToken));
+
+        return candidate;
+    }
+
     private static async Task<PortalCandidateProfile?> ReadPortalCandidateProfileAsync(
         SqlConnection connection,
         IDbTransaction? transaction,
@@ -12861,7 +13441,8 @@ public sealed class DapperOperationsRepository : IOperationsRepository
                 null,
                 null,
                 [],
-                skillOptions);
+                skillOptions,
+                null);
         }
 
         var skills = await ListPortalCandidateProfileSkillsAsync(
@@ -12877,6 +13458,12 @@ public sealed class DapperOperationsRepository : IOperationsRepository
             candidate.CandidateId.Value,
             cancellationToken);
         var workHistory = await ReadPortalCurrentWorkHistoryAsync(
+            connection,
+            transaction,
+            tenantId,
+            candidate.CandidateId.Value,
+            cancellationToken);
+        var resumeDocument = await ReadLatestPortalCandidateProfileDocumentAsync(
             connection,
             transaction,
             tenantId,
@@ -12898,7 +13485,50 @@ public sealed class DapperOperationsRepository : IOperationsRepository
             education,
             workHistory,
             skills,
-            skillOptions);
+            skillOptions,
+            resumeDocument?.ToDocument());
+    }
+
+    private static async Task<PortalCandidateProfileDocumentRow?> ReadLatestPortalCandidateProfileDocumentAsync(
+        SqlConnection connection,
+        IDbTransaction? transaction,
+        Guid tenantId,
+        Guid candidateId,
+        CancellationToken cancellationToken)
+    {
+        const string sql = """
+            SELECT TOP (1)
+                CandidateProfileDocumentId,
+                CandidateId,
+                DocumentType,
+                OriginalFileName AS FileName,
+                ContentType,
+                SizeBytes,
+                StorageProvider,
+                StorageKey,
+                StorageContainer,
+                ContentHashSha256,
+                UploadedAtUtc AS UploadedAt,
+                ExtractionStatus,
+                CAST(CASE WHEN NULLIF(LTRIM(RTRIM(ExtractedText)), N'') IS NULL THEN 0 ELSE 1 END AS bit) AS HasExtractedText,
+                ExtractedText,
+                ExtractedTextHashSha256,
+                ParserVersion,
+                ExtractedAtUtc AS ExtractedAt,
+                ExtractionError
+            FROM dbo.CandidateProfileDocuments
+            WHERE TenantId = @TenantId
+              AND CandidateId = @CandidateId
+              AND Status = N'Active'
+              AND LOWER(DocumentType) IN (N'resume', N'cv')
+            ORDER BY UploadedAtUtc DESC;
+            """;
+
+        return await connection.QuerySingleOrDefaultAsync<PortalCandidateProfileDocumentRow>(new CommandDefinition(
+            sql,
+            new { TenantId = tenantId, CandidateId = candidateId },
+            transaction,
+            cancellationToken: cancellationToken));
     }
 
     private static async Task<Guid?> UpsertPortalCandidateProfileAsync(
@@ -15222,6 +15852,12 @@ public sealed class DapperOperationsRepository : IOperationsRepository
         return string.IsNullOrWhiteSpace(value) ? null : value.Trim();
     }
 
+    private static bool IsResumeDocumentType(string? documentType)
+    {
+        var normalized = documentType?.Trim().ToLowerInvariant();
+        return normalized is "resume" or "cv";
+    }
+
     private static string BuildParsedCvEvidenceText(ParsedCandidateCvEvidenceInput evidence)
     {
         var parts = new List<string>
@@ -16594,8 +17230,9 @@ public sealed class DapperOperationsRepository : IOperationsRepository
 
     private static bool SkillMatches(string candidateSkill, string requiredSkill)
     {
-        return candidateSkill.Contains(requiredSkill, StringComparison.OrdinalIgnoreCase)
-            || requiredSkill.Contains(candidateSkill, StringComparison.OrdinalIgnoreCase);
+        var assessment = TechnologySkillMatcher.Assess([requiredSkill], [candidateSkill]);
+        return assessment.Items.Any(item =>
+            item.MatchLevel is SkillMatchLevel.Exact or SkillMatchLevel.StrongAdjacent);
     }
 
     private static bool IsPositiveRecommendation(string? recommendation)
@@ -18445,6 +19082,50 @@ public sealed class DapperOperationsRepository : IOperationsRepository
         string TokenHash,
         string? JobLink);
 
+    private sealed record PublicPortalContextRow(
+        Guid TenantId,
+        string Slug,
+        string DisplayName,
+        string CareerDisplayName,
+        string? CompanyAddress,
+        string? CompanyCity,
+        string? CompanyCountry,
+        string? OfficialEmail,
+        string? OfficialPhone,
+        string PrimaryColor,
+        bool CandidateLoginRequired,
+        string CandidateCvFormat,
+        bool PublicJobsEnabled,
+        int InviteExpiryDays,
+        int ReapplyCooldownDays,
+        string? LogoFileName,
+        string? LogoContentType,
+        byte[]? LogoContent)
+    {
+        public PublicPortalContext ToDomain()
+        {
+            return new PublicPortalContext(
+                TenantId,
+                Slug,
+                DisplayName,
+                CareerDisplayName,
+                CompanyAddress,
+                CompanyCity,
+                CompanyCountry,
+                OfficialEmail,
+                OfficialPhone,
+                PrimaryColor,
+                CandidateLoginRequired,
+                CandidateCvFormat,
+                PublicJobsEnabled,
+                InviteExpiryDays,
+                ReapplyCooldownDays,
+                LogoFileName,
+                LogoContentType,
+                LogoContent is { Length: > 0 } ? Convert.ToBase64String(LogoContent) : null);
+        }
+    }
+
     private sealed record PortalJobPostRow(
         Guid JobPostId,
         Guid TenantId,
@@ -18480,6 +19161,45 @@ public sealed class DapperOperationsRepository : IOperationsRepository
         decimal? ExpectedSalaryAmount,
         string? ExpectedSalaryCurrency,
         int? NoticePeriodDays);
+
+    private sealed record PortalCandidateProfileDocumentRow(
+        Guid CandidateProfileDocumentId,
+        Guid CandidateId,
+        string DocumentType,
+        string FileName,
+        string ContentType,
+        long SizeBytes,
+        string StorageProvider,
+        string StorageKey,
+        string? StorageContainer,
+        string ContentHashSha256,
+        DateTime UploadedAt,
+        string ExtractionStatus,
+        bool HasExtractedText,
+        string? ExtractedText,
+        string? ExtractedTextHashSha256,
+        string? ParserVersion,
+        DateTime? ExtractedAt,
+        string? ExtractionError)
+    {
+        public PortalCandidateProfileDocument ToDocument()
+        {
+            return new PortalCandidateProfileDocument(
+                CandidateProfileDocumentId,
+                CandidateId,
+                DocumentType,
+                FileName,
+                ContentType,
+                SizeBytes,
+                StorageProvider,
+                Utc(UploadedAt),
+                ExtractionStatus,
+                HasExtractedText,
+                ParserVersion,
+                ToUtc(ExtractedAt),
+                ExtractionError);
+        }
+    }
 
     private sealed record AppUserCandidateSeedRow(
         Guid UserId,
@@ -18955,6 +19675,7 @@ public sealed class DapperOperationsRepository : IOperationsRepository
         string Code,
         string Title,
         string Client,
+        string? ClientContext,
         string Description,
         string Department,
         string Location,

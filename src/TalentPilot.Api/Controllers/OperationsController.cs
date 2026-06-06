@@ -134,9 +134,11 @@ public sealed class OperationsController : ApiControllerBase
 
     [AllowAnonymous]
     [HttpGet("portal/job-posts")]
-    public async Task<ActionResult<PortalJobPostList>> PortalJobPosts(CancellationToken cancellationToken)
+    public async Task<ActionResult<PortalJobPostList>> PortalJobPosts(
+        [FromQuery] string? tenantSlug,
+        CancellationToken cancellationToken)
     {
-        return FromResult(await _operationsService.ListPortalJobPostsAsync(cancellationToken));
+        return FromResult(await _operationsService.ListPortalJobPostsAsync(tenantSlug, cancellationToken));
     }
 
     [AllowAnonymous]
@@ -193,6 +195,53 @@ public sealed class OperationsController : ApiControllerBase
             file.ContentType,
             buffer.ToArray(),
             cancellationToken));
+    }
+
+    [HttpPost("portal/profile/documents")]
+    [RequestSizeLimit(5_500_000)]
+    public async Task<ActionResult<PortalUploadCandidateProfileDocumentResult>> UploadPortalProfileDocument(
+        [FromForm] IFormFile file,
+        [FromForm] string? documentType,
+        CancellationToken cancellationToken)
+    {
+        if (file.Length == 0)
+        {
+            return FromResult(Result<PortalUploadCandidateProfileDocumentResult>.Failure(
+                "portal_profile_document.empty_file",
+                "Uploaded document is empty."));
+        }
+
+        await using var stream = file.OpenReadStream();
+        using var buffer = new MemoryStream();
+        await stream.CopyToAsync(buffer, cancellationToken);
+
+        return FromResult(await _operationsService.UploadPortalCandidateProfileDocumentAsync(
+            documentType ?? "Resume",
+            file.FileName,
+            file.ContentType,
+            buffer.ToArray(),
+            cancellationToken));
+    }
+
+    [HttpGet("portal/profile/documents/{candidateProfileDocumentId:guid}/download")]
+    public async Task<IActionResult> DownloadPortalProfileDocument(
+        Guid candidateProfileDocumentId,
+        CancellationToken cancellationToken)
+    {
+        var result = await _operationsService.DownloadPortalCandidateProfileDocumentAsync(
+            candidateProfileDocumentId,
+            cancellationToken);
+
+        if (result.Failed)
+        {
+            return FromResult(result).Result ?? BadRequest(new
+            {
+                error = result.Error.Code,
+                message = result.Error.Message
+            });
+        }
+
+        return File(result.Value.Content, result.Value.ContentType, result.Value.FileName);
     }
 
     [HttpGet("portal/my-applications")]

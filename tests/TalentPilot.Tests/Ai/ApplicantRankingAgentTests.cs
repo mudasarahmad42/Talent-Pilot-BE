@@ -112,6 +112,7 @@ public sealed class ApplicantRankingAgentTests
             "TP-REQ-300",
             "Senior React Developer",
             "Relia",
+            "Customer portal and Azure delivery context for applicant ranking.",
             "Build React customer portal features with Azure deployment exposure.",
             "Engineering",
             ["React", "Azure"],

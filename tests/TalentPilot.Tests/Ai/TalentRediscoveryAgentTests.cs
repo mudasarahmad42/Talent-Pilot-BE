@@ -44,6 +44,7 @@ public sealed class TalentRediscoveryAgentTests
         Assert.Equal(TalentRediscoveryAgent.AgentId, modelProvider.LastRequest?.AgentId);
         Assert.Contains("Do not search the web", modelProvider.LastRequest?.Prompt);
         Assert.Contains("Do not decide whether to contact", modelProvider.LastRequest?.Prompt);
+        Assert.Contains("top-level value must be", modelProvider.LastRequest?.Prompt);
         Assert.Equal(StrongCandidateId, result.Matches[0].CandidateId);
         Assert.True(result.Matches[0].Score > result.Matches[1].Score);
         Assert.Contains("current skills overlap is high", result.Matches[0].Explanation);
@@ -242,7 +243,59 @@ public sealed class TalentRediscoveryAgentTests
     }
 
     [Fact]
-    public async Task RankAsync_WhenModelDoesNotReturnExplanations_FailsClosed()
+    public async Task RankAsync_AcceptsWrappedExplanationJson()
+    {
+        var agent = new TalentRediscoveryAgent(
+            new CapturingModelProvider($$"""
+                {
+                  "explanations": [
+                    {
+                      "candidateId": "{{StrongCandidateId:D}}",
+                      "explanation": "Wrapped JSON explanation for Nida."
+                    },
+                    {
+                      "candidateId": "{{SecondaryCandidateId:D}}",
+                      "explanation": "Wrapped JSON explanation for Omar."
+                    }
+                  ]
+                }
+                """),
+            new StaticEmbeddingProvider(),
+            new CapturingVectorStore(new Dictionary<Guid, decimal>()),
+            new StaticRuntimeSettingsResolver(),
+            new CapturingRunLogger());
+
+        var result = await agent.RankAsync(TenantId, CreateContext(), CancellationToken.None);
+
+        Assert.Contains("Wrapped JSON explanation", result.Matches[0].Explanation);
+    }
+
+    [Fact]
+    public async Task RankAsync_ExtractsJsonFromProseResponse()
+    {
+        var agent = new TalentRediscoveryAgent(
+            new CapturingModelProvider($$"""
+                Here is the JSON:
+                [
+                  {
+                    "candidateId": "{{StrongCandidateId:D}}",
+                    "explanation": "Extracted JSON explanation for Nida."
+                  }
+                ]
+                """),
+            new StaticEmbeddingProvider(),
+            new CapturingVectorStore(new Dictionary<Guid, decimal>()),
+            new StaticRuntimeSettingsResolver(),
+            new CapturingRunLogger());
+
+        var result = await agent.RankAsync(TenantId, CreateContext(), CancellationToken.None);
+
+        Assert.Contains("Extracted JSON explanation", result.Matches[0].Explanation);
+        Assert.Contains("deterministic tenant history", result.Matches[1].Explanation);
+    }
+
+    [Fact]
+    public async Task RankAsync_WhenModelDoesNotReturnExplanations_UsesDeterministicFallback()
     {
         var logger = new CapturingRunLogger();
         var agent = new TalentRediscoveryAgent(
@@ -252,12 +305,13 @@ public sealed class TalentRediscoveryAgentTests
             new StaticRuntimeSettingsResolver(),
             logger);
 
-        await Assert.ThrowsAsync<InvalidOperationException>(() =>
-            agent.RankAsync(TenantId, CreateContext(), CancellationToken.None));
+        var result = await agent.RankAsync(TenantId, CreateContext(), CancellationToken.None);
 
-        Assert.False(logger.Succeeded);
-        Assert.True(logger.Failed);
-        Assert.Contains("usable LLM explanations", logger.OutputSummary);
+        Assert.True(logger.Succeeded);
+        Assert.False(logger.Failed);
+        Assert.Equal(2, result.Matches.Count);
+        Assert.Contains("deterministic tenant history", result.Matches[0].Explanation);
+        Assert.Contains("Recruiter should validate availability and fit", result.Matches[0].Explanation);
     }
 
     private static OperationsTalentRediscoveryContext CreateContext()
@@ -267,6 +321,7 @@ public sealed class TalentRediscoveryAgentTests
             "TP-REQ-200",
             "Senior React Developer",
             "Relia",
+            "Customer portal and fintech workflow context for similar industry delivery.",
             "Build React customer portal features with Angular migration support and Azure deployment exposure.",
             "Engineering",
             ["React", "Angular", "Azure"],
@@ -385,6 +440,7 @@ public sealed class TalentRediscoveryAgentTests
             "TP-REQ-201",
             "Senior React Developer",
             "Relia",
+            null,
             "Build React customer portal features.",
             "Engineering",
             ["React", "Angular"],

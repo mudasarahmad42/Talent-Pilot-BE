@@ -29,6 +29,15 @@ public sealed class AuthController : ApiControllerBase
         return FromResult(await _authService.LoginAsync(request, cancellationToken));
     }
 
+    [HttpPost("candidate-signup")]
+    [AllowAnonymous]
+    public async Task<ActionResult<AuthResponse>> CandidateSignup(
+        CandidateSignupRequest request,
+        CancellationToken cancellationToken)
+    {
+        return FromResult(await _authService.RegisterCandidateAsync(request, cancellationToken));
+    }
+
     [HttpPost("refresh")]
     [AllowAnonymous]
     public async Task<ActionResult<AuthResponse>> Refresh(RefreshTokenRequest request, CancellationToken cancellationToken)

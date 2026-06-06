@@ -178,6 +178,7 @@ public interface IAiAgentRunLogger
 public sealed record JobDescriptionDraftRequest(
     string Title,
     string Client,
+    string? ClientContext,
     string Department,
     string Location,
     IReadOnlyList<string> Skills,

@@ -120,6 +120,177 @@ public sealed class DapperIdentityRepository : IIdentityRepository
             new CommandDefinition(sql, new { TenantId = tenantId, UserId = userId }, cancellationToken: cancellationToken));
     }
 
+    public async Task<CandidateSignupRepositoryResult> RegisterCandidateAsync(
+        CandidateSignupRegistrationInput input,
+        CancellationToken cancellationToken)
+    {
+        await using var connection = _connectionFactory.CreateConnection();
+        await connection.OpenAsync(cancellationToken);
+        await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
+
+        var tenantResolution = await ResolveCandidateSignupTenantAsync(connection, transaction, input, cancellationToken);
+        if (tenantResolution.Status != CandidateSignupStatus.Created || !tenantResolution.TenantId.HasValue)
+        {
+            await transaction.RollbackAsync(cancellationToken);
+            return new CandidateSignupRepositoryResult(tenantResolution.Status, null);
+        }
+
+        var tenantId = tenantResolution.TenantId.Value;
+        var normalizedEmail = input.Email.Trim().ToUpperInvariant();
+        var emailExists = await connection.ExecuteScalarAsync<int>(new CommandDefinition(
+            """
+            SELECT COUNT(1)
+            FROM dbo.AppUsers
+            WHERE EmailNormalized = @EmailNormalized
+              AND DeletedAtUtc IS NULL;
+            """,
+            new { EmailNormalized = normalizedEmail },
+            transaction,
+            cancellationToken: cancellationToken)) > 0;
+        if (emailExists)
+        {
+            await transaction.RollbackAsync(cancellationToken);
+            return new CandidateSignupRepositoryResult(CandidateSignupStatus.EmailExists, null);
+        }
+
+        var candidateRoleId = await connection.ExecuteScalarAsync<Guid?>(new CommandDefinition(
+            """
+            SELECT TOP (1) RoleId
+            FROM dbo.Roles
+            WHERE TenantId = @TenantId
+              AND Code = N'Candidate'
+              AND Status = N'Active';
+            """,
+            new { TenantId = tenantId },
+            transaction,
+            cancellationToken: cancellationToken));
+        if (!candidateRoleId.HasValue)
+        {
+            await transaction.RollbackAsync(cancellationToken);
+            return new CandidateSignupRepositoryResult(CandidateSignupStatus.CandidateRoleMissing, null);
+        }
+
+        var userId = Guid.NewGuid();
+        var candidateId = Guid.NewGuid();
+        var displayName = Truncate(input.DisplayName.Trim(), 200);
+        var email = input.Email.Trim().ToLowerInvariant();
+        await connection.ExecuteAsync(new CommandDefinition(
+            """
+            INSERT INTO dbo.AppUsers
+            (
+                UserId,
+                TenantId,
+                DisplayName,
+                Email,
+                EmailNormalized,
+                Initials,
+                AccountStatus,
+                CreatedAtUtc,
+                UpdatedAtUtc
+            )
+            VALUES
+            (
+                @UserId,
+                @TenantId,
+                @DisplayName,
+                @Email,
+                @EmailNormalized,
+                @Initials,
+                N'Active',
+                SYSUTCDATETIME(),
+                SYSUTCDATETIME()
+            );
+
+            INSERT INTO dbo.UserCredentials
+            (
+                UserCredentialId,
+                TenantId,
+                UserId,
+                PasswordHash,
+                PasswordUpdatedAtUtc,
+                CreatedAtUtc,
+                UpdatedAtUtc
+            )
+            VALUES
+            (
+                NEWID(),
+                @TenantId,
+                @UserId,
+                @PasswordHash,
+                SYSUTCDATETIME(),
+                SYSUTCDATETIME(),
+                SYSUTCDATETIME()
+            );
+
+            INSERT INTO dbo.UserRoles
+            (
+                TenantId,
+                UserId,
+                RoleId,
+                AssignedByUserId,
+                CreatedAtUtc
+            )
+            VALUES
+            (
+                @TenantId,
+                @UserId,
+                @CandidateRoleId,
+                NULL,
+                SYSUTCDATETIME()
+            );
+
+            INSERT INTO dbo.Candidates
+            (
+                CandidateId,
+                TenantId,
+                AppUserId,
+                DisplayName,
+                Email,
+                Status,
+                CreatedAtUtc,
+                UpdatedAtUtc
+            )
+            VALUES
+            (
+                @CandidateId,
+                @TenantId,
+                @UserId,
+                @DisplayName,
+                @Email,
+                N'Active',
+                SYSUTCDATETIME(),
+                SYSUTCDATETIME()
+            );
+            """,
+            new
+            {
+                TenantId = tenantId,
+                UserId = userId,
+                CandidateId = candidateId,
+                CandidateRoleId = candidateRoleId.Value,
+                DisplayName = displayName,
+                Email = email,
+                EmailNormalized = normalizedEmail,
+                Initials = BuildInitials(displayName),
+                input.PasswordHash
+            },
+            transaction,
+            cancellationToken: cancellationToken));
+
+        await transaction.CommitAsync(cancellationToken);
+        return new CandidateSignupRepositoryResult(
+            CandidateSignupStatus.Created,
+            new AuthUserRecord
+            {
+                UserId = userId,
+                TenantId = tenantId,
+                DisplayName = displayName,
+                Email = email,
+                AccountStatus = "Active",
+                PasswordHash = input.PasswordHash
+            });
+    }
+
     public async Task<CurrentUserData?> GetCurrentUserDataAsync(Guid tenantId, Guid userId, CancellationToken cancellationToken)
     {
         await using var connection = _connectionFactory.CreateConnection();
@@ -258,6 +429,111 @@ public sealed class DapperIdentityRepository : IIdentityRepository
         string AccountStatus,
         string TenantDisplayName,
         string PermissionResolutionMode);
+
+    private static async Task<(CandidateSignupStatus Status, Guid? TenantId)> ResolveCandidateSignupTenantAsync(
+        Microsoft.Data.SqlClient.SqlConnection connection,
+        IDbTransaction transaction,
+        CandidateSignupRegistrationInput input,
+        CancellationToken cancellationToken)
+    {
+        if (input.JobPostId.HasValue)
+        {
+            var row = await connection.QuerySingleOrDefaultAsync<CandidateSignupJobTenantRow>(new CommandDefinition(
+                """
+                SELECT TOP (1)
+                    post.TenantId,
+                    post.Status,
+                    post.PublishedAtUtc,
+                    COALESCE(settings.PublicJobsEnabled, CAST(1 AS BIT)) AS PublicJobsEnabled
+                FROM dbo.JobPosts AS post
+                LEFT JOIN dbo.TenantRecruitmentSettings AS settings
+                    ON settings.TenantId = post.TenantId
+                WHERE post.JobPostId = @JobPostId;
+                """,
+                new { JobPostId = input.JobPostId.Value },
+                transaction,
+                cancellationToken: cancellationToken));
+
+            if (row is null ||
+                !string.Equals(row.Status, "Published", StringComparison.OrdinalIgnoreCase) ||
+                row.PublishedAtUtc is null)
+            {
+                return (CandidateSignupStatus.JobNotFound, null);
+            }
+
+            return row.PublicJobsEnabled
+                ? (CandidateSignupStatus.Created, row.TenantId)
+                : (CandidateSignupStatus.PublicJobsDisabled, null);
+        }
+
+        if (!string.IsNullOrWhiteSpace(input.TenantSlug))
+        {
+            var row = await connection.QuerySingleOrDefaultAsync<CandidateSignupSlugTenantRow>(new CommandDefinition(
+                """
+                SELECT TOP (1)
+                    tenant.TenantId,
+                    tenant.Status,
+                    COALESCE(settings.PublicJobsEnabled, CAST(1 AS BIT)) AS PublicJobsEnabled
+                FROM dbo.Tenants AS tenant
+                LEFT JOIN dbo.TenantRecruitmentSettings AS settings
+                    ON settings.TenantId = tenant.TenantId
+                WHERE tenant.Slug = @TenantSlug;
+                """,
+                new { TenantSlug = input.TenantSlug.Trim().ToLowerInvariant() },
+                transaction,
+                cancellationToken: cancellationToken));
+
+            if (row is null || !string.Equals(row.Status, "Active", StringComparison.OrdinalIgnoreCase))
+            {
+                return (CandidateSignupStatus.TenantRequired, null);
+            }
+
+            return row.PublicJobsEnabled
+                ? (CandidateSignupStatus.Created, row.TenantId)
+                : (CandidateSignupStatus.PublicJobsDisabled, null);
+        }
+
+        var tenantIds = (await connection.QueryAsync<Guid>(new CommandDefinition(
+            """
+            SELECT tenant.TenantId
+            FROM dbo.Tenants AS tenant
+            LEFT JOIN dbo.TenantRecruitmentSettings AS settings
+                ON settings.TenantId = tenant.TenantId
+            WHERE tenant.Status = N'Active'
+              AND COALESCE(settings.PublicJobsEnabled, CAST(1 AS BIT)) = CAST(1 AS BIT);
+            """,
+            transaction: transaction,
+            cancellationToken: cancellationToken))).ToArray();
+
+        return tenantIds.Length == 1
+            ? (CandidateSignupStatus.Created, tenantIds[0])
+            : (CandidateSignupStatus.TenantRequired, null);
+    }
+
+    private static string BuildInitials(string displayName)
+    {
+        var initials = string.Concat(displayName
+            .Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Select(part => part[0]))
+            .ToUpperInvariant();
+        return string.IsNullOrWhiteSpace(initials) ? "TP" : Truncate(initials, 8);
+    }
+
+    private static string Truncate(string value, int maxLength)
+    {
+        return value.Length <= maxLength ? value : value[..maxLength];
+    }
+
+    private sealed record CandidateSignupJobTenantRow(
+        Guid TenantId,
+        string Status,
+        DateTime? PublishedAtUtc,
+        bool PublicJobsEnabled);
+
+    private sealed record CandidateSignupSlugTenantRow(
+        Guid TenantId,
+        string Status,
+        bool PublicJobsEnabled);
 
     private sealed record RolePermissionRow(
         Guid RoleId,

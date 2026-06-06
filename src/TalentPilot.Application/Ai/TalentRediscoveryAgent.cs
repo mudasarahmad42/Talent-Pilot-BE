@@ -285,22 +285,53 @@ public sealed class TalentRediscoveryAgent : ITalentRediscoveryAgent
         string model,
         CancellationToken cancellationToken)
     {
-        var response = await _modelProvider.GenerateAsync(
-            new AiPromptRequest(
-                AgentId,
-                BuildExplanationPrompt(context, scored),
-                new Dictionary<string, string>
-                {
-                    ["model"] = model,
-                    ["output"] = "json"
-                }),
-            cancellationToken);
-
-        if (string.IsNullOrWhiteSpace(response))
+        var fallbackExplanations = BuildFallbackExplanations(context, scored);
+        try
         {
-            throw new InvalidOperationException("The Talent Rediscovery Agent returned an empty explanation response.");
+            var response = await _modelProvider.GenerateAsync(
+                new AiPromptRequest(
+                    AgentId,
+                    BuildExplanationPrompt(context, scored),
+                    new Dictionary<string, string>
+                    {
+                        ["model"] = model,
+                        ["output"] = "json"
+                    }),
+                cancellationToken);
+
+            var aiExplanations = ParseAiExplanations(response);
+            if (aiExplanations.Count > 0)
+            {
+                return MergeExplanations(scored, fallbackExplanations, aiExplanations);
+            }
+        }
+        catch
+        {
+            // Candidate ranking is deterministic. A malformed LLM explanation must not block rediscovery.
         }
 
+        return fallbackExplanations;
+    }
+
+    private static IReadOnlyDictionary<Guid, string> ParseAiExplanations(string? response)
+    {
+        if (string.IsNullOrWhiteSpace(response))
+        {
+            return new Dictionary<Guid, string>();
+        }
+
+        var normalized = NormalizeJsonResponse(response);
+        using var document = JsonDocument.Parse(normalized);
+        var items = ReadExplanationItems(document.RootElement);
+
+        return items
+            .Where(item => Guid.TryParse(item.CandidateId, out _) && !string.IsNullOrWhiteSpace(item.Explanation))
+            .GroupBy(item => Guid.Parse(item.CandidateId), item => item.Explanation.Trim())
+            .ToDictionary(group => group.Key, group => group.First());
+    }
+
+    private static string NormalizeJsonResponse(string response)
+    {
         var normalized = response.Trim();
         if (normalized.StartsWith("```", StringComparison.Ordinal))
         {
@@ -310,19 +341,137 @@ public sealed class TalentRediscoveryAgent : ITalentRediscoveryAgent
                 .Trim();
         }
 
-        var items = JsonSerializer.Deserialize<AiExplanationItem[]>(normalized, JsonOptions) ?? [];
-        var explanations = items
-            .Where(item => Guid.TryParse(item.CandidateId, out _) && !string.IsNullOrWhiteSpace(item.Explanation))
-            .ToDictionary(
-                item => Guid.Parse(item.CandidateId),
-                item => item.Explanation.Trim());
-
-        if (explanations.Count == 0 && scored.Count > 0)
+        if (normalized.StartsWith("[", StringComparison.Ordinal) ||
+            normalized.StartsWith("{", StringComparison.Ordinal))
         {
-            throw new InvalidOperationException("The Talent Rediscovery Agent did not return any usable LLM explanations.");
+            return normalized;
         }
 
-        return explanations;
+        return ExtractJsonPayload(normalized);
+    }
+
+    private static string ExtractJsonPayload(string normalized)
+    {
+        var arrayStart = normalized.IndexOf('[', StringComparison.Ordinal);
+        var objectStart = normalized.IndexOf('{', StringComparison.Ordinal);
+        var useArray = arrayStart >= 0 && (objectStart < 0 || arrayStart < objectStart);
+        var start = useArray ? arrayStart : objectStart;
+        if (start < 0)
+        {
+            return normalized;
+        }
+
+        var endToken = useArray ? ']' : '}';
+        var end = normalized.LastIndexOf(endToken);
+        return end > start ? normalized[start..(end + 1)].Trim() : normalized;
+    }
+
+    private static IReadOnlyList<AiExplanationItem> ReadExplanationItems(JsonElement root)
+    {
+        if (root.ValueKind == JsonValueKind.Array)
+        {
+            return root.Deserialize<AiExplanationItem[]>(JsonOptions) ?? [];
+        }
+
+        if (root.ValueKind != JsonValueKind.Object)
+        {
+            return [];
+        }
+
+        if (TryReadSingleExplanation(root, out var single))
+        {
+            return [single];
+        }
+
+        foreach (var propertyName in new[] { "explanations", "items", "matches", "candidates", "rankings", "results" })
+        {
+            if (root.TryGetProperty(propertyName, out var value) && value.ValueKind == JsonValueKind.Array)
+            {
+                return value.Deserialize<AiExplanationItem[]>(JsonOptions) ?? [];
+            }
+        }
+
+        var propertyMapped = new List<AiExplanationItem>();
+        foreach (var property in root.EnumerateObject())
+        {
+            if (Guid.TryParse(property.Name, out _) && property.Value.ValueKind == JsonValueKind.String)
+            {
+                propertyMapped.Add(new AiExplanationItem(property.Name, property.Value.GetString() ?? string.Empty));
+            }
+        }
+
+        return propertyMapped;
+    }
+
+    private static bool TryReadSingleExplanation(JsonElement root, out AiExplanationItem item)
+    {
+        item = new AiExplanationItem(string.Empty, string.Empty);
+        if (!TryReadString(root, "candidateId", out var candidateId) ||
+            !TryReadString(root, "explanation", out var explanation))
+        {
+            return false;
+        }
+
+        item = new AiExplanationItem(candidateId, explanation);
+        return true;
+    }
+
+    private static bool TryReadString(JsonElement root, string propertyName, out string value)
+    {
+        value = string.Empty;
+        if (!root.TryGetProperty(propertyName, out var property) || property.ValueKind != JsonValueKind.String)
+        {
+            return false;
+        }
+
+        value = property.GetString() ?? string.Empty;
+        return !string.IsNullOrWhiteSpace(value);
+    }
+
+    private static IReadOnlyDictionary<Guid, string> MergeExplanations(
+        IReadOnlyList<ScoredCandidate> scored,
+        IReadOnlyDictionary<Guid, string> fallbackExplanations,
+        IReadOnlyDictionary<Guid, string> aiExplanations)
+    {
+        return scored.ToDictionary(
+            item => item.Candidate.CandidateId,
+            item => aiExplanations.TryGetValue(item.Candidate.CandidateId, out var explanation)
+                ? explanation
+                : fallbackExplanations[item.Candidate.CandidateId]);
+    }
+
+    private static IReadOnlyDictionary<Guid, string> BuildFallbackExplanations(
+        OperationsTalentRediscoveryContext context,
+        IReadOnlyList<ScoredCandidate> scored)
+    {
+        return scored.ToDictionary(
+            item => item.Candidate.CandidateId,
+            item => BuildFallbackExplanation(context, item));
+    }
+
+    private static string BuildFallbackExplanation(
+        OperationsTalentRediscoveryContext context,
+        ScoredCandidate scored)
+    {
+        var candidate = scored.Candidate;
+        var skillSummary = TechnologySkillMatcher.BuildSkillSummary(scored.SkillAssessment);
+        var directEvidenceWarning = TechnologySkillMatcher.BuildDirectEvidenceWarning(scored.SkillAssessment);
+        var history = candidate.ApplicationEvidence.Count == 0
+            ? "no previous application evidence is recorded"
+            : $"previous applications include {string.Join(", ", candidate.ApplicationEvidence.Take(2).Select(application => $"{application.RequestCode} {application.JobTitle} ({application.Status})"))}";
+        var interviewEvidence = candidate.InterviewEvidence.Count == 0
+            ? "no prior interview feedback is available"
+            : $"prior interview evidence includes {string.Join(", ", candidate.InterviewEvidence.Take(2).Select(interview => $"{interview.RoundName} {interview.Recommendation ?? interview.Status}"))}";
+        var requirementTitle = context.JobPost?.Title ?? context.JobRequest.Title;
+
+        return string.Join(' ', new[]
+        {
+            directEvidenceWarning,
+            $"{candidate.DisplayName} is ranked for {requirementTitle} from deterministic tenant history with score {scored.Score:0.##}: {skillSummary}",
+            $"{history}, and {interviewEvidence}.",
+            scored.SkillAssessment.HumanReviewNotes,
+            "Recruiter should validate availability and fit before any next step."
+        }.Where(part => !string.IsNullOrWhiteSpace(part)));
     }
 
     private static ScoredCandidate ScoreCandidate(
@@ -330,10 +479,12 @@ public sealed class TalentRediscoveryAgent : ITalentRediscoveryAgent
         OperationsRediscoveryCandidate candidate,
         IReadOnlyDictionary<Guid, decimal> vectorScores)
     {
-        var requestedSkillCount = candidate.MatchedSkills.Count + candidate.MissingSkills.Count;
-        var skillCoverage = requestedSkillCount == 0
-            ? 0m
-            : (decimal)candidate.MatchedSkills.Count / requestedSkillCount;
+        var requiredSkills = context.RequiredSkills.Count == 0 ? context.JobRequest.Skills : context.RequiredSkills;
+        var skillAssessment = TechnologySkillMatcher.Assess(
+            requiredSkills,
+            candidate.Skills,
+            BuildCandidateSkillEvidenceText(candidate));
+        var skillCoverage = skillAssessment.OverallScore;
         var vectorSimilarity = vectorScores.TryGetValue(candidate.CandidateId, out var vectorScore)
             ? Clamp(vectorScore, 0, 1)
             : 0m;
@@ -368,7 +519,8 @@ public sealed class TalentRediscoveryAgent : ITalentRediscoveryAgent
             decimal.Round(vectorSimilarity, 4),
             decimal.Round(historicalOutcomeFit, 4),
             decimal.Round(similarRoleFit, 4),
-            decimal.Round(experienceAvailabilityFit, 4));
+            decimal.Round(experienceAvailabilityFit, 4),
+            skillAssessment);
     }
 
     private static TalentRediscoveryRankedCandidate ToRankedCandidate(
@@ -378,7 +530,7 @@ public sealed class TalentRediscoveryAgent : ITalentRediscoveryAgent
     {
         var strengths = BuildStrengths(scored);
         var gaps = BuildGaps(scored);
-        var explanation = RequiredAiExplanation(aiExplanations, scored.Candidate.CandidateId, scored.Candidate.DisplayName);
+        var explanation = GuardExplanation(scored, RequiredAiExplanation(aiExplanations, scored.Candidate.CandidateId, scored.Candidate.DisplayName));
 
         return new TalentRediscoveryRankedCandidate(
             scored.Candidate.CandidateId,
@@ -656,11 +808,7 @@ public sealed class TalentRediscoveryAgent : ITalentRediscoveryAgent
 
     private static IReadOnlyList<string> BuildStrengths(ScoredCandidate scored)
     {
-        var strengths = new List<string>();
-        if (scored.Candidate.MatchedSkills.Count > 0)
-        {
-            strengths.Add($"Matches {string.Join(", ", scored.Candidate.MatchedSkills)}.");
-        }
+        var strengths = new List<string>(TechnologySkillMatcher.BuildStrengthNotes(scored.SkillAssessment));
 
         if (scored.Candidate.ExperienceYears.HasValue)
         {
@@ -687,16 +835,7 @@ public sealed class TalentRediscoveryAgent : ITalentRediscoveryAgent
 
     private static IReadOnlyList<string> BuildGaps(ScoredCandidate scored)
     {
-        var gaps = new List<string>();
-        if (scored.SkillCoverage == 0m)
-        {
-            gaps.Add("Direct skill coverage is 0%, so this candidate should remain low priority unless a recruiter manually verifies role relevance.");
-        }
-
-        if (scored.Candidate.MissingSkills.Count > 0)
-        {
-            gaps.AddRange(scored.Candidate.MissingSkills.Select(skill => $"Missing requested skill evidence: {skill}."));
-        }
+        var gaps = new List<string>(TechnologySkillMatcher.BuildGapNotes(scored.SkillAssessment));
 
         if (scored.Candidate.InterviewEvidence.Count == 0)
         {
@@ -726,6 +865,19 @@ public sealed class TalentRediscoveryAgent : ITalentRediscoveryAgent
             $"The Talent Rediscovery Agent did not return an LLM explanation for {displayName}.");
     }
 
+    private static string GuardExplanation(ScoredCandidate scored, string explanation)
+    {
+        var warning = TechnologySkillMatcher.BuildDirectEvidenceWarning(scored.SkillAssessment);
+        var trimmed = explanation.Trim();
+        if (string.IsNullOrWhiteSpace(warning) ||
+            trimmed.Contains(warning, StringComparison.OrdinalIgnoreCase))
+        {
+            return trimmed;
+        }
+
+        return $"{warning} {trimmed}";
+    }
+
     private static string BuildRunInputText(OperationsTalentRediscoveryContext context)
     {
         var builder = new StringBuilder();
@@ -749,6 +901,7 @@ public sealed class TalentRediscoveryAgent : ITalentRediscoveryAgent
             $"Requirement source: {context.RequirementSource}",
             $"Title: {SafeField(title)}",
             $"Client: {SafeField(context.JobRequest.Client)}",
+            $"Client context: {SafeField(context.JobRequest.ClientContext)}",
             $"Department: {SafeField(context.JobRequest.Department)}",
             $"Location: {SafeField(jobPost?.Location ?? context.JobRequest.Location)}",
             $"Experience: {FormatRange(context.ExperienceMinYears, context.ExperienceMaxYears)}",
@@ -778,6 +931,18 @@ public sealed class TalentRediscoveryAgent : ITalentRediscoveryAgent
             $"Skills: {string.Join(", ", candidate.Skills)}",
             $"Applications: {applicationText}",
             $"Interviews: {interviewText}"
+        });
+    }
+
+    private static string BuildCandidateSkillEvidenceText(OperationsRediscoveryCandidate candidate)
+    {
+        return string.Join('\n', new[]
+        {
+            $"Candidate: {candidate.DisplayName}",
+            $"Designation: {SafeField(candidate.CurrentDesignation)}",
+            $"Company: {SafeField(candidate.CurrentCompany)}",
+            $"Experience: {FormatYears(candidate.ExperienceYears)}",
+            $"Skills: {string.Join(", ", candidate.Skills)}"
         });
     }
 
@@ -833,7 +998,9 @@ public sealed class TalentRediscoveryAgent : ITalentRediscoveryAgent
         builder.AppendLine("You are the Talent Pilot Talent Rediscovery agent.");
         builder.AppendLine("Write concise recruiter-facing explanations for ranked warm candidates.");
         builder.AppendLine("Use only the supplied evidence. Do not search the web. Do not mention private identifiers beyond names already supplied. Do not decide whether to contact, invite, reject, or move a candidate.");
-        builder.AppendLine("Return JSON only: [{\"candidateId\":\"guid\",\"explanation\":\"plain text\"}].");
+        builder.AppendLine("Do not treat broad labels such as backend engineer, sales, HR, finance, recruiter, project manager, marketing, customer support, QA, analyst, manager, or developer as exact matches. Explain exact, adjacent, transferable, broad, and missing requirements using the supplied skill and role-domain assessment.");
+        builder.AppendLine("When a required language, framework, platform, department sub-domain, tool, process, ownership level, or market/domain context is not directly evidenced, say that clearly before discussing transferable experience or warm-history signals.");
+        builder.AppendLine("Return a raw JSON array only, with no markdown, prose, or wrapper object. The top-level value must be: [{\"candidateId\":\"guid\",\"explanation\":\"plain text\"}].");
         builder.AppendLine();
         builder.AppendLine("Requirement:");
         builder.AppendLine(BuildRequirementProfileText(context));
@@ -849,6 +1016,8 @@ public sealed class TalentRediscoveryAgent : ITalentRediscoveryAgent
             builder.AppendLine($"Skills matched: {string.Join(", ", candidate.MatchedSkills.DefaultIfEmpty("None"))}");
             builder.AppendLine($"Skill gaps: {string.Join(", ", candidate.MissingSkills.DefaultIfEmpty("None"))}");
             builder.AppendLine($"Scores: overall {scoredCandidate.Score}, skill {FormatPercent(scoredCandidate.SkillCoverage)}, vector {FormatPercent(scoredCandidate.VectorSimilarity)}, history {FormatPercent(scoredCandidate.HistoricalOutcomeFit)}, similar role {FormatPercent(scoredCandidate.SimilarRoleFit)}, experience availability {FormatPercent(scoredCandidate.ExperienceAvailabilityFit)}");
+            builder.AppendLine("Skill and role-domain assessment:");
+            builder.AppendLine(TechnologySkillMatcher.FormatAssessmentForPrompt(scoredCandidate.SkillAssessment));
             builder.AppendLine($"Applications: {string.Join(" | ", candidate.ApplicationEvidence.Take(4).Select(application => $"{application.RequestCode} {application.JobTitle} {application.Status} {application.FinalDecisionReason}"))}");
             builder.AppendLine($"Interview evidence: {string.Join(" | ", candidate.InterviewEvidence.Take(4).Select(interview => $"{interview.RoundName} {interview.Status} {interview.Recommendation} scores {interview.TechnicalScore}/{interview.CommunicationScore}/{interview.CultureScore} {interview.FeedbackSummary}"))}");
             builder.AppendLine();
@@ -968,7 +1137,8 @@ public sealed class TalentRediscoveryAgent : ITalentRediscoveryAgent
         decimal VectorSimilarity,
         decimal HistoricalOutcomeFit,
         decimal SimilarRoleFit,
-        decimal ExperienceAvailabilityFit);
+        decimal ExperienceAvailabilityFit,
+        SkillMatchAssessment SkillAssessment);
 
     private sealed record VectorScoreResult(
         IReadOnlyDictionary<Guid, decimal> Scores,

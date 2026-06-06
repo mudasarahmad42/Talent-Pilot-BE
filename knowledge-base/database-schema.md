@@ -76,7 +76,7 @@ Important boundary rules:
   - Supports PMO bench matching and internal resource recommendations.
 - Job request lifecycle
   - `JobRequests`, `JobRequestSkills`, `JobRequestEmployeeReferrals`, `JobRequestFulfillments`
-  - Tracks the resource need, required positions, internal referrals, external-candidate joins, and fulfillment.
+  - Tracks the resource need, client name, optional `ClientContext`, required positions, internal referrals, external-candidate joins, and fulfillment. `ClientContext` stores tenant-provided industry/domain/product context as plain evidence for AI drafting, matching, rediscovery, and sourcing support.
 - Candidate sourcing and application
   - `CandidateSourceLabels`, `Candidates`, `CandidateSkills`, `CandidateProspects`, `CandidateProspectJobRequests`, `CandidateInvitations`, `JobApplications`, `JobApplicationStatusHistory`
   - Keeps sourced prospects, registered candidates, job-specific applications, invite token hashes (`CandidateInvitations.TokenHash`), re-apply history, and hired-candidate-to-employee traceability.

@@ -1,5 +1,101 @@
 # Codex Contributor Log
 
+## 2026-06-06 - Branch: mudasar-ahmad
+
+- Commit summary: pending Online Headhunting search tuning.
+- Purpose: improve AI Headhunting recall for roles like Senior Python Developer in Lahore by generating strict plus broader source queries, preserving primary role skills in GitHub search, and allowing unknown-location profiles when they came from a location-constrained search query while still rejecting explicit non-target locations.
+- Files touched: `src/TalentPilot.Application/Ai/OnlineHeadhuntingAgent.cs`, `src/TalentPilot.Infrastructure/Ai/GitHubCandidateSearchProvider.cs`, `tests/TalentPilot.Tests/Ai/OnlineHeadhuntingAgentTests.cs`, contributor log.
+- Endpoints changed: no.
+- Schema changed: no.
+- Seed/stored procedures changed: no.
+- Tests run: `dotnet test tests\TalentPilot.Tests\TalentPilot.Tests.csproj --no-restore --filter OnlineHeadhuntingAgentTests` passed with 7 tests; full `dotnet test tests\TalentPilot.Tests\TalentPilot.Tests.csproj --no-restore` passed with 130 tests.
+- Known risks: existing saved no-result runs remain unchanged until the recruiter runs Online Headhunting again; provider API quotas and credentials still control live search availability.
+- AI assistance: Codex implemented and reviewed the change.
+
+## 2026-06-06 - Branch: mudasar-ahmad
+
+- Commit summary: pending department-aware AI requirement matching.
+- Purpose: extend the centralized exact/adjacent/transferable/broad/missing matcher beyond engineering so agents evaluate Sales, Presales, HR/Recruitment, Finance, Marketing, Customer Success, QA, Project/Product, DevOps/Cloud, and Data/BI sub-domains without inflating broad department labels.
+- Files touched: `src/TalentPilot.Application/Ai/TechnologySkillMatcher.cs`, bench/applicant/rediscovery/drafter/parser/interview AI prompt text, `tests/TalentPilot.Tests/Ai/TechnologySkillMatcherTests.cs`, contributor log.
+- Endpoints changed: no.
+- Schema changed: no.
+- Seed/stored procedures changed: no.
+- Tests run: `dotnet test tests\TalentPilot.Tests\TalentPilot.Tests.csproj --no-restore --filter TechnologySkillMatcherTests` passed with 19 tests; full `dotnet test tests\TalentPilot.Tests\TalentPilot.Tests.csproj --no-restore` passed with 129 tests.
+- Known risks: detailed requirement-level assessments remain runtime-derived and folded into existing agent explanation fields; no persisted department-fit assessment schema was added in this pass.
+- AI assistance: Codex implemented and reviewed the change.
+
+## 2026-06-06 - Branch: mudasar-ahmad
+
+- Commit summary: pending technology-specific AI skill matching.
+- Purpose: centralize exact/adjacent/transferable/broad/missing skill assessment so AI agents stop inflating broad backend/frontend labels and clearly warn when required technologies such as Python are not directly evidenced.
+- Files touched: `src/TalentPilot.Application/Ai/TechnologySkillMatcher.cs`, bench/applicant/rediscovery/online/drafter/parser/interview AI agents, `src/TalentPilot.Infrastructure/Persistence/Repositories/DapperOperationsRepository.cs`, `tests/TalentPilot.Tests/Ai/TechnologySkillMatcherTests.cs`, agent tests, contributor log.
+- Endpoints changed: no.
+- Schema changed: no.
+- Seed/stored procedures changed: no.
+- Tests run: `dotnet test tests\TalentPilot.Tests\TalentPilot.Tests.csproj --no-restore` passed with 118 tests.
+- Known risks: detailed skill assessment is currently computed at runtime and folded into existing agent response fields; no persisted per-skill assessment schema was added in this pass.
+- AI assistance: Codex implemented and reviewed the change.
+
+## 2026-06-06 - Branch: mudasar-ahmad
+
+- Commit summary: pending talent rediscovery LLM JSON fallback.
+- Purpose: keep Talent Rediscovery ranking available when the LLM returns wrapped, prose-prefixed, partial, empty, or malformed explanation JSON; the prompt now requires a raw top-level JSON array and the agent falls back to deterministic recruiter-facing explanations when needed.
+- Files touched: `src/TalentPilot.Application/Ai/TalentRediscoveryAgent.cs`, `tests/TalentPilot.Tests/Ai/TalentRediscoveryAgentTests.cs`, contributor log.
+- Endpoints changed: no.
+- Schema changed: no.
+- Seed/stored procedures changed: no.
+- Tests run: `dotnet test tests\TalentPilot.Tests\TalentPilot.Tests.csproj --filter TalentRediscoveryAgentTests` passed with 9 tests.
+- Known risks: fallback explanations are deterministic summaries from tenant evidence, so they may be less nuanced than a successful LLM explanation but will not block recruiter sourcing.
+- AI assistance: Codex implemented and reviewed the change.
+
+## 2026-06-06 - Branch: mudasar-ahmad
+
+- Commit summary: pending PMO referral answer clarity.
+- Purpose: make Request Copilot answer PMO Presales referral questions with a clear stance, especially when the same evidence shows missing required skills; contradictory saved answers now say not to refer yet.
+- Files touched: `src/TalentPilot.Application/AiAssistant/RagPromptBuilder.cs`, `src/TalentPilot.Application/AiAssistant/AiAssistantService.cs`, `src/TalentPilot.Application/AiAssistant/RagAnswerSanitizer.cs`, `tests/TalentPilot.Tests/AiAssistant/RagPromptBuilderTests.cs`, `scripts/migrations/040_clarify_pmo_presales_referral_answer.sql`, contributor log.
+- Endpoints changed: no.
+- Schema changed: no schema shape change; added idempotent data migration to clarify existing saved PMO assistant answers.
+- Seed/stored procedures changed: no seed or stored procedure changes.
+- Tests run: `dotnet test tests\TalentPilot.Tests\TalentPilot.Tests.csproj --filter "RagPromptBuilderTests|RagCitationUsageTests|KnowledgeIndexingServiceTests"` passed with 12 tests; database script runner completed successfully; direct DB check confirmed zero old `Refer Zain Javaid...` answers and one corrected `Do not refer...` answer.
+- Known risks: The assistant remains decision support; PMO still owns the actual workflow action.
+- AI assistance: Codex implemented and reviewed the change.
+
+## 2026-06-06 - Branch: mudasar-ahmad
+
+- Commit summary: pending RAG answer source-label cleanup.
+- Purpose: stop conversational assistant answers from echoing internal evidence metadata such as `(BenchMatch, BenchMatchLog)` or `(BenchEmployee, BenchEmployeeProfile)` in natural-language replies.
+- Files touched: `src/TalentPilot.Application/AiAssistant/RagPromptBuilder.cs`, `src/TalentPilot.Application/AiAssistant/AiAssistantService.cs`, `src/TalentPilot.Application/AiAssistant/RagAnswerSanitizer.cs`, `tests/TalentPilot.Tests/AiAssistant/RagPromptBuilderTests.cs`, `scripts/migrations/039_sanitize_rag_technical_source_labels.sql`, contributor log.
+- Endpoints changed: no.
+- Schema changed: no schema shape change; added idempotent data migration to clean existing saved assistant messages.
+- Seed/stored procedures changed: no seed or stored procedure changes.
+- Tests run: `dotnet test tests\TalentPilot.Tests\TalentPilot.Tests.csproj --filter "RagPromptBuilderTests|RagCitationUsageTests|KnowledgeIndexingServiceTests"` passed with 10 tests; database script runner completed successfully; direct DB check confirmed zero saved assistant messages with the internal tuple labels.
+- Known risks: reference chips and evidence previews still retain structured metadata for source inspection; only the conversational answer text is sanitized.
+- AI assistance: Codex implemented and reviewed the change.
+
+## 2026-06-06 - Branch: mudasar-ahmad
+
+- Commit summary: pending bench match rationale correction.
+- Purpose: prevent stale PMO copilot evidence from claiming that Zain Javaid's 6.8 years of experience is less than a 3+ years requirement; saved bench-match evidence now uses the guarded Java-profile/required-skill-gap rationale.
+- Files touched: `src/TalentPilot.Application/Ai/BenchMatchExplanationGuard.cs`, `src/TalentPilot.Application/Ai/BenchMatchingAgent.cs`, `src/TalentPilot.Application/AiAssistant/KnowledgeIndexingService.cs`, `tests/TalentPilot.Tests/AiAssistant/KnowledgeIndexingServiceTests.cs`, `scripts/migrations/038_sanitize_bench_match_experience_rationale.sql`, contributor log.
+- Endpoints changed: no.
+- Schema changed: no schema shape change; added idempotent data migration to sanitize existing bench-matching recommendations, knowledge chunks, and saved citation excerpts.
+- Seed/stored procedures changed: no seed or stored procedure changes.
+- Tests run: `dotnet test tests\TalentPilot.Tests\TalentPilot.Tests.csproj --filter "BenchMatchingAgentTests|KnowledgeIndexingServiceTests"` passed with 10 tests; database script runner completed successfully; direct SQL counters confirmed zero stale recommendation, chunk, and citation rows.
+- Known risks: existing browser sessions may need a page reload to display the corrected saved citation excerpt.
+- AI assistance: Codex implemented and reviewed the change.
+
+## 2026-06-06 - Branch: mudasar-ahmad
+
+- Commit summary: pending job request client context persistence and AI prompts.
+- Purpose: persist optional client context on job requests and pass it into job-description drafting, request embeddings, bench matching, applicant ranking, talent rediscovery, and online headhunting enrichment so AI agents can use tenant-provided industry/client signals.
+- Files touched: operations DTO/service/repository, AI contracts and agents, SQL schema/view/migration scripts, AI tests, knowledge-base docs, contributor log.
+- Endpoints changed: existing job request create/list/detail responses and draft job description input now include optional `clientContext`.
+- Schema changed: added nullable `JobRequests.ClientContext`, updated `vw_JobRequestDashboard`, and added idempotent migration `037_add_job_request_client_context.sql`.
+- Seed/stored procedures changed: no seed or stored procedure changes.
+- Tests run: targeted `dotnet test tests\TalentPilot.Tests\TalentPilot.Tests.csproj --filter "JobDescriptionDraftingAgentTests|BenchMatchingAgentTests|TalentRediscoveryAgentTests|ApplicantRankingAgentTests|OnlineHeadhuntingAgentTests|KnowledgeIndexingServiceTests"` passed with 27 tests; database script runner completed successfully against the local Talent Pilot connection; API `/health` returned 200 after restart.
+- Known risks: client context is not an automatic external web lookup; agents use it as supplied context unless the text explicitly indicates live/recent web research is needed.
+- AI assistance: Codex implemented and reviewed the change.
+
 ## 2026-06-04 - Branch: mudasar-ahmad
 
 - Commit summary: pending AI interview question recommender.

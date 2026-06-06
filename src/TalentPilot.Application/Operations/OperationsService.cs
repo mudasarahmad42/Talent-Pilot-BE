@@ -351,9 +351,24 @@ public sealed class OperationsService : IOperationsService
         return Result<OperationsJobPublishing>.Success(publishing);
     }
 
-    public async Task<Result<PortalJobPostList>> ListPortalJobPostsAsync(CancellationToken cancellationToken)
+    public async Task<Result<PublicPortalContext>> GetPublicPortalContextAsync(
+        PublicPortalContextQuery query,
+        CancellationToken cancellationToken)
     {
-        var posts = await _repository.ListPortalJobPostsAsync(cancellationToken);
+        var context = await _repository.GetPublicPortalContextAsync(query, cancellationToken);
+        return context is null
+            ? Result<PublicPortalContext>.Failure(
+                "portal_context.not_found",
+                "Candidate portal tenant could not be resolved.")
+            : Result<PublicPortalContext>.Success(context);
+    }
+
+    public async Task<Result<PortalJobPostList>> ListPortalJobPostsAsync(
+        string? tenantSlug,
+        CancellationToken cancellationToken)
+    {
+        var normalizedTenantSlug = string.IsNullOrWhiteSpace(tenantSlug) ? null : tenantSlug.Trim();
+        var posts = await _repository.ListPortalJobPostsAsync(normalizedTenantSlug, cancellationToken);
         return Result<PortalJobPostList>.Success(posts);
     }
 
@@ -455,11 +470,36 @@ public sealed class OperationsService : IOperationsService
             input,
             cancellationToken);
 
-        return result is null
-            ? Result<PortalJobApplicationResult>.Failure(
+        if (result is null)
+        {
+            return Result<PortalJobApplicationResult>.Failure(
                 "portal_application.not_found",
-                "Published job post was not found for this candidate tenant.")
-            : Result<PortalJobApplicationResult>.Success(result);
+                "Published job post was not found for this candidate tenant.");
+        }
+
+        var copiedDocument = await _repository.CopyLatestProfileDocumentToApplicationAsync(
+            _currentUser.TenantId,
+            _currentUser.UserId,
+            result.JobApplicationId,
+            cancellationToken);
+        if (copiedDocument is not null)
+        {
+            await TryUpsertApplicationEvidenceVectorAsync(
+                _currentUser.TenantId,
+                result.JobApplicationId,
+                copiedDocument.DocumentType,
+                copiedDocument.FileName,
+                new ApplicationDocumentTextExtractionResult(
+                    copiedDocument.ExtractionStatus,
+                    copiedDocument.ExtractedText,
+                    copiedDocument.ExtractedTextHashSha256,
+                    copiedDocument.ParserVersion ?? DocxApplicationDocumentTextExtractor.CurrentParserVersion,
+                    copiedDocument.ExtractedAt,
+                    copiedDocument.ExtractionError),
+                cancellationToken);
+        }
+
+        return Result<PortalJobApplicationResult>.Success(result);
     }
 
     public async Task<Result<PortalUploadApplicationDocumentResult>> UploadPortalApplicationDocumentAsync(
@@ -474,29 +514,16 @@ public sealed class OperationsService : IOperationsService
         if (!CanUseCandidatePortal(roleCodes))
         {
             return Result<PortalUploadApplicationDocumentResult>.Failure(
-                "portal_application_document.forbidden",
-                "Only candidate portal users can upload application documents.");
+            "portal_application_document.forbidden",
+            "Only candidate portal users can upload application documents.");
         }
 
-        if (content.Length == 0)
+        var validation = ValidatePortalDocumentUpload(fileName, content, "portal_application_document");
+        if (validation is not null)
         {
             return Result<PortalUploadApplicationDocumentResult>.Failure(
-                "portal_application_document.empty_file",
-                "Uploaded document is empty.");
-        }
-
-        if (content.Length > 5_000_000)
-        {
-            return Result<PortalUploadApplicationDocumentResult>.Failure(
-                "portal_application_document.file_too_large",
-                "Application documents can be up to 5 MB for MVP.");
-        }
-
-        if (!string.Equals(Path.GetExtension(fileName), ".docx", StringComparison.OrdinalIgnoreCase))
-        {
-            return Result<PortalUploadApplicationDocumentResult>.Failure(
-                "portal_application_document.docx_required",
-                "Upload a DOCX document for MVP.");
+                validation.Value.Code,
+                validation.Value.Message);
         }
 
         var context = await _repository.GetPortalApplicationDocumentUploadContextAsync(
@@ -558,6 +585,126 @@ public sealed class OperationsService : IOperationsService
                 "portal_application_document.not_saved",
                 "Application document could not be saved.")
             : Result<PortalUploadApplicationDocumentResult>.Success(new PortalUploadApplicationDocumentResult(document));
+    }
+
+    public async Task<Result<PortalUploadCandidateProfileDocumentResult>> UploadPortalCandidateProfileDocumentAsync(
+        string documentType,
+        string fileName,
+        string contentType,
+        byte[] content,
+        CancellationToken cancellationToken)
+    {
+        var roleCodes = await _repository.GetActorRoleCodesAsync(_currentUser.TenantId, _currentUser.UserId, cancellationToken);
+        if (!CanUseCandidatePortal(roleCodes))
+        {
+            return Result<PortalUploadCandidateProfileDocumentResult>.Failure(
+                "portal_profile_document.forbidden",
+                "Only candidate portal users can upload profile documents.");
+        }
+
+        var validation = ValidatePortalDocumentUpload(fileName, content, "portal_profile_document");
+        if (validation is not null)
+        {
+            return Result<PortalUploadCandidateProfileDocumentResult>.Failure(
+                validation.Value.Code,
+                validation.Value.Message);
+        }
+
+        var context = await _repository.GetPortalCandidateProfileDocumentUploadContextAsync(
+            _currentUser.TenantId,
+            _currentUser.UserId,
+            cancellationToken);
+        if (context is null)
+        {
+            return Result<PortalUploadCandidateProfileDocumentResult>.Failure(
+                "portal_profile_document.not_found",
+                "Candidate profile identity was not found.");
+        }
+
+        var normalizedContentType = string.IsNullOrWhiteSpace(contentType)
+            ? "application/octet-stream"
+            : contentType;
+        var normalizedDocumentType = string.IsNullOrWhiteSpace(documentType)
+            ? "Resume"
+            : documentType.Trim();
+        var extraction = _documentTextExtractor.Extract(fileName, content);
+        var storedDocument = await _applicationDocumentStorage.SaveProfileAsync(
+            new StoreCandidateProfileDocumentRequest(
+                _currentUser.TenantId,
+                context.CandidateId,
+                fileName,
+                normalizedContentType,
+                content),
+            cancellationToken);
+
+        var document = await _repository.AddPortalCandidateProfileDocumentAsync(
+            _currentUser.TenantId,
+            _currentUser.UserId,
+            new PortalCandidateProfileDocumentMetadataInput(
+                normalizedDocumentType,
+                fileName,
+                normalizedContentType,
+                storedDocument.SizeBytes,
+                storedDocument.StorageProvider,
+                storedDocument.StorageKey,
+                storedDocument.StorageContainer,
+                storedDocument.ContentHashSha256,
+                extraction.Status,
+                extraction.ExtractedText,
+                extraction.ExtractedTextHashSha256,
+                extraction.ParserVersion,
+                extraction.ExtractedAtUtc,
+                extraction.Error),
+            cancellationToken);
+
+        return document is null
+            ? Result<PortalUploadCandidateProfileDocumentResult>.Failure(
+                "portal_profile_document.not_saved",
+                "Profile document could not be saved.")
+            : Result<PortalUploadCandidateProfileDocumentResult>.Success(new PortalUploadCandidateProfileDocumentResult(document));
+    }
+
+    public async Task<Result<PortalCandidateProfileDocumentDownload>> DownloadPortalCandidateProfileDocumentAsync(
+        Guid candidateProfileDocumentId,
+        CancellationToken cancellationToken)
+    {
+        var roleCodes = await _repository.GetActorRoleCodesAsync(_currentUser.TenantId, _currentUser.UserId, cancellationToken);
+        if (!CanUseCandidatePortal(roleCodes))
+        {
+            return Result<PortalCandidateProfileDocumentDownload>.Failure(
+                "portal_profile_document.forbidden",
+                "Only candidate portal users can download profile documents.");
+        }
+
+        var document = await _repository.GetPortalCandidateProfileDocumentAsync(
+            _currentUser.TenantId,
+            _currentUser.UserId,
+            candidateProfileDocumentId,
+            cancellationToken);
+        if (document is null)
+        {
+            return Result<PortalCandidateProfileDocumentDownload>.Failure(
+                "portal_profile_document.not_found",
+                "Profile document was not found.");
+        }
+
+        var content = await _applicationDocumentStorage.ReadAsync(
+            document.StorageProvider,
+            document.StorageKey,
+            document.StorageContainer,
+            cancellationToken);
+        if (content is null || content.Length == 0)
+        {
+            return Result<PortalCandidateProfileDocumentDownload>.Failure(
+                "portal_profile_document.unavailable",
+                "Profile document file is not available in storage.");
+        }
+
+        return Result<PortalCandidateProfileDocumentDownload>.Success(new PortalCandidateProfileDocumentDownload(
+            document.CandidateProfileDocumentId,
+            SanitizeDownloadFileName(document.FileName, document.DocumentType),
+            string.IsNullOrWhiteSpace(document.ContentType) ? "application/octet-stream" : document.ContentType,
+            content));
     }
 
     public async Task<Result<PortalMyApplications>> GetPortalMyApplicationsAsync(CancellationToken cancellationToken)
@@ -1013,6 +1160,7 @@ public sealed class OperationsService : IOperationsService
         var createValidationInput = new CreateOperationsJobRequestInput(
             input.Title,
             input.Client,
+            input.ClientContext,
             "AI draft validation placeholder",
             input.DepartmentId,
             input.LocationId,
@@ -1060,6 +1208,7 @@ public sealed class OperationsService : IOperationsService
                 new JobDescriptionDraftRequest(
                     input.Title,
                     input.Client,
+                    input.ClientContext,
                     department.Name,
                     location.Name,
                     skillNames,
@@ -2679,6 +2828,29 @@ public sealed class OperationsService : IOperationsService
         return roleCodes.Contains("Candidate");
     }
 
+    private static (string Code, string Message)? ValidatePortalDocumentUpload(
+        string fileName,
+        byte[] content,
+        string codePrefix)
+    {
+        if (content.Length == 0)
+        {
+            return ($"{codePrefix}.empty_file", "Uploaded document is empty.");
+        }
+
+        if (content.Length > 5_000_000)
+        {
+            return ($"{codePrefix}.file_too_large", "Resume documents can be up to 5 MB for MVP.");
+        }
+
+        if (!string.Equals(Path.GetExtension(fileName), ".docx", StringComparison.OrdinalIgnoreCase))
+        {
+            return ($"{codePrefix}.docx_required", "Upload a DOCX document for MVP.");
+        }
+
+        return null;
+    }
+
     private static string? NormalizeApplicationDecision(string? decision)
     {
         if (string.IsNullOrWhiteSpace(decision))
@@ -3353,6 +3525,7 @@ public sealed class OperationsService : IOperationsService
         {
             $"Title: {jobRequest.Title}",
             $"Client: {jobRequest.Client}",
+            $"Client context: {NullIfBlank(jobRequest.ClientContext) ?? "Not provided"}",
             $"Department: {jobRequest.Department}",
             $"Location: {jobRequest.Location}",
             $"Skills: {string.Join(", ", jobRequest.Skills)}",
