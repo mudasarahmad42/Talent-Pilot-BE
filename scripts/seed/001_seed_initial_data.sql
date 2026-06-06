@@ -282,19 +282,20 @@ WHEN NOT MATCHED THEN
 
 MERGE dbo.TenantAccessPolicies AS target
 USING (VALUES
-    ('88888888-8888-8888-8888-888888888801', @TenantId, N'MergeAllAssignedRoles', @PmoRoleId, N'TenantAdmins', @TenantAdminUserId)
-) AS source (TenantAccessPolicyId, TenantId, PermissionResolutionMode, BenchVisibilityRoleId, GroupFallbackMode, UpdatedByUserId)
+    ('88888888-8888-8888-8888-888888888801', @TenantId, N'MergeAllAssignedRoles', @PmoRoleId, N'TenantAdmins', N'FullAccess', @TenantAdminUserId)
+) AS source (TenantAccessPolicyId, TenantId, PermissionResolutionMode, BenchVisibilityRoleId, GroupFallbackMode, AdminCenterAccessMode, UpdatedByUserId)
 ON target.TenantId = source.TenantId
 WHEN MATCHED THEN
     UPDATE SET
         PermissionResolutionMode = source.PermissionResolutionMode,
         BenchVisibilityRoleId = source.BenchVisibilityRoleId,
         GroupFallbackMode = source.GroupFallbackMode,
+        AdminCenterAccessMode = source.AdminCenterAccessMode,
         UpdatedByUserId = source.UpdatedByUserId,
         UpdatedAtUtc = @Now
 WHEN NOT MATCHED THEN
-    INSERT (TenantAccessPolicyId, TenantId, PermissionResolutionMode, BenchVisibilityRoleId, GroupFallbackMode, UpdatedByUserId, CreatedAtUtc, UpdatedAtUtc)
-    VALUES (source.TenantAccessPolicyId, source.TenantId, source.PermissionResolutionMode, source.BenchVisibilityRoleId, source.GroupFallbackMode, source.UpdatedByUserId, @Now, @Now);
+    INSERT (TenantAccessPolicyId, TenantId, PermissionResolutionMode, BenchVisibilityRoleId, GroupFallbackMode, AdminCenterAccessMode, UpdatedByUserId, CreatedAtUtc, UpdatedAtUtc)
+    VALUES (source.TenantAccessPolicyId, source.TenantId, source.PermissionResolutionMode, source.BenchVisibilityRoleId, source.GroupFallbackMode, source.AdminCenterAccessMode, source.UpdatedByUserId, @Now, @Now);
 
 MERGE dbo.NotificationEvents AS target
 USING (VALUES

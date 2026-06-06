@@ -18,6 +18,7 @@ using TalentPilot.Application.Auth;
 using TalentPilot.Application.AiAssistant;
 using TalentPilot.Application.Calendar;
 using TalentPilot.Application.Documents;
+using TalentPilot.Application.Feedback;
 using TalentPilot.Application.Notifications;
 using TalentPilot.Application.Operations;
 using TalentPilot.Infrastructure.Ai;
@@ -34,13 +35,16 @@ namespace TalentPilot.Infrastructure.DependencyInjection;
 
 public static class InfrastructureServiceCollectionExtensions
 {
-    public static IServiceCollection AddInfrastructureServices(this IServiceCollection services, IConfiguration configuration)
+    public static IServiceCollection AddInfrastructureServices(
+        this IServiceCollection services,
+        IConfiguration configuration,
+        JwtOptions? jwtOptions = null)
     {
-        services.AddSingleton<IOptions<JwtOptions>>(Options.Create(new JwtOptions
+        services.AddSingleton<IOptions<JwtOptions>>(Options.Create(jwtOptions ?? new JwtOptions
         {
             Issuer = configuration["Jwt:Issuer"] ?? "TalentPilot",
             Audience = configuration["Jwt:Audience"] ?? "TalentPilot.Web",
-            SigningKey = configuration["Jwt:SigningKey"] ?? "development-only-change-this-key-before-production-32"
+            SigningKey = configuration["Jwt:SigningKey"] ?? string.Empty
         }));
 
         services.AddSingleton(new AuthRuntimeOptions
@@ -94,7 +98,9 @@ public static class InfrastructureServiceCollectionExtensions
         services.AddSingleton<IGitHubCandidateSearchProvider, GitHubCandidateSearchProvider>();
         services.AddNotificationEmailSenderServices(configuration);
 
-        services.AddSingleton<IPasswordVerifier, BCryptPasswordVerifier>();
+        services.AddSingleton<BCryptPasswordVerifier>();
+        services.AddSingleton<IPasswordVerifier>(provider => provider.GetRequiredService<BCryptPasswordVerifier>());
+        services.AddSingleton<IPasswordHasher>(provider => provider.GetRequiredService<BCryptPasswordVerifier>());
         services.AddSingleton<ITokenGenerator, SecureTokenGenerator>();
         services.AddSingleton<IJwtTokenService, JwtTokenService>();
 
@@ -110,7 +116,9 @@ public static class InfrastructureServiceCollectionExtensions
 
         if (UsesSqlServerIdentity(configuration))
         {
-            services.AddSingleton<IAdminTenantProfileRepository, DapperAdminTenantProfileRepository>();
+            services.AddSingleton<DapperAdminTenantProfileRepository>();
+            services.AddSingleton<IAdminTenantProfileRepository>(provider => provider.GetRequiredService<DapperAdminTenantProfileRepository>());
+            services.AddSingleton<IAdminCenterAccessPolicyReader>(provider => provider.GetRequiredService<DapperAdminTenantProfileRepository>());
             services.AddSingleton<IOperationsRepository, DapperOperationsRepository>();
             services.AddSingleton<IKnowledgeRepository, DapperKnowledgeRepository>();
             services.AddSingleton<DapperAdminCenterRepository>();
@@ -130,12 +138,14 @@ public static class InfrastructureServiceCollectionExtensions
             services.AddSingleton<INotificationEmailProviderSettingsResolver, DapperNotificationEmailProviderSettingsResolver>();
             services.AddSingleton<INotificationOutboxProcessor, DapperNotificationOutboxProcessor>();
             services.AddSingleton<INotificationWorkerStatusStore, DapperNotificationWorkerStatusStore>();
+            services.AddSingleton<IPublicFeedbackTenantResolver, DapperPublicFeedbackTenantResolver>();
             services.AddSingleton<IWebResearchQuotaStore, DapperWebResearchQuotaStore>();
             services.AddSingleton<IGoogleCalendarConnectionRepository, DapperGoogleCalendarConnectionRepository>();
         }
         else
         {
             services.AddSingleton<IAdminTenantProfileRepository>(provider => provider.GetRequiredService<InMemoryTalentPilotRepository>());
+            services.AddSingleton<IAdminCenterAccessPolicyReader>(provider => provider.GetRequiredService<InMemoryTalentPilotRepository>());
             services.AddSingleton<IOperationsRepository, DapperOperationsRepository>();
             services.AddSingleton<IKnowledgeRepository, DapperKnowledgeRepository>();
             services.AddSingleton<IAdminUsersRepository>(provider => provider.GetRequiredService<InMemoryTalentPilotRepository>());
@@ -154,6 +164,7 @@ public static class InfrastructureServiceCollectionExtensions
             services.AddSingleton<INotificationEmailProviderSettingsResolver>(provider => provider.GetRequiredService<InMemoryTalentPilotRepository>());
             services.AddSingleton<INotificationOutboxProcessor>(provider => provider.GetRequiredService<InMemoryTalentPilotRepository>());
             services.AddSingleton<INotificationWorkerStatusStore>(provider => provider.GetRequiredService<InMemoryTalentPilotRepository>());
+            services.AddSingleton<IPublicFeedbackTenantResolver>(provider => provider.GetRequiredService<InMemoryTalentPilotRepository>());
             services.AddSingleton<IWebResearchQuotaStore, InMemoryWebResearchQuotaStore>();
             services.AddSingleton<IGoogleCalendarConnectionRepository>(provider => provider.GetRequiredService<InMemoryTalentPilotRepository>());
         }

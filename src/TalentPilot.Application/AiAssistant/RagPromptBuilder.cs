@@ -4,7 +4,7 @@ namespace TalentPilot.Application.AiAssistant;
 
 public sealed class RagPromptBuilder : IRagPromptBuilder
 {
-    public const string CurrentPromptVersion = "rag-assistant-v5";
+    public const string CurrentPromptVersion = "rag-assistant-v7";
 
     public RagPrompt Build(RagPromptContext context)
     {
@@ -29,14 +29,19 @@ public sealed class RagPromptBuilder : IRagPromptBuilder
         builder.AppendLine("If the latest question is clearly unrelated to Talent Pilot, recruiting, hiring workflows, candidates, job requests, bench matching, interviews, decisions, configuration, or the provided context, do not answer the unrelated topic.");
         builder.AppendLine("For clearly unrelated questions, reply in one short, quirky but professional paragraph using this pattern: \"Chocolate cake sounds delicious, but it's a bit outside my area of expertise. I'm designed to help with Talent Pilot hiring and workflow evidence. Try asking me about bench fit, missing skills, candidate ranking evidence, interview feedback, or request status instead.\" Adapt the opening phrase to the user's topic, but keep the redirect to Talent Pilot tasks.");
         builder.AppendLine("If the user asks you to find, reveal, recover, display, or share credentials, client secrets, API keys, tokens, passwords, private keys, or connection strings, refuse briefly and direct them to authorized admin rotation or the approved secrets store. Do not cite evidence for credential refusals.");
-        builder.AppendLine("For in-scope questions, use only the evidence chunks provided below. If the evidence does not support the answer, say that the available evidence is insufficient.");
+        builder.AppendLine("For in-scope questions, use only the evidence entries provided below. If the evidence does not support the answer, say that the available evidence is insufficient.");
         builder.AppendLine("Recent conversation is dialogue context only, not evidence. If a prior assistant answer conflicts with the evidence chunks, ignore the prior answer and correct it from the evidence.");
         if (RagAssistantContextTypes.Normalize(context.ContextType) == RagAssistantContextTypes.RecruiterCandidateFit)
         {
             builder.AppendLine("For recruiter candidate-fit questions, treat an irrelevant candidate or irrelevant application as one where the evidence shows no matching required/core skills, or the candidate profile specialization and day-to-day work are dissimilar to the role requirement. Related broad industry experience is not enough when the core role skills and responsibilities are missing.");
-            builder.AppendLine("When evidence includes an ApplicationRelevanceSummary chunk, use its counts and categories for questions about irrelevant applications, irrelevant candidates, poor matches, no matching skills, profile mismatch, dissimilar profiles, or applications not aligned with the role. Do not count borderline or lower-ranked candidates as irrelevant unless evidence labels them irrelevant/poor match or shows no matching core skills or profile mismatch.");
+            builder.AppendLine("When evidence includes an application relevance summary, use its counts and categories for questions about irrelevant applications, irrelevant candidates, poor matches, no matching skills, profile mismatch, dissimilar profiles, or applications not aligned with the role. Do not count borderline or lower-ranked candidates as irrelevant unless evidence labels them irrelevant/poor match or shows no matching core skills or profile mismatch.");
+        }
+        if (RagAssistantContextTypes.Normalize(context.ContextType) == RagAssistantContextTypes.PmoRequest)
+        {
+            builder.AppendLine("For PMO presales referral questions, lead with a clear decision-support stance: 'Do not refer yet', 'Referral is supported by the evidence', or 'Evidence is insufficient'. If evidence says the employee lacks essential or required skills, has low confidence, or is not preferred until missing skill evidence is validated, lead with 'Do not refer yet' and explain the missing evidence. Do not start with 'Refer' when the same answer cites required-skill gaps.");
         }
         builder.AppendLine("Cite evidence with the provided citation labels, for example [C1] or [C2], only as source markers. Do not call them chunks or explain the citation mechanics. The UI will render them as readable references.");
+        builder.AppendLine("Never write source titles or technical evidence metadata in the answer, including parenthetical entity/type labels, source entity types, or chunk types. Convert evidence into natural language and cite only with [C1], [C2], etc.");
         builder.AppendLine("Do not cite anything in an out-of-scope redirect or credential refusal.");
         builder.AppendLine("Format numbers for humans. For example, write 89% instead of 89.0000 when the value is a percentage or whole-number score.");
         builder.AppendLine("Never treat retrieval relevance, citation ordering, or vector similarity as an applicant score, interview score, or hiring threshold.");
@@ -65,7 +70,7 @@ public sealed class RagPromptBuilder : IRagPromptBuilder
         {
             var chunk = context.Evidence[index];
             var citation = citations[index];
-            builder.AppendLine($"[{citation.Label}] {chunk.SourceTitle} ({chunk.SourceEntityType}, {chunk.ChunkType})");
+            builder.AppendLine($"[{citation.Label}] {ReadableEvidenceTitle(chunk)}");
             builder.AppendLine(TrimForPrompt(chunk.Text, 1800));
             builder.AppendLine();
         }
@@ -81,6 +86,26 @@ public sealed class RagPromptBuilder : IRagPromptBuilder
     private static string Excerpt(string text)
     {
         return TrimForPrompt(text.ReplaceLineEndings(" "), 280);
+    }
+
+    private static string ReadableEvidenceTitle(KnowledgeRetrievedChunk chunk)
+    {
+        if (chunk.SourceEntityType.Equals("BenchMatch", StringComparison.OrdinalIgnoreCase))
+        {
+            return $"{chunk.SourceTitle} evidence";
+        }
+
+        if (chunk.SourceEntityType.Equals("BenchEmployee", StringComparison.OrdinalIgnoreCase))
+        {
+            return $"{chunk.SourceTitle} employee profile";
+        }
+
+        if (chunk.SourceEntityType.Equals("JobRequest", StringComparison.OrdinalIgnoreCase))
+        {
+            return $"{chunk.SourceTitle} request summary";
+        }
+
+        return chunk.SourceTitle;
     }
 
     private static string DescribeScope(string contextType)

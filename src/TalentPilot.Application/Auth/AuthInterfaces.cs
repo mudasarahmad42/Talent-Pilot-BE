@@ -8,6 +8,8 @@ public interface IAuthService
 
     Task<Result<AuthResponse>> LoginAsync(LoginRequest request, CancellationToken cancellationToken);
 
+    Task<Result<AuthResponse>> RegisterCandidateAsync(CandidateSignupRequest request, CancellationToken cancellationToken);
+
     Task<Result<AuthResponse>> RefreshAsync(RefreshTokenRequest request, CancellationToken cancellationToken);
 
     Task<Result<CurrentUserContext>> GetCurrentUserAsync(Guid tenantId, Guid userId, CancellationToken cancellationToken);
@@ -23,6 +25,10 @@ public interface IIdentityRepository
 
     Task<AuthUserRecord?> FindUserByIdAsync(Guid tenantId, Guid userId, CancellationToken cancellationToken);
 
+    Task<CandidateSignupRepositoryResult> RegisterCandidateAsync(
+        CandidateSignupRegistrationInput input,
+        CancellationToken cancellationToken);
+
     Task<CurrentUserData?> GetCurrentUserDataAsync(Guid tenantId, Guid userId, CancellationToken cancellationToken);
 
     Task TouchLastActiveAsync(Guid tenantId, Guid userId, CancellationToken cancellationToken);
@@ -37,6 +43,11 @@ public interface IIdentityRepository
 public interface IPasswordVerifier
 {
     bool Verify(string password, string passwordHash);
+}
+
+public interface IPasswordHasher
+{
+    string Hash(string password);
 }
 
 public interface IJwtTokenService

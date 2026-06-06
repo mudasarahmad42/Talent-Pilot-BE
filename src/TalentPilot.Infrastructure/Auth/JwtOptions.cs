@@ -6,5 +6,5 @@ public sealed class JwtOptions
 
     public string Audience { get; init; } = "TalentPilot.Web";
 
-    public string SigningKey { get; init; } = "development-only-change-this-key-before-production";
+    public string SigningKey { get; init; } = string.Empty;
 }

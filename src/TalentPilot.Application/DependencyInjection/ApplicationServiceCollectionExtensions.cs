@@ -17,6 +17,7 @@ using TalentPilot.Application.Admin.Users;
 using TalentPilot.Application.Admin.Workflows;
 using TalentPilot.Application.Auth;
 using TalentPilot.Application.Calendar;
+using TalentPilot.Application.Feedback;
 using TalentPilot.Application.Notifications;
 using TalentPilot.Application.Operations;
 
@@ -42,6 +43,7 @@ public static class ApplicationServiceCollectionExtensions
         services.AddScoped<IAdminHiringPipelinesService, AdminHiringPipelinesService>();
         services.AddScoped<IOperationsService, OperationsService>();
         services.AddScoped<IAiAssistantService, AiAssistantService>();
+        services.AddScoped<IPublicFeedbackService, PublicFeedbackService>();
         services.AddScoped<IKnowledgeIndexingService, KnowledgeIndexingService>();
         services.AddScoped<IKnowledgeRetrievalService, KnowledgeRetrievalService>();
         services.AddScoped<IRagPromptBuilder, RagPromptBuilder>();

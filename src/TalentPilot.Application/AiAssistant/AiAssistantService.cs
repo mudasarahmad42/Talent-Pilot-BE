@@ -187,6 +187,7 @@ public sealed class AiAssistantService : IAiAssistantService
                             ["promptVersion"] = prompt.PromptVersion
                         }),
                     cancellationToken);
+                answer = RagAnswerSanitizer.Sanitize(answer, normalized.ContextType);
                 usedCitations = RagCitationUsage.FilterReferenced(prompt.Citations, answer);
 
                 await _runLogger.SucceedAsync(

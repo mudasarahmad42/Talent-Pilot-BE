@@ -238,6 +238,7 @@ public sealed class OnlineHeadhuntingAgent : IOnlineHeadhuntingAgent
             sourceCode,
             OnlineHeadhuntingSources.DisplayName(sourceCode),
             source.Url,
+            source.Query,
             ExtractName(source.Title),
             ExtractTitle(source.Title),
             ExtractCompany(source.Title),
@@ -268,6 +269,7 @@ public sealed class OnlineHeadhuntingAgent : IOnlineHeadhuntingAgent
             OnlineHeadhuntingSources.GitHub,
             OnlineHeadhuntingSources.DisplayName(OnlineHeadhuntingSources.GitHub),
             profile.HtmlUrl,
+            string.Empty,
             string.IsNullOrWhiteSpace(profile.DisplayName) ? profile.Login : profile.DisplayName,
             ExtractTitle(profile.Bio ?? string.Empty),
             profile.Company,
@@ -327,7 +329,27 @@ public sealed class OnlineHeadhuntingAgent : IOnlineHeadhuntingAgent
         }
 
         var searchable = $"{lead.Location} {lead.Snippet} {lead.SourceTitle}";
-        return terms.Any(term => ContainsTerm(searchable, term));
+        if (terms.Any(term => ContainsTerm(searchable, term)))
+        {
+            return true;
+        }
+
+        if (HasKnownLocation(lead.Location))
+        {
+            return false;
+        }
+
+        return SearchQueryHasLocationConstraint(lead.SourceQuery, terms);
+    }
+
+    private static bool SearchQueryHasLocationConstraint(string? query, IReadOnlyList<string> locationTerms)
+    {
+        if (string.IsNullOrWhiteSpace(query))
+        {
+            return false;
+        }
+
+        return locationTerms.Any(term => ContainsTerm(query, term));
     }
 
     private static bool IsLikelyJobPostingUrl(string host, string path)
@@ -402,18 +424,13 @@ public sealed class OnlineHeadhuntingAgent : IOnlineHeadhuntingAgent
     private static OnlineHeadhuntingAgentLead ScoreLead(OperationsOnlineHeadhuntingContext context, RawLead lead)
     {
         var searchable = $"{lead.Title} {lead.Name} {lead.Company} {lead.Location} {lead.Snippet} {lead.SourceTitle}";
-        var matchedSkills = context.RequiredSkills
-            .Where(skill => ContainsTerm(searchable, skill))
-            .Distinct(StringComparer.OrdinalIgnoreCase)
+        var skillAssessment = TechnologySkillMatcher.Assess(context.RequiredSkills, [], searchable);
+        var matchedSkills = skillAssessment.ExactMatches
+            .Concat(skillAssessment.StrongAdjacentMatches)
+            .Select(item => item.RequiredSkill)
             .Take(8)
             .ToArray();
-        var missingSkills = context.RequiredSkills
-            .Where(skill => !matchedSkills.Contains(skill, StringComparer.OrdinalIgnoreCase))
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .Take(6)
-            .ToArray();
-
-        var score = 52m + matchedSkills.Length * 8m;
+        var score = 45m + (skillAssessment.OverallScore * 45m);
         if (ContainsAny(searchable, Tokenize(context.JobPost?.Title ?? context.JobRequest.Title)))
         {
             score += 10m;
@@ -449,10 +466,10 @@ public sealed class OnlineHeadhuntingAgent : IOnlineHeadhuntingAgent
             lead.Snippet,
             score,
             score >= 85m ? "High" : score >= 70m ? "Medium" : "Low",
-            BuildFallbackFitSummary(context, lead, matchedSkills, missingSkills),
-            matchedSkills.Take(3).Select(skill => $"Evidence mentions {skill}.").ToArray(),
+            BuildFallbackFitSummary(context, lead, skillAssessment),
+            TechnologySkillMatcher.BuildStrengthNotes(skillAssessment).Take(3).ToArray(),
             matchedSkills,
-            missingSkills,
+            TechnologySkillMatcher.BuildGapNotes(skillAssessment).Take(6).ToArray(),
             missingData,
             duplicate.Status,
             duplicate.CandidateId,
@@ -529,6 +546,8 @@ public sealed class OnlineHeadhuntingAgent : IOnlineHeadhuntingAgent
             job = new
             {
                 title = context.JobPost?.Title ?? context.JobRequest.Title,
+                client = context.JobRequest.Client,
+                clientContext = context.JobRequest.ClientContext,
                 description = context.JobPost?.Description ?? context.JobRequest.Description,
                 location = context.JobPost?.Location ?? context.JobRequest.Location,
                 skills = context.RequiredSkills,
@@ -712,13 +731,17 @@ public sealed class OnlineHeadhuntingAgent : IOnlineHeadhuntingAgent
     private static string BuildFallbackFitSummary(
         OperationsOnlineHeadhuntingContext context,
         RawLead lead,
-        IReadOnlyList<string> matchedSkills,
-        IReadOnlyList<string> missingSkills)
+        SkillMatchAssessment skillAssessment)
     {
         var title = lead.Title ?? "Public profile";
-        var matched = matchedSkills.Count == 0 ? "limited direct skill evidence" : string.Join(", ", matchedSkills.Take(4));
-        var missing = missingSkills.Count == 0 ? "no major skill gaps visible from the snippet" : $"unclear evidence for {string.Join(", ", missingSkills.Take(3))}";
-        return $"{title} may fit {context.JobPost?.Title ?? context.JobRequest.Title}; public evidence shows {matched}, with {missing}.";
+        var matched = TechnologySkillMatcher.BuildSkillSummary(skillAssessment);
+        var warning = TechnologySkillMatcher.BuildDirectEvidenceWarning(skillAssessment);
+        return string.Join(' ', new[]
+        {
+            warning,
+            $"{title} may fit {context.JobPost?.Title ?? context.JobRequest.Title}; public evidence shows {matched}.",
+            skillAssessment.HumanReviewNotes
+        }.Where(part => !string.IsNullOrWhiteSpace(part)));
     }
 
     private static string BuildFallbackOutreach(OperationsOnlineHeadhuntingContext context, RawLead lead)
@@ -1028,6 +1051,7 @@ public sealed class OnlineHeadhuntingAgent : IOnlineHeadhuntingAgent
         string SourceCode,
         string SourceDisplayName,
         string SourceUrl,
+        string SourceQuery,
         string? Name,
         string? Title,
         string? Company,
@@ -1068,7 +1092,8 @@ public sealed class OnlineHeadhuntingBooleanQueryBuilder
                 continue;
             }
 
-            queries.Add(new OnlineHeadhuntingQuery(sourceCode, BuildWebQuery(context, sourceCode)));
+            queries.AddRange(BuildWebQueries(context, sourceCode)
+                .Select(query => new OnlineHeadhuntingQuery(sourceCode, query)));
         }
 
         return queries
@@ -1077,34 +1102,155 @@ public sealed class OnlineHeadhuntingBooleanQueryBuilder
             .ToArray();
     }
 
-    private static string BuildWebQuery(OperationsOnlineHeadhuntingContext context, string sourceCode)
+    private static IReadOnlyList<string> BuildWebQueries(OperationsOnlineHeadhuntingContext context, string sourceCode)
     {
-        var title = QuoteAny([context.JobPost?.Title, context.JobRequest.Title, SimplifyTitle(context.JobRequest.Title)]);
-        var skills = QuoteAny(context.RequiredSkills.Take(5));
+        var fullTitle = QuoteAny([context.JobPost?.Title, context.JobRequest.Title, SimplifyTitle(context.JobRequest.Title)]);
+        var simplifiedTitle = QuoteAny([SimplifyTitle(context.JobPost?.Title ?? context.JobRequest.Title), BuildPrimarySkillTitle(context)]);
+        var prioritizedSkills = PrioritizeSearchSkills(context).ToArray();
+        var skillGroup = QuoteAny(prioritizedSkills.Take(4));
+        var primarySkillGroup = QuoteAny(prioritizedSkills.Take(2));
         var location = context.JobPost?.Location ?? context.JobRequest.Location;
-        var locationClause = string.IsNullOrWhiteSpace(location) ? string.Empty : $" {Quote(location)}";
-        var baseQuery = $"{title} {skills}{locationClause}".Trim();
+        var locationClause = QuoteAny(BuildLocationQueryTerms(location));
+        var strictBaseQuery = JoinQueryParts(fullTitle, skillGroup, locationClause);
+        var discoveryBaseQuery = JoinQueryParts(simplifiedTitle, primarySkillGroup, locationClause);
         const string excludeJobPages = "-jobs -hiring -vacancy -apply -\"job description\" -\"job summary\" -site:expertini.com -site:indeed.com -site:rozee.pk -site:mustakbil.com";
 
         return sourceCode switch
         {
-            OnlineHeadhuntingSources.LinkedIn => $"site:linkedin.com/in {baseQuery} -jobs -hiring -company",
-            OnlineHeadhuntingSources.Portfolio => $"{baseQuery} (portfolio OR \"personal website\" OR resume OR CV) {excludeJobPages}",
-            _ => $"{baseQuery} (developer OR engineer OR consultant OR architect) {excludeJobPages}"
+            OnlineHeadhuntingSources.LinkedIn => DistinctQueries(
+                $"site:linkedin.com/in {strictBaseQuery} -jobs -hiring -company",
+                $"site:linkedin.com/in {discoveryBaseQuery} (developer OR engineer OR consultant OR architect) -jobs -hiring -company"),
+            OnlineHeadhuntingSources.Portfolio => DistinctQueries(
+                $"{strictBaseQuery} (portfolio OR \"personal website\" OR resume OR CV) {excludeJobPages}",
+                $"{discoveryBaseQuery} (portfolio OR \"personal website\" OR resume OR CV OR GitHub) {excludeJobPages}"),
+            _ => DistinctQueries(
+                $"{strictBaseQuery} (developer OR engineer OR consultant OR architect) {excludeJobPages}",
+                $"{discoveryBaseQuery} (developer OR engineer OR consultant OR architect OR resume OR CV) {excludeJobPages}")
         };
     }
 
     private static string BuildGitHubApiQuery(OperationsOnlineHeadhuntingContext context)
     {
         var terms = new List<string>();
-        terms.AddRange(context.RequiredSkills.Take(4).Select(skill => skill.Replace(" ", "-", StringComparison.OrdinalIgnoreCase)));
+        terms.AddRange(SelectGitHubSearchSkills(context).Select(NormalizeGitHubSearchTerm));
         var location = context.JobPost?.Location ?? context.JobRequest.Location;
-        if (!string.IsNullOrWhiteSpace(location))
+        var locationQualifier = BuildGitHubLocationQualifier(location);
+        if (!string.IsNullOrWhiteSpace(locationQualifier))
         {
-            terms.Add($"location:{location}");
+            terms.Add(locationQualifier);
         }
 
         return string.Join(' ', terms.Where(term => !string.IsNullOrWhiteSpace(term)));
+    }
+
+    private static IReadOnlyList<string> SelectGitHubSearchSkills(OperationsOnlineHeadhuntingContext context)
+    {
+        var prioritized = PrioritizeSearchSkills(context);
+        var coreSkills = prioritized
+            .Where(skill => SearchSkillPriority(skill) <= 1)
+            .Take(2)
+            .ToArray();
+
+        return coreSkills.Length > 0
+            ? coreSkills
+            : prioritized.Take(2).ToArray();
+    }
+
+    private static string JoinQueryParts(params string[] parts) =>
+        string.Join(' ', parts.Where(part => !string.IsNullOrWhiteSpace(part))).Trim();
+
+    private static IReadOnlyList<string> DistinctQueries(params string[] queries) =>
+        queries
+            .Select(query => string.Join(' ', query.Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)))
+            .Where(query => query.Length > 0)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+
+    private static IReadOnlyList<string> PrioritizeSearchSkills(OperationsOnlineHeadhuntingContext context)
+    {
+        var title = $"{context.JobPost?.Title} {context.JobRequest.Title}";
+        var skills = context.RequiredSkills
+            .Where(skill => !string.IsNullOrWhiteSpace(skill))
+            .Select(skill => skill.Trim())
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+
+        return skills
+            .Select((skill, index) => new { Skill = skill, Index = index })
+            .OrderByDescending(item => ContainsTerm(title, item.Skill))
+            .ThenBy(item => SearchSkillPriority(item.Skill))
+            .ThenBy(item => item.Index)
+            .Select(item => item.Skill)
+            .ToArray();
+    }
+
+    private static int SearchSkillPriority(string skill)
+    {
+        var normalized = skill.Trim().ToLowerInvariant();
+        if (normalized is "python" or "java" or "c#" or ".net" or ".net core" or "node.js" or "nodejs" or "react" or "angular" or "vue" or "typescript")
+        {
+            return 0;
+        }
+
+        if (normalized is "django" or "flask" or "fastapi" or "spring boot" or "asp.net" or "asp.net core" or "next.js" or "nextjs")
+        {
+            return 1;
+        }
+
+        if (normalized is "aws" or "azure" or "gcp" or "kubernetes" or "terraform" or "sql" or "postgresql" or "sql server")
+        {
+            return 2;
+        }
+
+        return 3;
+    }
+
+    private static bool ContainsTerm(string haystack, string term) =>
+        !string.IsNullOrWhiteSpace(term) &&
+        haystack.Contains(term, StringComparison.OrdinalIgnoreCase);
+
+    private static IReadOnlyList<string> BuildLocationQueryTerms(string? location)
+    {
+        if (string.IsNullOrWhiteSpace(location))
+        {
+            return [];
+        }
+
+        var terms = location
+            .Split([',', '/', '\\', '|'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Where(term => term.Length > 2)
+            .Where(term => !term.Equals("remote", StringComparison.OrdinalIgnoreCase))
+            .Where(term => !term.Equals("hybrid", StringComparison.OrdinalIgnoreCase))
+            .ToList();
+
+        if (terms.Any(term => term.Equals("Lahore", StringComparison.OrdinalIgnoreCase) ||
+                              term.Equals("Karachi", StringComparison.OrdinalIgnoreCase) ||
+                              term.Equals("Islamabad", StringComparison.OrdinalIgnoreCase) ||
+                              term.Equals("Rawalpindi", StringComparison.OrdinalIgnoreCase)))
+        {
+            terms.Add("Pakistan");
+        }
+
+        return terms
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+    }
+
+    private static string? BuildGitHubLocationQualifier(string? location)
+    {
+        var term = BuildLocationQueryTerms(location).FirstOrDefault();
+        return string.IsNullOrWhiteSpace(term) ? null : $"location:{NormalizeGitHubSearchTerm(term)}";
+    }
+
+    private static string NormalizeGitHubSearchTerm(string value) =>
+        value.Trim().Replace(" ", "-", StringComparison.OrdinalIgnoreCase);
+
+    private static string BuildPrimarySkillTitle(OperationsOnlineHeadhuntingContext context)
+    {
+        var skill = PrioritizeSearchSkills(context).FirstOrDefault();
+        return string.IsNullOrWhiteSpace(skill)
+            ? SimplifyTitle(context.JobPost?.Title ?? context.JobRequest.Title)
+            : $"{skill} developer";
     }
 
     private static string SimplifyTitle(string title)
@@ -1117,10 +1263,13 @@ public sealed class OnlineHeadhuntingBooleanQueryBuilder
 
     private static string QuoteAny(IEnumerable<string?> values)
     {
-        return "(" + string.Join(" OR ", values
+        var quoted = values
             .Where(value => !string.IsNullOrWhiteSpace(value))
             .Select(value => Quote(value!))
-            .Distinct(StringComparer.OrdinalIgnoreCase)) + ")";
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+
+        return quoted.Length == 0 ? string.Empty : "(" + string.Join(" OR ", quoted) + ")";
     }
 
     private static string Quote(string value)

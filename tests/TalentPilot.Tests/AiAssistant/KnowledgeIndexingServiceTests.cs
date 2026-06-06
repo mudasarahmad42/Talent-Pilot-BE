@@ -77,6 +77,32 @@ public sealed class KnowledgeIndexingServiceTests
         Assert.Contains("Average score: 4.2/5", interviewChunk.Text, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public void BuildPmoRequestChunks_SanitizesStoredBenchMatchRationale()
+    {
+        var review = CreatePmoReviewWithStaleBenchMatchRationale();
+
+        var chunks = InvokeBuildPmoRequestChunks(review);
+        var benchMatchChunk = Assert.Single(chunks.Where(chunk => chunk.ChunkType == "BenchMatchLog"));
+
+        Assert.Contains("Zain Javaid's profile is primarily Java", benchMatchChunk.Text, StringComparison.Ordinal);
+        Assert.Contains("6.8 years overall", benchMatchChunk.Text, StringComparison.Ordinal);
+        Assert.Contains("this request is centered on Python, AWS, SQL, and Design Patterns", benchMatchChunk.Text, StringComparison.Ordinal);
+        Assert.Contains("current tenant evidence only supports SQL", benchMatchChunk.Text, StringComparison.Ordinal);
+        Assert.DoesNotContain("less than the required 3+ years", benchMatchChunk.Text, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static IReadOnlyList<KnowledgeChunkDraft> InvokeBuildPmoRequestChunks(OperationsPmoReview review)
+    {
+        var method = typeof(KnowledgeIndexingService).GetMethod(
+            "BuildPmoRequestChunks",
+            BindingFlags.NonPublic | BindingFlags.Static);
+
+        Assert.NotNull(method);
+        var chunks = method.Invoke(null, new object?[] { review });
+        return Assert.IsAssignableFrom<IReadOnlyList<KnowledgeChunkDraft>>(chunks);
+    }
+
     private static IReadOnlyList<KnowledgeChunkDraft> InvokeBuildRecruiterCandidateFitChunks(OperationsRecruiterSourcing sourcing)
     {
         var method = typeof(KnowledgeIndexingService).GetMethod(
@@ -101,6 +127,82 @@ public sealed class KnowledgeIndexingServiceTests
         return Assert.IsAssignableFrom<IReadOnlyList<KnowledgeChunkDraft>>(chunks);
     }
 
+    private static OperationsPmoReview CreatePmoReviewWithStaleBenchMatchRationale()
+    {
+        var requestId = Guid.Parse("25000000-0000-0000-0000-000000000001");
+        var employeeId = Guid.Parse("25000000-0000-0000-0000-000000000101");
+        var jobRequest = new OperationsJobRequest(
+            requestId,
+            "TP-REQ-021",
+            "Senior Python Developer",
+            "Tesla",
+            "EV manufacturing client context for a Lahore engineering office.",
+            "Build Python backend services for engineering workflows.",
+            "Engineering",
+            new[] { "Python", "AWS", "SQL", "Design Patterns" },
+            "3+ years",
+            "Lahore",
+            1,
+            0,
+            "High",
+            Guid.Parse("25000000-0000-0000-0000-000000000201"),
+            Guid.Parse("25000000-0000-0000-0000-000000000202"),
+            "PMO Review",
+            null,
+            "PMO - Engineering",
+            "NotPublished",
+            DateTimeOffset.Parse("2026-06-01T10:00:00Z"));
+        var employee = new OperationsBenchEmployee(
+            employeeId,
+            "Zain Javaid",
+            "zain.javaid@example.test",
+            "Senior Java Engineer",
+            "Engineering",
+            "Lahore",
+            6.8m,
+            DateOnly.Parse("2021-02-15"),
+            "Available",
+            "Benched",
+            true,
+            new[] { "Java", "SQL" },
+            new[] { "SQL" },
+            new[] { "Python", "AWS", "Design Patterns" },
+            new[]
+            {
+                new OperationsEmployeeProjectEvidence(
+                    "AZAQ Payment Modernization",
+                    "AZAQ Saudia Arabia",
+                    "Completed",
+                    100,
+                    DateOnly.Parse("2024-01-01"),
+                    DateOnly.Parse("2024-12-31"))
+            });
+        var match = new OperationsBenchMatch(
+            employeeId,
+            1,
+            59.4m,
+            "Low",
+            "Zain Javaid has 6.8 years of experience as a Senior Java Engineer, which is less than the required 3+ years for this role. Despite his experience, he lacks skills in AWS, Design Patterns, and Python, which are essential for this position.",
+            Array.Empty<string>(),
+            new[] { "Missing requested skill evidence: Python.", "Missing requested skill evidence: AWS.", "Missing requested skill evidence: Design Patterns." },
+            employee.ProjectEvidence,
+            "Skipped:LiveContextNotRequired",
+            "Web search was skipped because this request did not ask for recent or live public context.",
+            Array.Empty<OperationsBenchMatchWebSource>(),
+            Guid.Parse("25000000-0000-0000-0000-000000000301"),
+            DateTimeOffset.Parse("2026-06-04T13:04:56Z"));
+
+        return new OperationsPmoReview(
+            jobRequest,
+            null,
+            Array.Empty<OperationsEmployeeReferral>(),
+            new[] { employee },
+            new[] { match },
+            Array.Empty<OperationsLookupOption>(),
+            null,
+            "Recruiting - Delivery");
+    }
+
     private static OperationsJobRequest CreateJobRequest(Guid requestId)
     {
         return new OperationsJobRequest(
@@ -108,6 +210,7 @@ public sealed class KnowledgeIndexingServiceTests
             "TP-DEMO-101",
             "Senior Java Backend Engineer",
             "AZAQ Saudia Arabia",
+            "Payments modernization context for financial services integration work.",
             "Build Java backend services with Spring Boot, microservices, Kafka, and SQL.",
             "Engineering",
             new[] { "Java", "Spring Boot", "Microservices", "Kafka", "SQL" },
@@ -241,6 +344,8 @@ public sealed class KnowledgeIndexingServiceTests
                 1,
                 0,
                 "Closed",
+                DateTimeOffset.Parse("2026-06-04T13:04:56Z"),
+                "Position closed by hiring manager.",
                 "Offered",
                 null,
                 null,

@@ -28,3 +28,8 @@ public interface IAdminTenantProfileRepository
         string metadataJson,
         CancellationToken cancellationToken);
 }
+
+public interface IAdminCenterAccessPolicyReader
+{
+    Task<string> GetAdminCenterAccessModeAsync(Guid tenantId, CancellationToken cancellationToken);
+}

@@ -135,7 +135,13 @@ public sealed record RealtimeNotificationConnectionStatusResponse(
 
 public sealed record NotificationEmailProviderSettings(string Provider);
 
-public sealed record NotificationEmailMessage(Guid TenantId, string ToEmail, string Subject, string TextBody, string HtmlBody);
+public sealed record NotificationEmailMessage(
+    Guid TenantId,
+    string ToEmail,
+    string Subject,
+    string TextBody,
+    string HtmlBody,
+    string? FromEmail = null);
 
 public sealed record NotificationEmailSendResult(string Provider, string MessageId, DateTimeOffset SubmittedAtUtc);
 

@@ -20,6 +20,7 @@ internal sealed class ResendNotificationEmailSender : INotificationEmailProvider
         NotificationEmailMessage message,
         CancellationToken cancellationToken)
     {
+        var fromEmail = FirstConfigured(message.FromEmail, _options.FromEmail);
         if (string.IsNullOrWhiteSpace(_options.ApiKey))
         {
             return Result<NotificationEmailSendResult>.Failure(
@@ -27,7 +28,7 @@ internal sealed class ResendNotificationEmailSender : INotificationEmailProvider
                 "Resend API key is not configured for this environment.");
         }
 
-        if (string.IsNullOrWhiteSpace(_options.FromEmail))
+        if (string.IsNullOrWhiteSpace(fromEmail))
         {
             return Result<NotificationEmailSendResult>.Failure(
                 "notifications.sender_not_configured",
@@ -37,7 +38,7 @@ internal sealed class ResendNotificationEmailSender : INotificationEmailProvider
         IResend resend = ResendClient.Create(_options.ApiKey.Trim());
         var email = new EmailMessage
         {
-            From = _options.FromEmail.Trim(),
+            From = fromEmail,
             To = message.ToEmail.Trim(),
             Subject = message.Subject,
             TextBody = message.TextBody,
@@ -70,5 +71,10 @@ internal sealed class ResendNotificationEmailSender : INotificationEmailProvider
         return string.IsNullOrWhiteSpace(detail)
             ? "Resend rejected the email. Check the sender address, recipient, and API key."
             : $"Resend rejected the email: {detail}";
+    }
+
+    private static string FirstConfigured(params string?[] values)
+    {
+        return values.FirstOrDefault(value => !string.IsNullOrWhiteSpace(value))?.Trim() ?? string.Empty;
     }
 }

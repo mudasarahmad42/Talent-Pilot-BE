@@ -120,23 +120,94 @@ public sealed class GitHubCandidateSearchProvider : IGitHubCandidateSearchProvid
 
     private static string BuildQuery(GitHubCandidateSearchRequest request)
     {
-        var terms = request.Skills
+        var terms = SelectSearchSkills(request.JobTitle, request.Skills)
             .Where(skill => !string.IsNullOrWhiteSpace(skill))
-            .Select(skill => skill.Trim())
-            .Take(4)
+            .Select(NormalizeSearchTerm)
             .ToList();
 
         if (terms.Count == 0 && !string.IsNullOrWhiteSpace(request.JobTitle))
         {
-            terms.Add(request.JobTitle.Trim());
+            terms.AddRange(request.JobTitle
+                .Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                .Where(token => token.Length > 2)
+                .Where(token => !token.Equals("senior", StringComparison.OrdinalIgnoreCase))
+                .Where(token => !token.Equals("developer", StringComparison.OrdinalIgnoreCase))
+                .Take(2)
+                .Select(NormalizeSearchTerm));
         }
 
-        if (!string.IsNullOrWhiteSpace(request.Location))
+        var location = BuildLocationQualifier(request.Location);
+        if (!string.IsNullOrWhiteSpace(location))
         {
-            terms.Add($"location:{request.Location.Trim()}");
+            terms.Add(location);
         }
 
         return string.Join(' ', terms);
+    }
+
+    private static IReadOnlyList<string> PrioritizeSkills(string jobTitle, IReadOnlyList<string> skills)
+    {
+        return skills
+            .Where(skill => !string.IsNullOrWhiteSpace(skill))
+            .Select(skill => skill.Trim())
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Select((skill, index) => new { Skill = skill, Index = index })
+            .OrderByDescending(item => jobTitle.Contains(item.Skill, StringComparison.OrdinalIgnoreCase))
+            .ThenBy(item => SearchSkillPriority(item.Skill))
+            .ThenBy(item => item.Index)
+            .Select(item => item.Skill)
+            .ToArray();
+    }
+
+    private static IReadOnlyList<string> SelectSearchSkills(string jobTitle, IReadOnlyList<string> skills)
+    {
+        var prioritized = PrioritizeSkills(jobTitle, skills);
+        var coreSkills = prioritized
+            .Where(skill => SearchSkillPriority(skill) <= 1)
+            .Take(2)
+            .ToArray();
+
+        return coreSkills.Length > 0
+            ? coreSkills
+            : prioritized.Take(2).ToArray();
+    }
+
+    private static int SearchSkillPriority(string skill)
+    {
+        var normalized = skill.Trim().ToLowerInvariant();
+        if (normalized is "python" or "java" or "c#" or ".net" or ".net core" or "node.js" or "nodejs" or "react" or "angular" or "vue" or "typescript")
+        {
+            return 0;
+        }
+
+        if (normalized is "django" or "flask" or "fastapi" or "spring boot" or "asp.net" or "asp.net core" or "next.js" or "nextjs")
+        {
+            return 1;
+        }
+
+        if (normalized is "aws" or "azure" or "gcp" or "kubernetes" or "terraform" or "sql" or "postgresql" or "sql server")
+        {
+            return 2;
+        }
+
+        return 3;
+    }
+
+    private static string NormalizeSearchTerm(string value) =>
+        value.Trim().Replace(" ", "-", StringComparison.OrdinalIgnoreCase);
+
+    private static string? BuildLocationQualifier(string? location)
+    {
+        if (string.IsNullOrWhiteSpace(location))
+        {
+            return null;
+        }
+
+        var term = location
+            .Split([',', '/', '\\', '|'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .FirstOrDefault(value => value.Length > 2 && !value.Equals("remote", StringComparison.OrdinalIgnoreCase) && !value.Equals("hybrid", StringComparison.OrdinalIgnoreCase));
+
+        return string.IsNullOrWhiteSpace(term) ? null : $"location:{NormalizeSearchTerm(term)}";
     }
 
     private static string ToStatus(HttpResponseMessage response)

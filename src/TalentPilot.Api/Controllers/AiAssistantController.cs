@@ -1,4 +1,6 @@
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.RateLimiting;
+using TalentPilot.Api.Security;
 using TalentPilot.Application.AiAssistant;
 
 namespace TalentPilot.Api.Controllers;
@@ -14,6 +16,7 @@ public sealed class AiAssistantController : ApiControllerBase
     }
 
     [HttpPost("messages")]
+    [EnableRateLimiting(ApiRateLimitPolicies.AiWork)]
     public async Task<ActionResult<RagChatResponse>> SendMessage(
         [FromBody] RagChatRequest request,
         CancellationToken cancellationToken)
@@ -53,6 +56,7 @@ public sealed class AiAssistantController : ApiControllerBase
     }
 
     [HttpPost("index/rebuild")]
+    [EnableRateLimiting(ApiRateLimitPolicies.AiWork)]
     public async Task<ActionResult<RagRebuildIndexResponse>> RebuildIndex(
         [FromBody] RagRebuildIndexRequest request,
         CancellationToken cancellationToken)

@@ -7,4 +7,6 @@ public interface ICurrentUserAccessor
     Guid TenantId { get; }
 
     string Email { get; }
+
+    IReadOnlyCollection<string> RoleCodes { get; }
 }

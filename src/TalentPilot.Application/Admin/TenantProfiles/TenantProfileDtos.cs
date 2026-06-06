@@ -1,5 +1,24 @@
 namespace TalentPilot.Application.Admin.TenantProfiles;
 
+public static class AdminCenterAccessModes
+{
+    public const string FullAccess = "FullAccess";
+    public const string ReadOnly = "ReadOnly";
+
+    public static bool IsSupported(string value)
+    {
+        return string.Equals(value, FullAccess, StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(value, ReadOnly, StringComparison.OrdinalIgnoreCase);
+    }
+
+    public static string Normalize(string? value)
+    {
+        return string.Equals(value, ReadOnly, StringComparison.OrdinalIgnoreCase)
+            ? ReadOnly
+            : FullAccess;
+    }
+}
+
 public sealed record TenantProfileSettings(
     Guid TenantId,
     string DisplayName,
@@ -22,6 +41,7 @@ public sealed record TenantProfileSettings(
     int InviteExpiryDays,
     int ReapplyCooldownDays,
     string NotificationEmailProvider,
+    string AdminCenterAccessMode,
     int UserCount,
     int RoleCount,
     bool SetupComplete,
@@ -53,6 +73,7 @@ public sealed record UpdateTenantProfileSettingsInput(
     int InviteExpiryDays,
     int ReapplyCooldownDays,
     string NotificationEmailProvider,
+    string AdminCenterAccessMode,
     string? LogoFileName,
     string? LogoContentType,
     string? LogoContentBase64);

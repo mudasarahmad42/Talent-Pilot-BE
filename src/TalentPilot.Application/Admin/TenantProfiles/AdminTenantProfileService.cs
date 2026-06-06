@@ -3,6 +3,7 @@ using System.Text.RegularExpressions;
 using TalentPilot.Application.Abstractions;
 using TalentPilot.Application.Admin.Notifications;
 using TalentPilot.Common.Results;
+using TalentPilot.Domain.Access;
 using TalentPilot.Domain.Tenancy;
 
 namespace TalentPilot.Application.Admin.TenantProfiles;
@@ -58,6 +59,28 @@ public sealed class AdminTenantProfileService : IAdminTenantProfileService
             return Result<TenantProfileSettings>.Failure(validation.Error.Code, validation.Error.Message);
         }
 
+        var currentProfile = await _repository.GetAsync(
+            _currentUser.TenantId,
+            _runtimeSettings.LlmModel,
+            _runtimeSettings.EmbeddingModel,
+            cancellationToken);
+
+        if (currentProfile is null)
+        {
+            return Result<TenantProfileSettings>.Failure("tenant.not_found", "Tenant profile was not found.");
+        }
+
+        if (!IsCurrentUserSystemAdmin() &&
+            !string.Equals(
+                AdminCenterAccessModes.Normalize(input.AdminCenterAccessMode),
+                AdminCenterAccessModes.Normalize(currentProfile.AdminCenterAccessMode),
+                StringComparison.OrdinalIgnoreCase))
+        {
+            return Result<TenantProfileSettings>.Failure(
+                "tenant.admin_center_access_mode_forbidden",
+                "Only a system administrator can change Admin Center access mode.");
+        }
+
         var slugAvailable = await _repository.IsSlugAvailableAsync(_currentUser.TenantId, input.Slug, cancellationToken);
         if (!slugAvailable)
         {
@@ -88,6 +111,7 @@ public sealed class AdminTenantProfileService : IAdminTenantProfileService
                 nameof(input.InviteExpiryDays),
                 nameof(input.ReapplyCooldownDays),
                 nameof(input.NotificationEmailProvider),
+                nameof(input.AdminCenterAccessMode),
                 nameof(input.LogoFileName)
             }
         });
@@ -176,6 +200,11 @@ public sealed class AdminTenantProfileService : IAdminTenantProfileService
             return Result.Failure("tenant.notification_email_provider_invalid", "Email provider must be Resend or Microsoft Graph.");
         }
 
+        if (!AdminCenterAccessModes.IsSupported(input.AdminCenterAccessMode))
+        {
+            return Result.Failure("tenant.admin_center_access_mode_invalid", "Admin Center access mode must be FullAccess or ReadOnly.");
+        }
+
         if (string.IsNullOrWhiteSpace(input.LogoContentBase64))
         {
             return Result.Success();
@@ -211,5 +240,11 @@ public sealed class AdminTenantProfileService : IAdminTenantProfileService
         }
 
         return Result.Success();
+    }
+
+    private bool IsCurrentUserSystemAdmin()
+    {
+        return _currentUser.RoleCodes.Any(roleCode =>
+            string.Equals(roleCode, AccessConstants.SystemAdminRoleCode, StringComparison.OrdinalIgnoreCase));
     }
 }

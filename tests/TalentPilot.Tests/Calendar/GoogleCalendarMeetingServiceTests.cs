@@ -341,6 +341,8 @@ public sealed class GoogleCalendarMeetingServiceTests
         public Guid TenantId => GoogleCalendarMeetingServiceTests.TenantId;
 
         public string Email => "organizer@tkxel.com";
+
+        public IReadOnlyCollection<string> RoleCodes => Array.Empty<string>();
     }
 
     private sealed class FakeClock : IClock

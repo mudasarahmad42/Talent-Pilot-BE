@@ -36,20 +36,25 @@ public sealed class OnlineHeadhuntingAgentTests
             CreateContext(),
             ["LinkedIn", "Portfolio", "PublicSearch"]);
 
-        var linkedIn = Assert.Single(queries, query => query.SourceCode == "LinkedIn");
-        var portfolio = Assert.Single(queries, query => query.SourceCode == "Portfolio");
-        var publicSearch = Assert.Single(queries, query => query.SourceCode == "PublicSearch");
+        var linkedInQueries = queries.Where(query => query.SourceCode == "LinkedIn").ToArray();
+        var portfolioQueries = queries.Where(query => query.SourceCode == "Portfolio").ToArray();
+        var publicSearchQueries = queries.Where(query => query.SourceCode == "PublicSearch").ToArray();
+        Assert.Equal(2, linkedInQueries.Length);
+        Assert.Equal(2, portfolioQueries.Length);
+        Assert.Equal(2, publicSearchQueries.Length);
 
-        Assert.StartsWith("site:linkedin.com/in ", linkedIn.Query);
-        Assert.Contains("\"Senior React Developer\"", linkedIn.Query);
-        Assert.Contains("TypeScript", linkedIn.Query);
-        Assert.Contains("Lahore", linkedIn.Query);
-        Assert.Contains("-jobs", linkedIn.Query);
-        Assert.Contains("-hiring", linkedIn.Query);
-        Assert.Contains("-company", linkedIn.Query);
+        Assert.All(linkedInQueries, query => Assert.StartsWith("site:linkedin.com/in ", query.Query));
+        Assert.Contains(linkedInQueries, query => query.Query.Contains("\"Senior React Developer\"", StringComparison.OrdinalIgnoreCase));
+        Assert.Contains(linkedInQueries, query => query.Query.Contains("\"React Developer\"", StringComparison.OrdinalIgnoreCase));
+        Assert.Contains(linkedInQueries, query => query.Query.Contains("TypeScript", StringComparison.OrdinalIgnoreCase));
+        Assert.All(linkedInQueries, query => Assert.Contains("Lahore", query.Query));
+        Assert.All(linkedInQueries, query => Assert.Contains("Pakistan", query.Query));
+        Assert.All(linkedInQueries, query => Assert.Contains("-jobs", query.Query));
+        Assert.All(linkedInQueries, query => Assert.Contains("-hiring", query.Query));
+        Assert.All(linkedInQueries, query => Assert.Contains("-company", query.Query));
 
-        Assert.Contains("portfolio OR \"personal website\" OR resume OR CV", portfolio.Query);
-        Assert.Contains("developer OR engineer OR consultant OR architect", publicSearch.Query);
+        Assert.Contains(portfolioQueries, query => query.Query.Contains("portfolio OR \"personal website\" OR resume OR CV", StringComparison.OrdinalIgnoreCase));
+        Assert.Contains(publicSearchQueries, query => query.Query.Contains("developer OR engineer OR consultant OR architect", StringComparison.OrdinalIgnoreCase));
     }
 
     [Fact]
@@ -62,8 +67,30 @@ public sealed class OnlineHeadhuntingAgentTests
         Assert.Equal("GitHub", query.SourceCode);
         Assert.Contains("React", query.Query);
         Assert.Contains("TypeScript", query.Query);
+        Assert.DoesNotContain("Node.js", query.Query);
         Assert.Contains("location:Lahore", query.Query);
         Assert.DoesNotContain("site:", query.Query);
+    }
+
+    [Fact]
+    public void BuildQueries_FocusesSeniorPythonDeveloperSearchOnPrimarySkillAndLocation()
+    {
+        var queries = new OnlineHeadhuntingBooleanQueryBuilder().BuildQueries(
+            CreatePythonContext(),
+            ["LinkedIn", "GitHub", "Portfolio"]);
+
+        var gitHub = Assert.Single(queries, query => query.SourceCode == "GitHub");
+        Assert.Contains("Python", gitHub.Query);
+        Assert.Contains("location:Lahore", gitHub.Query);
+        Assert.DoesNotContain("AWS", gitHub.Query);
+        Assert.DoesNotContain("Design-Patterns", gitHub.Query);
+
+        var linkedInQueries = queries.Where(query => query.SourceCode == "LinkedIn").Select(query => query.Query).ToArray();
+        Assert.Equal(2, linkedInQueries.Length);
+        Assert.Contains(linkedInQueries, query => query.Contains("\"Senior Python Developer\"", StringComparison.OrdinalIgnoreCase));
+        Assert.Contains(linkedInQueries, query => query.Contains("\"Python developer\"", StringComparison.OrdinalIgnoreCase));
+        Assert.All(linkedInQueries, query => Assert.Contains("Lahore", query));
+        Assert.All(linkedInQueries, query => Assert.Contains("Pakistan", query));
     }
 
     [Fact]
@@ -85,10 +112,9 @@ public sealed class OnlineHeadhuntingAgentTests
             CancellationToken.None);
 
         Assert.Equal(
-            ["Contact Candidate", "Known Candidate"],
+            ["Contact Candidate", "Known Candidate", "Unknown Candidate"],
             result.Leads.Select(lead => lead.DisplayName).ToArray());
         Assert.DoesNotContain(result.Leads, lead => lead.SourceUrl.Contains("expertini", StringComparison.OrdinalIgnoreCase));
-        Assert.DoesNotContain(result.Leads, lead => string.Equals(lead.DisplayName, "Unknown Candidate", StringComparison.OrdinalIgnoreCase));
         Assert.DoesNotContain(result.Leads, lead => string.Equals(lead.DisplayName, "Romania Candidate", StringComparison.OrdinalIgnoreCase));
 
         var contactLead = result.Leads[0];
@@ -138,6 +164,7 @@ public sealed class OnlineHeadhuntingAgentTests
             "JR-1042",
             "Senior React Developer",
             "TKXEL Engineering",
+            "Product engineering services for cloud-native frontend teams.",
             "Build high-performance React applications.",
             "Engineering",
             ["React", "TypeScript", "Node.js", "Next.js"],
@@ -162,6 +189,40 @@ public sealed class OnlineHeadhuntingAgentTests
             7,
             [],
             existingLeads ?? []);
+    }
+
+    private static OperationsOnlineHeadhuntingContext CreatePythonContext()
+    {
+        var jobRequest = new OperationsJobRequest(
+            Guid.Parse("11111111-1111-1111-1111-111111111112"),
+            "TP-REQ-021",
+            "Senior Python Developer",
+            "Tesla",
+            "Engineering role for a Lahore team.",
+            "Build scalable Python applications and backend services.",
+            "Engineering",
+            ["Design Patterns", "AWS", "SQL", "Python"],
+            "3+ years",
+            "Lahore",
+            1,
+            0,
+            "Critical",
+            Guid.Parse("22222222-2222-2222-2222-222222222222"),
+            Guid.Parse("33333333-3333-3333-3333-333333333333"),
+            "Recruiter Sourcing",
+            null,
+            null,
+            "Published",
+            DateTimeOffset.UtcNow);
+
+        return new OperationsOnlineHeadhuntingContext(
+            jobRequest,
+            null,
+            jobRequest.Skills,
+            3,
+            null,
+            [],
+            []);
     }
 
     private sealed class JsonArrayAiModelProvider : IAiModelProvider

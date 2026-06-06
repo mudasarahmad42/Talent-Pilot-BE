@@ -43,7 +43,11 @@ public interface IOperationsService
 
     Task<Result<OperationsJobPublishing>> GetJobPublishingAsync(CancellationToken cancellationToken);
 
-    Task<Result<PortalJobPostList>> ListPortalJobPostsAsync(CancellationToken cancellationToken);
+    Task<Result<PublicPortalContext>> GetPublicPortalContextAsync(
+        PublicPortalContextQuery query,
+        CancellationToken cancellationToken);
+
+    Task<Result<PortalJobPostList>> ListPortalJobPostsAsync(string? tenantSlug, CancellationToken cancellationToken);
 
     Task<Result<PortalJobPostDetail>> GetPortalJobPostAsync(Guid jobPostId, CancellationToken cancellationToken);
 
@@ -63,6 +67,17 @@ public interface IOperationsService
         string fileName,
         string contentType,
         byte[] content,
+        CancellationToken cancellationToken);
+
+    Task<Result<PortalUploadCandidateProfileDocumentResult>> UploadPortalCandidateProfileDocumentAsync(
+        string documentType,
+        string fileName,
+        string contentType,
+        byte[] content,
+        CancellationToken cancellationToken);
+
+    Task<Result<PortalCandidateProfileDocumentDownload>> DownloadPortalCandidateProfileDocumentAsync(
+        Guid candidateProfileDocumentId,
         CancellationToken cancellationToken);
 
     Task<Result<PortalCandidateProfile>> GetPortalCandidateProfileAsync(CancellationToken cancellationToken);
@@ -290,7 +305,11 @@ public interface IOperationsRepository
         Guid actorUserId,
         CancellationToken cancellationToken);
 
-    Task<PortalJobPostList> ListPortalJobPostsAsync(CancellationToken cancellationToken);
+    Task<PublicPortalContext?> GetPublicPortalContextAsync(
+        PublicPortalContextQuery query,
+        CancellationToken cancellationToken);
+
+    Task<PortalJobPostList> ListPortalJobPostsAsync(string? tenantSlug, CancellationToken cancellationToken);
 
     Task<PortalJobPostDetail?> GetPortalJobPostAsync(Guid jobPostId, CancellationToken cancellationToken);
 
@@ -319,6 +338,12 @@ public interface IOperationsRepository
         PortalApplicationDocumentMetadataInput input,
         CancellationToken cancellationToken);
 
+    Task<OperationsApplicantDocumentEvidence?> CopyLatestProfileDocumentToApplicationAsync(
+        Guid tenantId,
+        Guid actorUserId,
+        Guid jobApplicationId,
+        CancellationToken cancellationToken);
+
     Task<IReadOnlyList<PortalApplicationDocument>> ListPortalApplicationDocumentsAsync(
         Guid tenantId,
         IReadOnlyList<Guid> jobApplicationIds,
@@ -344,6 +369,23 @@ public interface IOperationsRepository
         Guid tenantId,
         Guid actorUserId,
         UpdatePortalCandidateProfileInput input,
+        CancellationToken cancellationToken);
+
+    Task<PortalCandidateProfileDocumentUploadContext?> GetPortalCandidateProfileDocumentUploadContextAsync(
+        Guid tenantId,
+        Guid actorUserId,
+        CancellationToken cancellationToken);
+
+    Task<PortalCandidateProfileDocument?> AddPortalCandidateProfileDocumentAsync(
+        Guid tenantId,
+        Guid actorUserId,
+        PortalCandidateProfileDocumentMetadataInput input,
+        CancellationToken cancellationToken);
+
+    Task<PortalCandidateProfileDocumentEvidence?> GetPortalCandidateProfileDocumentAsync(
+        Guid tenantId,
+        Guid actorUserId,
+        Guid candidateProfileDocumentId,
         CancellationToken cancellationToken);
 
     Task<OperationsBenchMatchingContext?> GetBenchMatchingContextAsync(
