@@ -156,6 +156,41 @@ public sealed class OnlineHeadhuntingAgentTests
         Assert.Contains(result.Leads, lead => string.Equals(lead.DisplayName, "Known Candidate", StringComparison.OrdinalIgnoreCase));
     }
 
+    [Fact]
+    public async Task SearchAsync_KeepsRelevantGitHubProfilesWhenLocationIsMissing()
+    {
+        var agent = new OnlineHeadhuntingAgent(
+            new JsonArrayAiModelProvider(),
+            new FixedAiRuntimeSettingsResolver(),
+            new NoOpAiAgentRunLogger(),
+            new EmptyWebResearchProvider(),
+            new StaticGitHubCandidateSearchProvider([
+                new GitHubCandidateProfile(
+                    "react-lahore",
+                    "React Lahore",
+                    "https://github.com/react-lahore",
+                    null,
+                    "Senior React TypeScript developer focused on frontend performance and CSS architecture.",
+                    "Independent",
+                    42,
+                    null)
+            ]),
+            new OnlineHeadhuntingBooleanQueryBuilder());
+
+        var result = await agent.SearchAsync(
+            Guid.Parse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"),
+            CreateContext(),
+            new OnlineHeadhuntingSearchInput(20, ["GitHub"], null),
+            20,
+            CancellationToken.None);
+
+        var lead = Assert.Single(result.Leads);
+        Assert.Equal("GitHub", lead.SourceCode);
+        Assert.Equal("React Lahore", lead.DisplayName);
+        Assert.Contains("React", lead.MatchedSkills);
+        Assert.Contains("Location", lead.MissingData);
+    }
+
     private static OperationsOnlineHeadhuntingContext CreateContext(
         IReadOnlyList<OperationsOnlineHeadhuntingExistingLead>? existingLeads = null)
     {
@@ -321,6 +356,31 @@ public sealed class OnlineHeadhuntingAgentTests
             CancellationToken cancellationToken)
         {
             return Task.FromResult(new GitHubCandidateSearchResult("NoResults", []));
+        }
+    }
+
+    private sealed class StaticGitHubCandidateSearchProvider : IGitHubCandidateSearchProvider
+    {
+        private readonly IReadOnlyList<GitHubCandidateProfile> _profiles;
+
+        public StaticGitHubCandidateSearchProvider(IReadOnlyList<GitHubCandidateProfile> profiles)
+        {
+            _profiles = profiles;
+        }
+
+        public Task<GitHubCandidateSearchResult> SearchAsync(
+            GitHubCandidateSearchRequest request,
+            CancellationToken cancellationToken)
+        {
+            return Task.FromResult(new GitHubCandidateSearchResult("Succeeded", _profiles));
+        }
+    }
+
+    private sealed class EmptyWebResearchProvider : IWebResearchProvider
+    {
+        public Task<WebResearchResult> ResearchAsync(WebResearchRequest request, CancellationToken cancellationToken)
+        {
+            return Task.FromResult(new WebResearchResult("NoResults", []));
         }
     }
 }

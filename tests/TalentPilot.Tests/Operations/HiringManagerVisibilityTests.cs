@@ -43,6 +43,29 @@ public sealed class HiringManagerVisibilityTests
         Assert.Contains("ToUtc(row.LatestMeetingAt)", repository, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public void HiringManagerReviewAccessQuery_UsesAuditLogOccurredTimestamp()
+    {
+        var repository = ReadBackendFile(
+            "src",
+            "TalentPilot.Infrastructure",
+            "Persistence",
+            "Repositories",
+            "DapperOperationsRepository.cs");
+
+        var closeAuditQueryStart = repository.IndexOf(
+            "OUTER APPLY (\r\n                SELECT TOP (1) audit.EventSummary",
+            StringComparison.Ordinal);
+        Assert.True(closeAuditQueryStart >= 0, "Expected hiring review close audit query to exist.");
+
+        var closeAuditQueryEnd = repository.IndexOf(") AS closeAudit", closeAuditQueryStart, StringComparison.Ordinal);
+        Assert.True(closeAuditQueryEnd > closeAuditQueryStart, "Expected hiring review close audit query to terminate.");
+
+        var closeAuditQuery = repository[closeAuditQueryStart..closeAuditQueryEnd];
+        Assert.Contains("ORDER BY audit.OccurredAtUtc DESC", closeAuditQuery, StringComparison.Ordinal);
+        Assert.DoesNotContain("ORDER BY audit.CreatedAtUtc DESC", closeAuditQuery, StringComparison.Ordinal);
+    }
+
     private static string ReadBackendFile(params string[] pathParts)
     {
         var directory = new DirectoryInfo(AppContext.BaseDirectory);

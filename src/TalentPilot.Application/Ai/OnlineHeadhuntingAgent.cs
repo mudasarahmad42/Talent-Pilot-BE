@@ -334,6 +334,12 @@ public sealed class OnlineHeadhuntingAgent : IOnlineHeadhuntingAgent
             return true;
         }
 
+        if (string.Equals(lead.SourceCode, OnlineHeadhuntingSources.GitHub, StringComparison.OrdinalIgnoreCase) &&
+            !HasKnownLocation(lead.Location))
+        {
+            return true;
+        }
+
         if (HasKnownLocation(lead.Location))
         {
             return false;

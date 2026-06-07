@@ -6,8 +6,11 @@ services:
       - api
     ports:
       - "80:80"
+      - "443:443"
     volumes:
-      - ./deploy/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./deploy/${NGINX_CONF:-nginx.conf}:/etc/nginx/conf.d/default.conf:ro
+      - certbot_www:/var/www/certbot:ro
+      - letsencrypt:/etc/letsencrypt:ro
     restart: unless-stopped
 
   frontend:
@@ -43,10 +46,25 @@ services:
       MicrosoftGraphEmail__ClientSecret: ${MICROSOFT_GRAPH_CLIENT_SECRET:-}
       MicrosoftGraphEmail__FromEmail: ${MICROSOFT_GRAPH_FROM_EMAIL:-}
       MicrosoftGraphEmail__SaveToSentItems: ${MICROSOFT_GRAPH_SAVE_TO_SENT_ITEMS:-true}
-      TavilySearch__Enabled: "false"
-      GoogleSearch__Enabled: "false"
-      GitHubSearch__Enabled: "false"
-      GoogleCalendar__Enabled: "false"
+      WebResearch__Provider: ${WEB_RESEARCH_PROVIDER:-Tavily}
+      TavilySearch__Enabled: ${TAVILY_SEARCH_ENABLED:-true}
+      TavilySearch__ApiKey: ${TAVILY_API_KEY:-}
+      GoogleSearch__Enabled: ${GOOGLE_SEARCH_ENABLED:-false}
+      GoogleSearch__ApiKey: ${GOOGLE_SEARCH_API_KEY:-}
+      GoogleSearch__SearchEngineId: ${GOOGLE_SEARCH_ENGINE_ID:-}
+      GitHubSearch__Enabled: ${GITHUB_SEARCH_ENABLED:-true}
+      GitHubSearch__Token: ${GITHUB_TOKEN:-}
+      GoogleCalendar__Enabled: ${GOOGLE_CALENDAR_ENABLED:-true}
+      GoogleCalendar__ApplicationName: ${GOOGLE_CALENDAR_APPLICATION_NAME:-Talent Pilot}
+      GoogleCalendar__CalendarId: ${GOOGLE_CALENDAR_CALENDAR_ID:-primary}
+      GoogleCalendar__DefaultTimeZoneId: ${GOOGLE_CALENDAR_DEFAULT_TIME_ZONE_ID:-Asia/Karachi}
+      GoogleCalendar__CreateGoogleMeetLink: ${GOOGLE_CALENDAR_CREATE_MEET_LINK:-true}
+      GoogleCalendar__ClientId: ${GOOGLE_CALENDAR_CLIENT_ID:-}
+      GoogleCalendar__ClientSecret: ${GOOGLE_CALENDAR_CLIENT_SECRET:-}
+      GoogleCalendar__RedirectUri: ${GOOGLE_CALENDAR_REDIRECT_URI:-}
+      GoogleCalendar__Scope: ${GOOGLE_CALENDAR_SCOPE:-https://www.googleapis.com/auth/calendar.events}
+      GoogleCalendar__FrontendSuccessRedirectUrl: ${GOOGLE_CALENDAR_FRONTEND_SUCCESS_URL:-/settings/integrations/google-calendar/success}
+      GoogleCalendar__FrontendErrorRedirectUrl: ${GOOGLE_CALENDAR_FRONTEND_ERROR_URL:-/settings/integrations/google-calendar/error}
     depends_on:
       sqlserver:
         condition: service_healthy
@@ -122,6 +140,17 @@ services:
       - ollama_data:/root/.ollama
     restart: unless-stopped
 
+  certbot:
+    image: certbot/certbot:latest
+    volumes:
+      - certbot_www:/var/www/certbot
+      - letsencrypt:/etc/letsencrypt
+    entrypoint: /bin/sh
+    command: -c "while true; do certbot renew --webroot -w /var/www/certbot --quiet; sleep 12h; done"
+    restart: unless-stopped
+
 volumes:
   sql_data:
   ollama_data:
+  certbot_www:
+  letsencrypt:

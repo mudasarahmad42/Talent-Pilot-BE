@@ -212,7 +212,7 @@ public static class InfrastructureServiceCollectionExtensions
     {
         return new GoogleCalendarOptions
         {
-            Enabled = bool.TryParse(configuration["GoogleCalendar:Enabled"], out var enabled) && enabled,
+            Enabled = !bool.TryParse(configuration["GoogleCalendar:Enabled"], out var enabled) || enabled,
             ApplicationName = configuration["GoogleCalendar:ApplicationName"] ?? "Talent Pilot",
             CalendarId = configuration["GoogleCalendar:CalendarId"] ?? "primary",
             DefaultTimeZoneId = configuration["GoogleCalendar:DefaultTimeZoneId"]

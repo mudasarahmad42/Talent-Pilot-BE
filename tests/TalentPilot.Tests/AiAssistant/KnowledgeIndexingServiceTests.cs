@@ -323,7 +323,7 @@ public sealed class KnowledgeIndexingServiceTests
             new HiringReviewCandidateSummary(
                 candidateId,
                 "Amara Haq",
-                "amara@example.test",
+                "amara.haq@8pkk57.onmicrosoft.com",
                 "Offered",
                 "Java Backend Engineer",
                 "Product Studio",
