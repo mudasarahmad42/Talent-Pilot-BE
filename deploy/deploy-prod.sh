@@ -18,4 +18,5 @@ if [ ! -d "../frontend" ]; then
 fi
 
 docker compose -f docker-compose.prod.yml --env-file .env.production up -d --build
+docker compose -f docker-compose.prod.yml --env-file .env.production restart nginx
 docker compose -f docker-compose.prod.yml --env-file .env.production ps
