@@ -31,6 +31,7 @@ services:
       ConnectionStrings__TalentPilot: Server=sqlserver,1433;Database=TalentPilot;User ID=sa;Password=${SA_PASSWORD};Encrypt=False;TrustServerCertificate=True;Connection Timeout=30;
       DataAccess__IdentityProvider: SqlServer
       Jwt__SigningKey: ${JWT_SIGNING_KEY}
+      Frontend__BaseUrl: ${FRONTEND_BASE_URL:-https://talentpilot-demo.duckdns.org}
       TalentPilotRuntime__Provider: Mock/Ollama
       TalentPilotRuntime__LlmModel: ${OLLAMA_LLM_MODEL:-llama3.2:1b}
       TalentPilotRuntime__EmbeddingModel: ${OLLAMA_EMBEDDING_MODEL:-nomic-embed-text}

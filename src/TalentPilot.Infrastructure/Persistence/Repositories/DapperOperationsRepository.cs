@@ -3947,12 +3947,15 @@ public sealed class DapperOperationsRepository : IOperationsRepository
             : input.Message.Trim();
         var subject = $"{context.CompanyName} is looking for {context.JobTitle}";
         var defaultInvitationText = $"{context.CompanyName} is looking for {context.JobTitle}. Please apply at our job portal for this job post if you are interested.";
+        var configuredJobLink = context.JobPostId.HasValue
+            ? BuildFrontendUrl(_frontendBaseUrl, $"/candidate/jobs/{context.JobPostId.Value:D}?source=invite")
+            : null;
         var trackedInvitations = context.JobPostId.HasValue
             ? candidates
                 .Select(candidate => CreateTrackedCandidateInvitation(
                     candidate.CandidateId,
                     context.JobPostId.Value,
-                    ExtractFirstAbsoluteUrl(recruiterMessage)))
+                    ExtractFirstAbsoluteUrl(recruiterMessage) ?? configuredJobLink))
                 .ToArray()
             : [];
         var trackedInvitationsByCandidateId = trackedInvitations.ToDictionary(invitation => invitation.CandidateId);
@@ -4300,6 +4303,7 @@ public sealed class DapperOperationsRepository : IOperationsRepository
             prospectId,
             actorUserId,
             input.InvitationMessage,
+            _frontendBaseUrl,
             cancellationToken);
 
         if (input.OnlineLeadId.HasValue)
@@ -15606,6 +15610,7 @@ public sealed class DapperOperationsRepository : IOperationsRepository
         Guid? prospectId,
         Guid actorUserId,
         string? recruiterMessage,
+        string frontendBaseUrl,
         CancellationToken cancellationToken)
     {
         var notificationEventId = await EnsureCandidateInvitationEventAsync(
@@ -15619,8 +15624,9 @@ public sealed class DapperOperationsRepository : IOperationsRepository
             : recruiterMessage.Trim();
         var candidateInvitationId = Guid.NewGuid();
         var invitationToken = CreateInvitationToken();
+        var configuredJobLink = BuildFrontendUrl(frontendBaseUrl, $"/candidate/jobs/{context.JobPostId:D}?source=invite");
         var jobLink = BuildCandidateInvitationLink(
-            ExtractFirstAbsoluteUrl(invitationText),
+            ExtractFirstAbsoluteUrl(invitationText) ?? configuredJobLink,
             context.JobPostId,
             candidateInvitationId,
             invitationToken);
