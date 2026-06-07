@@ -16816,7 +16816,7 @@ public sealed class DapperOperationsRepository : IOperationsRepository
                   AND audit.EntityType = N'JobRequest'
                   AND audit.EntityId = request.JobRequestId
                   AND audit.EventType = N'job_request.closed_by_hiring_manager'
-                ORDER BY audit.CreatedAtUtc DESC
+                ORDER BY audit.OccurredAtUtc DESC
             ) AS closeAudit
             WHERE application.TenantId = @TenantId
               AND application.JobApplicationId = @JobApplicationId
