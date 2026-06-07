@@ -136,6 +136,66 @@ public sealed class AuthServiceTests
         Assert.True(BCrypt.Net.BCrypt.Verify("StrongPass123", fixture.Repository.LastCandidateSignupInput.PasswordHash));
     }
 
+    [Fact]
+    public async Task RegisterCandidateAsync_WithInviteTracking_PassesInviteClaimFieldsToRepository()
+    {
+        var fixture = CreateFixture();
+        var candidateUserId = Guid.Parse("44444444-4444-4444-4444-444444444444");
+        var jobPostId = Guid.Parse("55555555-5555-5555-5555-555555555555");
+        var invitationId = Guid.Parse("66666666-6666-6666-6666-666666666666");
+        fixture.Repository.CandidateSignupResultFactory = input => new CandidateSignupRepositoryResult(
+            CandidateSignupStatus.Created,
+            new AuthUserRecord
+            {
+                UserId = candidateUserId,
+                TenantId = fixture.TenantId,
+                DisplayName = input.DisplayName,
+                Email = input.Email,
+                AccountStatus = "Active",
+                PasswordHash = input.PasswordHash
+            });
+
+        var result = await fixture.Service.RegisterCandidateAsync(
+            new CandidateSignupRequest(
+                "tkxel",
+                jobPostId,
+                "Ayesha Khan",
+                "ayesha@example.com",
+                "StrongPass123",
+                invitationId,
+                " tracked-token "),
+            CancellationToken.None);
+
+        Assert.True(result.Succeeded);
+        Assert.NotNull(fixture.Repository.LastCandidateSignupInput);
+        Assert.Equal(invitationId, fixture.Repository.LastCandidateSignupInput!.CandidateInvitationId);
+        Assert.Equal("tracked-token", fixture.Repository.LastCandidateSignupInput.InvitationToken);
+    }
+
+    [Fact]
+    public async Task RegisterCandidateAsync_WithInvalidInviteClaim_ReturnsInvitationError()
+    {
+        var fixture = CreateFixture();
+        fixture.Repository.CandidateSignupResultFactory = _ => new CandidateSignupRepositoryResult(
+            CandidateSignupStatus.InvitationInvalid,
+            null);
+
+        var result = await fixture.Service.RegisterCandidateAsync(
+            new CandidateSignupRequest(
+                "tkxel",
+                Guid.Parse("55555555-5555-5555-5555-555555555555"),
+                "Ayesha Khan",
+                "ayesha@example.com",
+                "StrongPass123",
+                Guid.Parse("66666666-6666-6666-6666-666666666666"),
+                "bad-token"),
+            CancellationToken.None);
+
+        Assert.True(result.Failed);
+        Assert.Equal("auth.candidate_signup_invitation_invalid", result.Error.Code);
+        Assert.Empty(fixture.Repository.RefreshTokens);
+    }
+
     [Theory]
     [InlineData("a", "candidate@example.com", "StrongPass123", "auth.candidate_signup_name_invalid")]
     [InlineData("Ayesha Khan", "not-an-email", "StrongPass123", "auth.candidate_signup_email_invalid")]

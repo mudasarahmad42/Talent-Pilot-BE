@@ -16,7 +16,8 @@ public enum CandidateSignupStatus
     JobNotFound,
     PublicJobsDisabled,
     CandidateRoleMissing,
-    EmailExists
+    EmailExists,
+    InvitationInvalid
 }
 
 public sealed record CandidateSignupRegistrationInput(
@@ -24,7 +25,9 @@ public sealed record CandidateSignupRegistrationInput(
     Guid? JobPostId,
     string DisplayName,
     string Email,
-    string PasswordHash);
+    string PasswordHash,
+    Guid? CandidateInvitationId = null,
+    string? InvitationToken = null);
 
 public sealed record CandidateSignupRepositoryResult(
     CandidateSignupStatus Status,

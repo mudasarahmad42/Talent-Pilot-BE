@@ -109,7 +109,9 @@ public sealed class AuthService : IAuthService
                 request.JobPostId,
                 displayName,
                 email,
-                _passwordHasher.Hash(password)),
+                _passwordHasher.Hash(password),
+                request.CandidateInvitationId,
+                string.IsNullOrWhiteSpace(request.InvitationToken) ? null : request.InvitationToken.Trim()),
             cancellationToken);
 
         if (registration.Status != CandidateSignupStatus.Created || registration.User is null)
@@ -282,6 +284,9 @@ public sealed class AuthService : IAuthService
             CandidateSignupStatus.EmailExists => (
                 "auth.candidate_signup_email_exists",
                 "An account already exists for this email. Sign in to continue."),
+            CandidateSignupStatus.InvitationInvalid => (
+                "auth.candidate_signup_invitation_invalid",
+                "Invitation could not be verified. Open the latest invitation link or contact the recruiter."),
             _ => (
                 "auth.candidate_signup_failed",
                 "Candidate account could not be created.")

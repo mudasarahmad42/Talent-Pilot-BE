@@ -1,4 +1,6 @@
 using System.Data;
+using System.Security.Cryptography;
+using System.Text;
 using Dapper;
 using TalentPilot.Application.Auth;
 using TalentPilot.Domain.Access;
@@ -137,21 +139,12 @@ public sealed class DapperIdentityRepository : IIdentityRepository
 
         var tenantId = tenantResolution.TenantId.Value;
         var normalizedEmail = input.Email.Trim().ToUpperInvariant();
-        var emailExists = await connection.ExecuteScalarAsync<int>(new CommandDefinition(
-            """
-            SELECT COUNT(1)
-            FROM dbo.AppUsers
-            WHERE EmailNormalized = @EmailNormalized
-              AND DeletedAtUtc IS NULL;
-            """,
-            new { EmailNormalized = normalizedEmail },
+        var existingUser = await ReadCandidateSignupExistingUserAsync(
+            connection,
             transaction,
-            cancellationToken: cancellationToken)) > 0;
-        if (emailExists)
-        {
-            await transaction.RollbackAsync(cancellationToken);
-            return new CandidateSignupRepositoryResult(CandidateSignupStatus.EmailExists, null);
-        }
+            tenantId,
+            normalizedEmail,
+            cancellationToken);
 
         var candidateRoleId = await connection.ExecuteScalarAsync<Guid?>(new CommandDefinition(
             """
@@ -168,6 +161,47 @@ public sealed class DapperIdentityRepository : IIdentityRepository
         {
             await transaction.RollbackAsync(cancellationToken);
             return new CandidateSignupRepositoryResult(CandidateSignupStatus.CandidateRoleMissing, null);
+        }
+
+        if (existingUser is not null)
+        {
+            if (existingUser.TenantId != tenantId ||
+                !string.Equals(existingUser.AccountStatus, "Invited", StringComparison.OrdinalIgnoreCase) ||
+                !string.IsNullOrWhiteSpace(existingUser.PasswordHash))
+            {
+                await transaction.RollbackAsync(cancellationToken);
+                return new CandidateSignupRepositoryResult(CandidateSignupStatus.EmailExists, null);
+            }
+
+            if (!existingUser.HasCandidateRole || !existingUser.CandidateId.HasValue)
+            {
+                await transaction.RollbackAsync(cancellationToken);
+                return new CandidateSignupRepositoryResult(CandidateSignupStatus.CandidateRoleMissing, null);
+            }
+
+            var invitationValid = await CandidateSignupInvitationMatchesAsync(
+                connection,
+                transaction,
+                tenantId,
+                normalizedEmail,
+                existingUser.CandidateId.Value,
+                input,
+                cancellationToken);
+            if (!invitationValid)
+            {
+                await transaction.RollbackAsync(cancellationToken);
+                return new CandidateSignupRepositoryResult(CandidateSignupStatus.InvitationInvalid, null);
+            }
+
+            var claimedUser = await ClaimInvitedCandidateAsync(
+                connection,
+                transaction,
+                tenantId,
+                existingUser,
+                input,
+                cancellationToken);
+            await transaction.CommitAsync(cancellationToken);
+            return new CandidateSignupRepositoryResult(CandidateSignupStatus.Created, claimedUser);
         }
 
         var userId = Guid.NewGuid();
@@ -289,6 +323,204 @@ public sealed class DapperIdentityRepository : IIdentityRepository
                 AccountStatus = "Active",
                 PasswordHash = input.PasswordHash
             });
+    }
+
+    private static async Task<CandidateSignupExistingUserRow?> ReadCandidateSignupExistingUserAsync(
+        Microsoft.Data.SqlClient.SqlConnection connection,
+        IDbTransaction transaction,
+        Guid tenantId,
+        string normalizedEmail,
+        CancellationToken cancellationToken)
+    {
+        const string sql = """
+            SELECT TOP (1)
+                u.UserId,
+                u.TenantId,
+                u.DisplayName,
+                u.Email,
+                u.AccountStatus,
+                credentials.PasswordHash,
+                candidate.CandidateId,
+                CAST(CASE WHEN EXISTS
+                (
+                    SELECT 1
+                    FROM dbo.UserRoles AS userRole
+                    INNER JOIN dbo.Roles AS role
+                        ON role.TenantId = userRole.TenantId
+                       AND role.RoleId = userRole.RoleId
+                    WHERE userRole.TenantId = u.TenantId
+                      AND userRole.UserId = u.UserId
+                      AND role.Code = N'Candidate'
+                      AND role.Status = N'Active'
+                ) THEN 1 ELSE 0 END AS bit) AS HasCandidateRole
+            FROM dbo.AppUsers AS u
+            LEFT JOIN dbo.UserCredentials AS credentials
+                ON credentials.TenantId = u.TenantId
+               AND credentials.UserId = u.UserId
+            OUTER APPLY
+            (
+                SELECT TOP (1) CandidateId
+                FROM dbo.Candidates AS candidate
+                WHERE candidate.TenantId = u.TenantId
+                  AND candidate.AppUserId = u.UserId
+                  AND candidate.Status = N'Active'
+                ORDER BY candidate.CreatedAtUtc DESC
+            ) AS candidate
+            WHERE u.EmailNormalized = @EmailNormalized
+              AND u.DeletedAtUtc IS NULL
+            ORDER BY CASE WHEN u.TenantId = @TenantId THEN 0 ELSE 1 END;
+            """;
+
+        return await connection.QuerySingleOrDefaultAsync<CandidateSignupExistingUserRow>(new CommandDefinition(
+            sql,
+            new { TenantId = tenantId, EmailNormalized = normalizedEmail },
+            transaction,
+            cancellationToken: cancellationToken));
+    }
+
+    private static async Task<bool> CandidateSignupInvitationMatchesAsync(
+        Microsoft.Data.SqlClient.SqlConnection connection,
+        IDbTransaction transaction,
+        Guid tenantId,
+        string normalizedEmail,
+        Guid candidateId,
+        CandidateSignupRegistrationInput input,
+        CancellationToken cancellationToken)
+    {
+        if (!input.JobPostId.HasValue ||
+            !input.CandidateInvitationId.HasValue ||
+            input.CandidateInvitationId.Value == Guid.Empty ||
+            string.IsNullOrWhiteSpace(input.InvitationToken))
+        {
+            return false;
+        }
+
+        const string sql = """
+            SELECT COUNT(1)
+            FROM dbo.CandidateInvitations
+            WHERE TenantId = @TenantId
+              AND CandidateInvitationId = @CandidateInvitationId
+              AND JobPostId = @JobPostId
+              AND CandidateId = @CandidateId
+              AND UPPER(Email) = @EmailNormalized
+              AND TokenHash = @TokenHash
+              AND Status = N'Sent'
+              AND ExpiresAtUtc > SYSUTCDATETIME()
+              AND RevokedAtUtc IS NULL;
+            """;
+
+        var count = await connection.ExecuteScalarAsync<int>(new CommandDefinition(
+            sql,
+            new
+            {
+                TenantId = tenantId,
+                CandidateInvitationId = input.CandidateInvitationId.Value,
+                JobPostId = input.JobPostId.Value,
+                CandidateId = candidateId,
+                EmailNormalized = normalizedEmail,
+                TokenHash = HashInvitationToken(input.InvitationToken)
+            },
+            transaction,
+            cancellationToken: cancellationToken));
+
+        return count > 0;
+    }
+
+    private static async Task<AuthUserRecord> ClaimInvitedCandidateAsync(
+        Microsoft.Data.SqlClient.SqlConnection connection,
+        IDbTransaction transaction,
+        Guid tenantId,
+        CandidateSignupExistingUserRow existingUser,
+        CandidateSignupRegistrationInput input,
+        CancellationToken cancellationToken)
+    {
+        var displayName = Truncate(input.DisplayName.Trim(), 200);
+        var email = input.Email.Trim().ToLowerInvariant();
+        const string sql = """
+            UPDATE dbo.AppUsers
+            SET DisplayName = @DisplayName,
+                Email = @Email,
+                EmailNormalized = @EmailNormalized,
+                Initials = @Initials,
+                AccountStatus = N'Active',
+                UpdatedAtUtc = SYSUTCDATETIME()
+            WHERE TenantId = @TenantId
+              AND UserId = @UserId
+              AND AccountStatus = N'Invited'
+              AND DeletedAtUtc IS NULL;
+
+            IF EXISTS
+            (
+                SELECT 1
+                FROM dbo.UserCredentials
+                WHERE TenantId = @TenantId
+                  AND UserId = @UserId
+            )
+            BEGIN
+                UPDATE dbo.UserCredentials
+                SET PasswordHash = @PasswordHash,
+                    PasswordUpdatedAtUtc = SYSUTCDATETIME(),
+                    UpdatedAtUtc = SYSUTCDATETIME()
+                WHERE TenantId = @TenantId
+                  AND UserId = @UserId;
+            END
+            ELSE
+            BEGIN
+                INSERT INTO dbo.UserCredentials
+                (
+                    UserCredentialId,
+                    TenantId,
+                    UserId,
+                    PasswordHash,
+                    PasswordUpdatedAtUtc,
+                    CreatedAtUtc,
+                    UpdatedAtUtc
+                )
+                VALUES
+                (
+                    NEWID(),
+                    @TenantId,
+                    @UserId,
+                    @PasswordHash,
+                    SYSUTCDATETIME(),
+                    SYSUTCDATETIME(),
+                    SYSUTCDATETIME()
+                );
+            END;
+
+            UPDATE dbo.Candidates
+            SET DisplayName = @DisplayName,
+                Email = @Email,
+                UpdatedAtUtc = SYSUTCDATETIME()
+            WHERE TenantId = @TenantId
+              AND AppUserId = @UserId
+              AND Status = N'Active';
+            """;
+
+        await connection.ExecuteAsync(new CommandDefinition(
+            sql,
+            new
+            {
+                TenantId = tenantId,
+                existingUser.UserId,
+                DisplayName = displayName,
+                Email = email,
+                EmailNormalized = email.ToUpperInvariant(),
+                Initials = BuildInitials(displayName),
+                input.PasswordHash
+            },
+            transaction,
+            cancellationToken: cancellationToken));
+
+        return new AuthUserRecord
+        {
+            UserId = existingUser.UserId,
+            TenantId = tenantId,
+            DisplayName = displayName,
+            Email = email,
+            AccountStatus = "Active",
+            PasswordHash = input.PasswordHash
+        };
     }
 
     public async Task<CurrentUserData?> GetCurrentUserDataAsync(Guid tenantId, Guid userId, CancellationToken cancellationToken)
@@ -510,6 +742,12 @@ public sealed class DapperIdentityRepository : IIdentityRepository
             : (CandidateSignupStatus.TenantRequired, null);
     }
 
+    private static string HashInvitationToken(string token)
+    {
+        var bytes = SHA256.HashData(Encoding.UTF8.GetBytes(token.Trim()));
+        return Convert.ToHexString(bytes).ToLowerInvariant();
+    }
+
     private static string BuildInitials(string displayName)
     {
         var initials = string.Concat(displayName
@@ -534,6 +772,16 @@ public sealed class DapperIdentityRepository : IIdentityRepository
         Guid TenantId,
         string Status,
         bool PublicJobsEnabled);
+
+    private sealed record CandidateSignupExistingUserRow(
+        Guid UserId,
+        Guid TenantId,
+        string DisplayName,
+        string Email,
+        string AccountStatus,
+        string? PasswordHash,
+        Guid? CandidateId,
+        bool HasCandidateRole);
 
     private sealed record RolePermissionRow(
         Guid RoleId,

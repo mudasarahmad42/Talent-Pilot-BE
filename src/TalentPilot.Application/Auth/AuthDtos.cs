@@ -7,7 +7,9 @@ public sealed record CandidateSignupRequest(
     Guid? JobPostId,
     string DisplayName,
     string Email,
-    string Password);
+    string Password,
+    Guid? CandidateInvitationId = null,
+    string? InvitationToken = null);
 
 public sealed record RefreshTokenRequest(string RefreshToken);
 
