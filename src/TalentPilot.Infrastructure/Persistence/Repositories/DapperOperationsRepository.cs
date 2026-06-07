@@ -11620,11 +11620,11 @@ public sealed class DapperOperationsRepository : IOperationsRepository
                     interview.RoundName,
                     interview.Status,
                     interview.Recommendation,
-                    null,
-                    null,
-                    null,
-                    null,
-                    null))
+                    interview.TechnicalScore,
+                    interview.CommunicationScore,
+                    interview.CultureScore,
+                    interview.FeedbackText,
+                    interview.SubmittedAt is null ? null : Utc(interview.SubmittedAt.Value)))
                 .ToArray();
             var summary = RediscoveryInterviewSummary.Build(evidence, configuredInterviewRoundCount);
 
@@ -11701,7 +11701,12 @@ public sealed class DapperOperationsRepository : IOperationsRepository
                 interview.DurationMinutes,
                 interview.MeetingLink,
                 interview.LocationText,
-                feedback.Recommendation
+                feedback.Recommendation,
+                feedback.TechnicalScore,
+                feedback.CommunicationScore,
+                feedback.CultureScore,
+                feedback.FeedbackText,
+                feedback.SubmittedAtUtc AS SubmittedAt
             FROM dbo.Interviews AS interview
             INNER JOIN dbo.AppUsers AS interviewer
                 ON interviewer.TenantId = interview.TenantId
@@ -11781,7 +11786,12 @@ public sealed class DapperOperationsRepository : IOperationsRepository
             row.DurationMinutes,
             row.MeetingLink,
             row.LocationText,
-            row.Recommendation);
+            row.Recommendation,
+            row.TechnicalScore,
+            row.CommunicationScore,
+            row.CultureScore,
+            row.FeedbackText,
+            row.SubmittedAt is null ? null : Utc(row.SubmittedAt.Value));
     }
 
     private static string BuildRecruiterApplicationDocumentDisplayName(string? documentType)
@@ -19305,7 +19315,12 @@ public sealed class DapperOperationsRepository : IOperationsRepository
         int DurationMinutes,
         string? MeetingLink,
         string? LocationText,
-        string? Recommendation);
+        string? Recommendation,
+        int? TechnicalScore,
+        int? CommunicationScore,
+        int? CultureScore,
+        string? FeedbackText,
+        DateTime? SubmittedAt);
 
     private sealed record ApplicationActionContextRow(
         Guid JobApplicationId,

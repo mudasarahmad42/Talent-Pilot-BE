@@ -378,7 +378,12 @@ public sealed record OperationsRecruiterApplicationInterview(
     int DurationMinutes,
     string? MeetingLink,
     string? LocationText,
-    string? Recommendation);
+    string? Recommendation,
+    int? TechnicalScore,
+    int? CommunicationScore,
+    int? CultureScore,
+    string? FeedbackText,
+    DateTimeOffset? SubmittedAt);
 
 public sealed record OperationsJobPublishing(
     IReadOnlyList<OperationsJobPostListItem> Items);
