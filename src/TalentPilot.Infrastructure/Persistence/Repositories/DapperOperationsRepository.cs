@@ -2023,6 +2023,8 @@ public sealed class DapperOperationsRepository : IOperationsRepository
                 invitation.JobPostId,
                 post.Title AS JobTitle,
                 COALESCE(NULLIF(settings.CareerDisplayName, N''), tenant.DisplayName) AS CompanyName,
+                candidate.DisplayName AS CandidateDisplayName,
+                invitation.Email AS CandidateEmail,
                 invitation.Status,
                 invitation.ExpiresAtUtc,
                 invitation.UsedAtUtc,
@@ -2035,6 +2037,10 @@ public sealed class DapperOperationsRepository : IOperationsRepository
                 ON tenant.TenantId = invitation.TenantId
             LEFT JOIN dbo.TenantRecruitmentSettings AS settings
                 ON settings.TenantId = invitation.TenantId
+            LEFT JOIN dbo.Candidates AS candidate
+                ON candidate.TenantId = invitation.TenantId
+               AND candidate.CandidateId = invitation.CandidateId
+               AND candidate.Status = N'Active'
             WHERE invitation.CandidateInvitationId = @CandidateInvitationId
               AND invitation.TokenHash = @TokenHash
               AND invitation.JobPostId IS NOT NULL
@@ -2059,6 +2065,8 @@ public sealed class DapperOperationsRepository : IOperationsRepository
                 row.JobPostId,
                 row.JobTitle,
                 row.CompanyName,
+                row.CandidateDisplayName,
+                row.CandidateEmail,
                 row.Status,
                 Utc(row.ExpiresAtUtc),
                 ToUtc(row.UsedAtUtc),
@@ -19136,6 +19144,8 @@ public sealed class DapperOperationsRepository : IOperationsRepository
         Guid JobPostId,
         string JobTitle,
         string CompanyName,
+        string? CandidateDisplayName,
+        string? CandidateEmail,
         string Status,
         DateTime ExpiresAtUtc,
         DateTime? UsedAtUtc,

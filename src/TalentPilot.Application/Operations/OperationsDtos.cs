@@ -453,6 +453,8 @@ public sealed record PortalInvitationContext(
     Guid JobPostId,
     string JobTitle,
     string CompanyName,
+    string? CandidateDisplayName,
+    string? CandidateEmail,
     string Status,
     DateTimeOffset ExpiresAtUtc,
     DateTimeOffset? UsedAtUtc,
