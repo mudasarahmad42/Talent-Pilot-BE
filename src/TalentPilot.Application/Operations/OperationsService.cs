@@ -300,6 +300,23 @@ public sealed class OperationsService : IOperationsService
             cancellationToken);
         if (content is null || content.Length == 0)
         {
+            var fallback = ApplicationDocumentDownloadFallback.FromExtractedText(
+                document.FileName,
+                document.DocumentType,
+                document.ExtractionStatus,
+                document.ParserVersion,
+                document.ExtractedAt,
+                document.ExtractedText);
+            if (fallback is not null)
+            {
+                return Result<OperationsApplicationDocumentDownload>.Success(new OperationsApplicationDocumentDownload(
+                    document.ApplicationDocumentId,
+                    jobApplicationId,
+                    fallback.FileName,
+                    fallback.ContentType,
+                    fallback.Content));
+            }
+
             return Result<OperationsApplicationDocumentDownload>.Failure(
                 "application_document.unavailable",
                 "Application document file is not available in storage.");
@@ -695,6 +712,22 @@ public sealed class OperationsService : IOperationsService
             cancellationToken);
         if (content is null || content.Length == 0)
         {
+            var fallback = ApplicationDocumentDownloadFallback.FromExtractedText(
+                document.FileName,
+                document.DocumentType,
+                document.ExtractionStatus,
+                document.ParserVersion,
+                document.ExtractedAt,
+                document.ExtractedText);
+            if (fallback is not null)
+            {
+                return Result<PortalCandidateProfileDocumentDownload>.Success(new PortalCandidateProfileDocumentDownload(
+                    document.CandidateProfileDocumentId,
+                    fallback.FileName,
+                    fallback.ContentType,
+                    fallback.Content));
+            }
+
             return Result<PortalCandidateProfileDocumentDownload>.Failure(
                 "portal_profile_document.unavailable",
                 "Profile document file is not available in storage.");
