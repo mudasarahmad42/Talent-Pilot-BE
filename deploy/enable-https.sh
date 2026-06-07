@@ -46,7 +46,7 @@ echo "Bootstrapping HTTP challenge endpoint for ${APP_HOSTNAME}..."
 NGINX_CONF=nginx.conf docker compose -f "${COMPOSE_FILE}" --env-file "${ENV_FILE}" up -d --build nginx
 
 echo "Requesting Let's Encrypt certificate for ${APP_HOSTNAME}..."
-docker compose -f "${COMPOSE_FILE}" --env-file "${ENV_FILE}" run --rm \
+docker compose -f "${COMPOSE_FILE}" --env-file "${ENV_FILE}" run --rm --entrypoint certbot \
   certbot certonly \
   --webroot \
   --webroot-path /var/www/certbot \
